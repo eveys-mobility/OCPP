@@ -92,7 +92,12 @@ tests:e2e:
       variables:
         KAFKA_NODE_ID: "1"
         KAFKA_PROCESS_ROLES: "broker,controller"
-        KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka:9093"
+        # Inside the service container, the alias `kafka` does NOT resolve
+        # to itself. Use `localhost:9093` for the controller quorum (the
+        # broker talks to its own controller process via loopback). Clients
+        # in the job container still reach the broker as `kafka:9092` over
+        # the GitLab services network.
+        KAFKA_CONTROLLER_QUORUM_VOTERS: "1@localhost:9093"
         KAFKA_LISTENERS: "PLAINTEXT://:9092,CONTROLLER://:9093"
         KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka:9092"
         KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT"
@@ -119,13 +124,33 @@ tests:e2e:
     E2E_REDIS_HOST: redis
     E2E_KAFKA_HOST: kafka
     E2E_CH_HOST: clickhouse
+    # In CI, refuse to silently skip the e2e tests if a service isn't
+    # reachable — a green-but-skipped pipeline is worse than a red one.
+    E2E_REQUIRE: "1"
     # Same DSN the runtime reads from — used by alembic.
     EVEYS_OCPP_DB_URL: postgresql+asyncpg://eveys:eveys@postgres:5432/eveys_ocpp
   script:
-    # Wait for Postgres to accept connections (services boot in parallel
-    # with the job container; pg_isready is the canonical wait pattern).
-    - apt-get install -y --no-install-recommends postgresql-client >/dev/null
-    - until pg_isready -h postgres -U eveys -d eveys_ocpp >/dev/null 2>&1; do echo waiting for postgres; sleep 1; done
+    # Wait for every service to accept TCP connections. Services boot in
+    # parallel with the job container; Kafka in particular needs ~20s for
+    # the KRaft controller to come up and the broker listener to bind.
+    - apt-get install -y --no-install-recommends postgresql-client netcat-openbsd >/dev/null
+    - |
+      wait_tcp() {
+        local host=$1 port=$2 timeout=${3:-90}
+        for i in $(seq 1 "$timeout"); do
+          if nc -z "$host" "$port" 2>/dev/null; then
+            echo "  $host:$port reachable after ${i}s"
+            return 0
+          fi
+          sleep 1
+        done
+        echo "ERROR: $host:$port not reachable after ${timeout}s"
+        return 1
+      }
+      wait_tcp postgres 5432 60
+      wait_tcp redis 6379 60
+      wait_tcp clickhouse 8123 60
+      wait_tcp kafka 9092 90
     - .venv/bin/alembic upgrade head
     - .venv/bin/pytest tests/e2e -v --no-cov
 

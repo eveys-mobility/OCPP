@@ -49,16 +49,29 @@ def _can_connect(host: str, port: int, timeout: float = 0.5) -> bool:
             return False
 
 
+_unreachable_services: list[str] = []
+for _name, _host, _port in (
+    ("postgres", _PG_HOST, 5432),
+    ("redis", _REDIS_HOST, 6379),
+    ("kafka", _KAFKA_HOST, 9092),
+    ("clickhouse-http", _CH_HOST, 8123),
+):
+    if not _can_connect(_host, _port):
+        _unreachable_services.append(f"{_name} ({_host}:{_port})")
+
+if _unreachable_services and os.environ.get("E2E_REQUIRE") == "1":
+    # CI sets E2E_REQUIRE=1 — treat unreachable services as a hard failure
+    # rather than a silent skip. A green-but-skipped CI pipeline is worse
+    # than a red one because it pretends to test something it isn't.
+    raise RuntimeError(
+        "E2E_REQUIRE=1 but services not reachable: "
+        + ", ".join(_unreachable_services)
+    )
+
 pytestmark = pytest.mark.skipif(
-    not all(
-        [
-            _can_connect(_PG_HOST, 5432),  # Postgres
-            _can_connect(_REDIS_HOST, 6379),  # Redis
-            _can_connect(_KAFKA_HOST, 9092),  # Kafka
-            _can_connect(_CH_HOST, 8123),  # ClickHouse HTTP
-        ]
-    ),
-    reason="local stack not reachable — run `make compose-up` first",
+    bool(_unreachable_services),
+    reason=f"local stack not reachable ({', '.join(_unreachable_services)}) — "
+    "run `make compose-up` first",
 )
 
 
