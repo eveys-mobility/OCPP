@@ -12,9 +12,9 @@
 |---|---|---|---|
 | E0-1 | Set up monorepo at `eveys/` | `eveys/ocpp/` exists, git initialized | ✅ done |
 | E0-2 | Create Python project skeleton (`pyproject.toml`, `Makefile`, `src/eveys_ocpp/`, `tests/`) | `make install && make tests` green | ✅ done |
-| E0-3 | CI pipeline (GitLab CI): lint + test on Python 3.13 | First MR runs CI | 0.5d |
+| E0-3 | CI pipeline (GitLab CI): lint + test on Python 3.13 | ✅ done — `.gitlab-ci.yml` runs `lint` + `types` + `tests` (with Cobertura coverage report) on every MR + every `main` push; venv cached by pyproject hash |
 | E0-4 | Pre-commit config (black, isort, ruff, mypy --strict on `src/`) | `pre-commit install` works | 0.5d |
-| E0-5 | Dockerfile (distroless Python 3.13 base, multi-stage) | Image < 200 MB, runs `eveys-ocpp --version` | 0.5d |
+| E0-5 | Dockerfile (distroless Python 3.13 base, multi-stage) | Image < 200 MB, runs `eveys-ocpp --version` | ✅ done — `eveys-ocpp:dev` is 168 MB, runs `--version` correctly, ships in compose stack |
 | E0-6 | `AGENTS.md` and `CLAUDE.md` at repo root | AI assistants pick up rules in any IDE | 0.5d |
 | E0-7 | `.editorconfig`, `.gitignore`, `.gitattributes` | Standard project hygiene | ✅ done |
 | E0-8 | Implementation plan written and reviewed | `docs/06-implementation-plan.md` merged | 1d |
@@ -37,8 +37,8 @@
 | E1-9 | Handler: `StartTransaction` / `StopTransaction` | ✅ done (Kafka emit pending — E2-8) |
 | E1-10 | Postgres schema (`charge_points`, `transactions`) + Alembic migration | ✅ done |
 | E1-11 | Structured logging on every message in/out (`cp_id`, `message_id`, `action`, `direction`) | ✅ done |
-| E1-12 | Local docker-compose for dev (Postgres + Redis + Kafka + ClickHouse + the service) per [`07-local-dev-setup.md`](./07-local-dev-setup.md) | ✅ data plane done; service container stub awaits E0-5 |
-| E1-13 | Smoke test: charger simulator → real round-trip → assertions on Postgres rows | ⏳ in progress (`tests/e2e/test_local_smoke.py` checks data-plane reachability; full simulator test pending) |
+| E1-12 | Local docker-compose for dev (Postgres + Redis + Kafka + ClickHouse + the service) per [`07-local-dev-setup.md`](./07-local-dev-setup.md) | ✅ done — `make compose-up` brings full stack including service container to healthy |
+| E1-13 | Smoke test: charger simulator → real round-trip → assertions on Postgres rows | ✅ done — `tests/e2e/test_local_smoke.py::test_full_charger_round_trip` + `test_stop_transaction_replay_is_idempotent` pass against live stack |
 
 ---
 

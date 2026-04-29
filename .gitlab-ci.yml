@@ -1,5 +1,69 @@
 stages:
-  - docs
+  - quality   # lint + mypy in parallel
+  - test      # pytest with coverage
+  - docs      # tagged-release docs build (existing)
+
+# ---- shared anchors --------------------------------------------------------
+#
+# All Python jobs share: the project's runtime base image, uv as installer,
+# and a venv at .venv/ that's cached between runs. The first job in a
+# pipeline pays the install cost; the rest of the pipeline reuses the venv.
+
+.python-job: &python-job
+  image: python:3.13-slim
+  before_script:
+    - apt-get update -qq && apt-get install -y --no-install-recommends curl ca-certificates >/dev/null
+    - curl -LsSf https://astral.sh/uv/install.sh | sh
+    - export PATH="$HOME/.local/bin:$PATH"
+    - uv venv .venv
+    - uv pip install --python .venv/bin/python --no-cache-dir -e ".[dev]"
+  cache:
+    key:
+      files:
+        - pyproject.toml
+    paths:
+      - .venv/
+      - .uv-cache/
+  rules:
+    # Run on MRs into any branch, and on pushes to main. Skip on tag pushes
+    # (the docs job handles those separately).
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# ---- E0-3 quality gate -----------------------------------------------------
+
+lint:
+  <<: *python-job
+  stage: quality
+  script:
+    - .venv/bin/ruff check src tests
+
+types:
+  <<: *python-job
+  stage: quality
+  script:
+    - .venv/bin/mypy
+
+tests:
+  <<: *python-job
+  stage: test
+  script:
+    # E2E tests skip themselves when the compose stack isn't reachable —
+    # CI runs without a stack, so only unit tests execute. Wiring docker
+    # services into CI is a follow-up task.
+    - .venv/bin/pytest --cov-report=xml --cov-report=term
+  coverage: '/Total coverage: (\d+\.\d+)%/'
+  artifacts:
+    when: always
+    reports:
+      coverage_report:
+        coverage_format: cobertura
+        path: coverage.xml
+    paths:
+      - coverage.xml
+    expire_in: 14 days
+
+# ---- docs (tagged-release artifact, unchanged) -----------------------------
 
 docs:build:
   stage: docs
