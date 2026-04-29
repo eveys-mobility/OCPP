@@ -11,7 +11,7 @@ PYTHON     ?= $(shell command -v python3.13 || command -v python3.12)
 UV         ?= $(shell command -v uv)
 COMPOSE    := docker compose -f deploy/compose/docker-compose.yml
 
-.PHONY: help doctor install format lint types tests e2e smoke clean distclean \
+.PHONY: help doctor install format lint types tests e2e smoke precommit clean distclean \
         compose-up compose-down compose-status compose-down-volumes compose-wait \
         build-image docs docs-clean
 
@@ -27,6 +27,7 @@ help:
 	@echo "  make lint               run ruff check"
 	@echo "  make types              run mypy --strict on src/"
 	@echo "  make tests              full pre-commit gate: lint + types + pytest with coverage"
+	@echo "  make precommit          run all pre-commit hooks against every file (no commit needed)"
 	@echo ""
 	@echo "Local stack (data plane):"
 	@echo "  make compose-up         start Postgres + Redis + Kafka + ClickHouse + service"
@@ -63,6 +64,13 @@ $(VENV)/bin/python:
 
 install: $(VENV)/bin/python
 	$(UV) pip install --python $(VENV)/bin/python -e ".[dev]"
+	@# Activate pre-commit hooks if the config exists. Idempotent — safe
+	@# to re-run; pre-commit detects an already-installed hook script.
+	@if [ -f .pre-commit-config.yaml ] && [ -d .git ]; then \
+		$(VENV)/bin/pre-commit install --install-hooks >/dev/null 2>&1 && \
+		$(VENV)/bin/pre-commit install --hook-type commit-msg >/dev/null 2>&1 && \
+		echo "pre-commit hooks installed"; \
+	fi
 
 # ---- code quality -----------------------------------------------------------
 
@@ -78,6 +86,9 @@ types: install
 
 tests: lint types
 	$(VENV)/bin/pytest
+
+precommit: install
+	$(VENV)/bin/pre-commit run --all-files
 
 # ---- local stack ------------------------------------------------------------
 
