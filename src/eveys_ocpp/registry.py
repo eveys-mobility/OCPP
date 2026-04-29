@@ -1,0 +1,135 @@
+"""Redis online-charger registry (E2-9).
+
+Stores `cp:online:{cp_id}` keys with a TTL. Each connected charger has
+exactly one such key; the value is the `pod_id` holding its WebSocket.
+
+Lifecycle:
+- WS connect       → `mark_online(cp_id, pod_id)`     (write key, TTL)
+- Heartbeat handler → `refresh(cp_id)`                (extend TTL)
+- WS disconnect    → `mark_offline(cp_id, pod_id)`    (delete key iff
+                                                       still owned by us)
+
+Cross-pod routing (E2-5, E2-10) reads `get_pod(cp_id)` to decide which
+pod to forward a gRPC command to. A `None` result means the charger is
+offline (or its key expired before the next heartbeat).
+
+Why TTL-based rather than pub/sub on disconnect: a pod that crashes
+without a clean shutdown still releases its chargers within `TTL`
+seconds. No phantom keys after a pod kill.
+
+The "still owned by us" check on `mark_offline` prevents a race where
+a charger reconnects to a different pod immediately after disconnecting
+from this one — we must not delete the new pod's key.
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+from redis.asyncio import Redis
+
+from eveys_ocpp.observability import get_logger
+
+if TYPE_CHECKING:
+    from eveys_ocpp.settings import Settings
+
+log = get_logger(__name__)
+
+
+def _key(cp_id: str) -> str:
+    """Redis key for a charger's online presence."""
+    return f"cp:online:{cp_id}"
+
+
+# Lua script for atomic compare-and-delete: only delete the key if its
+# value still equals our pod_id. Prevents the reconnect-race described
+# above. Redis runs Lua scripts atomically.
+_DEL_IF_OWNER = """
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+    return redis.call('DEL', KEYS[1])
+else
+    return 0
+end
+"""
+
+
+class Registry:
+    """Thin wrapper around a redis.asyncio client for the online registry.
+
+    One instance per process; pass into the WS server and handlers.
+    """
+
+    def __init__(self, redis: Redis, *, settings: Settings) -> None:
+        self._redis = redis
+        self._settings = settings
+
+    @classmethod
+    def from_settings(cls, settings: Settings) -> Registry:
+        """Build a registry from settings (one Redis pool per process)."""
+        return cls(
+            Redis.from_url(
+                settings.redis_url,
+                decode_responses=True,
+                # Reconnect immediately on broker drop; don't sleep on EOF.
+                health_check_interval=30,
+            ),
+            settings=settings,
+        )
+
+    async def close(self) -> None:
+        await self._redis.aclose()
+
+    async def mark_online(self, cp_id: str) -> None:
+        """Record this pod as the owner of `cp_id`'s WS. Resets TTL."""
+        await self._redis.set(
+            _key(cp_id),
+            self._settings.pod_id,
+            ex=self._settings.redis_online_ttl_seconds,
+        )
+        log.debug(
+            "registry.mark_online",
+            cp_id=cp_id,
+            pod_id=self._settings.pod_id,
+            ttl=self._settings.redis_online_ttl_seconds,
+        )
+
+    async def refresh(self, cp_id: str) -> bool:
+        """Extend TTL on the charger's key. Returns False if key is gone.
+
+        Used by the Heartbeat handler. A False return means the key
+        expired (probably because heartbeats stopped briefly) — the
+        caller should re-`mark_online` to recover.
+        """
+        result = await self._redis.expire(_key(cp_id), self._settings.redis_online_ttl_seconds)
+        return bool(result)
+
+    async def mark_offline(self, cp_id: str) -> bool:
+        """Release the key iff this pod still owns it. Returns True on delete."""
+        # redis-py's async eval() is incorrectly typed as `Awaitable[str] | str`
+        # (sync/async dual-API typing leak). It's actually awaitable on the
+        # asyncio client. The int() cast at the boundary keeps our caller's
+        # type strict; the ignore is targeted to this one call.
+        deleted_raw = await self._redis.eval(  # type: ignore[misc]
+            _DEL_IF_OWNER,
+            1,
+            _key(cp_id),
+            self._settings.pod_id,
+        )
+        was_ours = bool(int(deleted_raw or 0))
+        log.debug(
+            "registry.mark_offline",
+            cp_id=cp_id,
+            pod_id=self._settings.pod_id,
+            was_ours=was_ours,
+        )
+        return was_ours
+
+    async def get_pod(self, cp_id: str) -> str | None:
+        """Return the pod_id currently holding cp_id's WS, or None if offline."""
+        value = await self._redis.get(_key(cp_id))
+        return str(value) if value else None
+
+    async def is_online(self, cp_id: str) -> bool:
+        """Convenience wrapper — True if any pod holds the WS."""
+        count = await self._redis.exists(_key(cp_id))
+        return int(count) > 0
