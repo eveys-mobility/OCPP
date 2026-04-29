@@ -21,6 +21,7 @@ dependencies = [
     "uvloop>=0.21; platform_system != 'Windows'",  # fast event loop (ADR-0001)
     "grpclib>=0.4.7",              # async-native gRPC (ADR-0001)
     "protobuf>=5.28",              # runtime for grpclib-generated stubs
+    "redis>=5.2",                  # async Redis client for online registry + pub/sub bus (E2-9, E2-10)
 ]
 
 [project.optional-dependencies]
@@ -97,6 +98,15 @@ plugins = []
 [[tool.mypy.overrides]]
 module = ["eveys_ocpp._generated.*"]
 ignore_errors = true
+follow_untyped_imports = true
+
+# redis-py's async client uses heavy overloading for sync/async dual methods;
+# its public API types are too loose to satisfy mypy --strict. Suppress only
+# the no-any-return + misc errors that come from awaiting their methods.
+# Our `Registry` wrapper preserves precise types for callers.
+[[tool.mypy.overrides]]
+module = ["redis.*"]
+ignore_missing_imports = true
 follow_untyped_imports = true
 
 # mobilityhouse/ocpp does not ship a py.typed marker yet (upstream issue).

@@ -45,9 +45,14 @@ def fake_session_factory(fake_session: AsyncMock) -> Any:
 
 @pytest.fixture
 def fake_cp(settings: Settings, fake_session_factory: Any) -> MagicMock:
-    """A stand-in for EveysChargePoint with the fields handlers touch."""
+    """A stand-in for EveysChargePoint with the fields handlers touch.
+
+    `registry` defaults to None — handlers that use it should override
+    via monkeypatch / direct assignment in the test that needs it.
+    """
     cp = MagicMock()
     cp.id = "TEST_CP_001"
     cp.settings = settings
     cp.session_factory = fake_session_factory
+    cp.registry = None
     return cp
