@@ -13,7 +13,7 @@
 | E0-1 | Set up monorepo at `eveys/` | `eveys/ocpp/` exists, git initialized | ✅ done |
 | E0-2 | Create Python project skeleton (`pyproject.toml`, `Makefile`, `src/eveys_ocpp/`, `tests/`) | `make install && make tests` green | ✅ done |
 | E0-3 | CI pipeline (GitLab CI): lint + test on Python 3.13 | ✅ done — `.gitlab-ci.yml` runs `lint` + `types` + `tests` (with Cobertura coverage report) on every MR + every `main` push; venv cached by pyproject hash |
-| E0-4 | Pre-commit config (black, isort, ruff, mypy --strict on `src/`) | `pre-commit install` works | 0.5d |
+| E0-4 | Pre-commit config (ruff lint + format, mypy --strict on `src/`, stock hygiene, conventional-commit message check) | ✅ done — `.pre-commit-config.yaml` runs on every commit; `make install` activates hooks; `make precommit` runs against all files |
 | E0-5 | Dockerfile (distroless Python 3.13 base, multi-stage) | Image < 200 MB, runs `eveys-ocpp --version` | ✅ done — `eveys-ocpp:dev` is 168 MB, runs `--version` correctly, ships in compose stack |
 | E0-6 | `AGENTS.md` and `CLAUDE.md` at repo root | AI assistants pick up rules in any IDE | 0.5d |
 | E0-7 | `.editorconfig`, `.gitignore`, `.gitattributes` | Standard project hygiene | ✅ done |
