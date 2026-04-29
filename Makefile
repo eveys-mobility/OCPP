@@ -11,8 +11,8 @@ PYTHON     ?= $(shell command -v python3.13 || command -v python3.12)
 UV         ?= $(shell command -v uv)
 COMPOSE    := docker compose -f deploy/compose/docker-compose.yml
 
-.PHONY: help doctor install format lint types tests smoke clean distclean \
-        compose-up compose-down compose-status compose-down-volumes \
+.PHONY: help doctor install format lint types tests e2e smoke clean distclean \
+        compose-up compose-down compose-status compose-down-volumes compose-wait \
         build-image docs docs-clean
 
 # ---- meta -------------------------------------------------------------------
@@ -30,11 +30,12 @@ help:
 	@echo ""
 	@echo "Local stack (data plane):"
 	@echo "  make compose-up         start Postgres + Redis + Kafka + ClickHouse + service"
+	@echo "  make compose-wait       wait for all containers to report 'healthy'"
 	@echo "  make compose-down       stop containers, keep data volumes"
 	@echo "  make compose-down-volumes  stop AND wipe data (DESTRUCTIVE)"
 	@echo "  make compose-status     show container health"
 	@echo "  make build-image        build the eveys-ocpp:dev container image"
-	@echo "  make smoke              run the local-stack smoke test (E1-13)"
+	@echo "  make e2e                full e2e: compose-up + alembic + e2e tests + compose-down"
 	@echo ""
 	@echo "Docs:"
 	@echo "  make docs               build the docs site (Sphinx + MyST)"
@@ -99,14 +100,40 @@ compose-down-volumes:
 compose-status:
 	$(COMPOSE) ps
 
-# Lands with E1-13. Until then, stub that explains the gap.
-smoke:
-	@if [ ! -f tests/e2e/test_local_smoke.py ]; then \
-		echo "tests/e2e/test_local_smoke.py does not exist yet (delivered by task E1-13)."; \
-		echo "Manual verification commands are listed in docs/07-local-dev-setup.md."; \
-		exit 1; \
-	fi
-	$(VENV)/bin/pytest tests/e2e/test_local_smoke.py -v
+# Block until every container with a healthcheck reports `healthy`. Used
+# both by `make e2e` and as a standalone debugging tool when a service
+# is slow to start (Kafka in particular takes 20–30s on first boot).
+compose-wait:
+	@echo "Waiting for stack to be healthy (timeout 120s)..."
+	@for i in $$(seq 1 60); do \
+		not_ready=$$($(COMPOSE) ps --format json 2>/dev/null | python3 -c "\
+import sys, json; \
+names = []; \
+[names.append(c.get('Name', '?')) for line in sys.stdin if line.strip() for c in [json.loads(line)] if c.get('Health') and c['Health'] != 'healthy']; \
+print(' '.join(names))" 2>/dev/null); \
+		if [ -z "$$not_ready" ]; then echo "All containers healthy."; exit 0; fi; \
+		echo "  still waiting on: $$not_ready"; \
+		sleep 2; \
+	done; \
+	echo "ERROR: timed out waiting for healthy stack."; \
+	$(COMPOSE) ps; \
+	exit 1
+
+# Local equivalent of the GitLab `tests:e2e` job. Brings up the data
+# plane, applies schema, runs the e2e tests, tears down. Idempotent —
+# safe to re-run.
+e2e: install
+	@echo ">> bringing up local data plane..."
+	@$(MAKE) compose-up
+	@$(MAKE) compose-wait
+	@echo ">> applying schema..."
+	@$(VENV)/bin/alembic upgrade head
+	@echo ">> running e2e tests..."
+	@$(VENV)/bin/pytest tests/e2e -v --no-cov; \
+	rc=$$?; \
+	echo ">> tearing down..."; \
+	$(MAKE) compose-down; \
+	exit $$rc
 
 # ---- docs (delegates to docs/Makefile) --------------------------------------
 
