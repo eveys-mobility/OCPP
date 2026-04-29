@@ -1,0 +1,288 @@
+// Copyright Eveys engineering. Proprietary.
+//
+// gRPC service `OcppGateway` — the platform's command surface for chargers.
+//
+// Stability: v1. Frozen at end of W3 per [02-tasks.md](../../../docs/02-tasks.md)
+// E2-2. Backward-compatible additions are allowed (new fields, new RPCs).
+// Breaking changes require a `v2` package — never edit a frozen v1 message.
+//
+// Convention notes:
+// - Field 1 is reserved for `cp_id` on every charger-targeted RPC. The
+//   server uses it to route to the pod holding the charger's WebSocket
+//   (Redis registry, task E2-9).
+// - Per AGENTS rule "always validate cp_id at every layer", the gRPC
+//   server validates `cp_id` against the URL path the WS connection
+//   used; mismatch returns INVALID_ARGUMENT.
+// - Errors use canonical gRPC status codes (`google.rpc.Status`):
+//     - NOT_FOUND       → charger not registered
+//     - UNAVAILABLE     → charger registered but currently offline
+//     - DEADLINE_EXCEEDED → charger online but not responding within timeout
+//     - FAILED_PRECONDITION → charger online but in wrong state for this op
+//     - INVALID_ARGUMENT → request shape / cp_id mismatch
+//   OCPP-specific outcomes ride in each response message's typed fields.
+syntax = "proto3";
+
+package eveys.ocpp_gw.v1;
+
+option go_package = "gitlab.com/visiosoft/eveys/ocpp/proto/ocpp_gw/v1;ocpp_gw_v1";
+option java_package = "com.eveys.ocpp_gw.v1";
+option java_multiple_files = true;
+
+// -----------------------------------------------------------------------------
+// Service
+// -----------------------------------------------------------------------------
+
+service OcppGateway {
+  // Start a transaction on the charger.
+  // OCPP 1.6: RemoteStartTransaction.req → RemoteStartTransaction.conf.
+  rpc RemoteStart(RemoteStartRequest) returns (RemoteStartResponse);
+
+  // Stop a transaction.
+  // OCPP 1.6: RemoteStopTransaction.req → RemoteStopTransaction.conf.
+  rpc RemoteStop(RemoteStopRequest) returns (RemoteStopResponse);
+
+  // Reset the charger.
+  // OCPP 1.6: Reset.req → Reset.conf.
+  rpc Reset(ResetRequest) returns (ResetResponse);
+
+  // Push a configuration key change to the charger.
+  // OCPP 1.6: ChangeConfiguration.req → ChangeConfiguration.conf.
+  rpc ChangeConfiguration(ChangeConfigurationRequest) returns (ChangeConfigurationResponse);
+
+  // Ask the charger to send a specific message proactively.
+  // OCPP 1.6: TriggerMessage.req → TriggerMessage.conf.
+  rpc TriggerMessage(TriggerMessageRequest) returns (TriggerMessageResponse);
+
+  // Unlock a connector mechanically.
+  // OCPP 1.6: UnlockConnector.req → UnlockConnector.conf.
+  rpc UnlockConnector(UnlockConnectorRequest) returns (UnlockConnectorResponse);
+
+  // Read the latest cached state for a charger. Synchronous, no OCPP
+  // round-trip — answered from the gateway's local registry.
+  rpc GetChargerStatus(GetChargerStatusRequest) returns (GetChargerStatusResponse);
+}
+
+// -----------------------------------------------------------------------------
+// RemoteStart
+// -----------------------------------------------------------------------------
+
+message RemoteStartRequest {
+  string cp_id = 1;
+  // RFID / id_tag the charger should use to authorize the session. Per
+  // OCPP 1.6 "the Charge Point SHALL response as if it was authorized".
+  string id_tag = 2;
+  // Connector to start on; 0 = "any available". Optional in OCPP.
+  int32 connector_id = 3;
+  // Optional charging profile to apply at start. Smart Charging.
+  ChargingProfile charging_profile = 4;
+}
+
+message RemoteStartResponse {
+  RemoteStartStatus status = 1;
+}
+
+enum RemoteStartStatus {
+  REMOTE_START_STATUS_UNSPECIFIED = 0;
+  REMOTE_START_STATUS_ACCEPTED = 1;
+  REMOTE_START_STATUS_REJECTED = 2;
+}
+
+// -----------------------------------------------------------------------------
+// RemoteStop
+// -----------------------------------------------------------------------------
+
+message RemoteStopRequest {
+  string cp_id = 1;
+  // OCPP transaction_id (server-assigned at StartTransaction; see
+  // start_transaction.py).
+  int64 transaction_id = 2;
+}
+
+message RemoteStopResponse {
+  RemoteStopStatus status = 1;
+}
+
+enum RemoteStopStatus {
+  REMOTE_STOP_STATUS_UNSPECIFIED = 0;
+  REMOTE_STOP_STATUS_ACCEPTED = 1;
+  REMOTE_STOP_STATUS_REJECTED = 2;
+}
+
+// -----------------------------------------------------------------------------
+// Reset
+// -----------------------------------------------------------------------------
+
+message ResetRequest {
+  string cp_id = 1;
+  ResetType type = 2;
+}
+
+enum ResetType {
+  RESET_TYPE_UNSPECIFIED = 0;
+  // Hard: charger reboots completely (firmware reload).
+  RESET_TYPE_HARD = 1;
+  // Soft: OCPP layer restarts; existing transactions are gracefully closed.
+  RESET_TYPE_SOFT = 2;
+}
+
+message ResetResponse {
+  ResetStatus status = 1;
+}
+
+enum ResetStatus {
+  RESET_STATUS_UNSPECIFIED = 0;
+  RESET_STATUS_ACCEPTED = 1;
+  RESET_STATUS_REJECTED = 2;
+}
+
+// -----------------------------------------------------------------------------
+// ChangeConfiguration
+// -----------------------------------------------------------------------------
+
+message ChangeConfigurationRequest {
+  string cp_id = 1;
+  string key = 2;
+  string value = 3;
+}
+
+message ChangeConfigurationResponse {
+  ChangeConfigurationStatus status = 1;
+}
+
+enum ChangeConfigurationStatus {
+  CHANGE_CONFIGURATION_STATUS_UNSPECIFIED = 0;
+  CHANGE_CONFIGURATION_STATUS_ACCEPTED = 1;
+  CHANGE_CONFIGURATION_STATUS_REJECTED = 2;
+  // Charger accepted the change but a reboot is required for it to take
+  // effect.
+  CHANGE_CONFIGURATION_STATUS_REBOOT_REQUIRED = 3;
+  // The configuration key is not supported by the charger firmware.
+  CHANGE_CONFIGURATION_STATUS_NOT_SUPPORTED = 4;
+}
+
+// -----------------------------------------------------------------------------
+// TriggerMessage
+// -----------------------------------------------------------------------------
+
+message TriggerMessageRequest {
+  string cp_id = 1;
+  TriggerMessageType requested_message = 2;
+  // Optional: target a specific connector. 0 = "all connectors" (default).
+  int32 connector_id = 3;
+}
+
+enum TriggerMessageType {
+  TRIGGER_MESSAGE_TYPE_UNSPECIFIED = 0;
+  TRIGGER_MESSAGE_TYPE_BOOT_NOTIFICATION = 1;
+  TRIGGER_MESSAGE_TYPE_DIAGNOSTICS_STATUS_NOTIFICATION = 2;
+  TRIGGER_MESSAGE_TYPE_FIRMWARE_STATUS_NOTIFICATION = 3;
+  TRIGGER_MESSAGE_TYPE_HEARTBEAT = 4;
+  TRIGGER_MESSAGE_TYPE_METER_VALUES = 5;
+  TRIGGER_MESSAGE_TYPE_STATUS_NOTIFICATION = 6;
+}
+
+message TriggerMessageResponse {
+  TriggerMessageStatus status = 1;
+}
+
+enum TriggerMessageStatus {
+  TRIGGER_MESSAGE_STATUS_UNSPECIFIED = 0;
+  TRIGGER_MESSAGE_STATUS_ACCEPTED = 1;
+  TRIGGER_MESSAGE_STATUS_REJECTED = 2;
+  TRIGGER_MESSAGE_STATUS_NOT_IMPLEMENTED = 3;
+}
+
+// -----------------------------------------------------------------------------
+// UnlockConnector
+// -----------------------------------------------------------------------------
+
+message UnlockConnectorRequest {
+  string cp_id = 1;
+  int32 connector_id = 2;
+}
+
+message UnlockConnectorResponse {
+  UnlockConnectorStatus status = 1;
+}
+
+enum UnlockConnectorStatus {
+  UNLOCK_CONNECTOR_STATUS_UNSPECIFIED = 0;
+  UNLOCK_CONNECTOR_STATUS_UNLOCKED = 1;
+  UNLOCK_CONNECTOR_STATUS_UNLOCK_FAILED = 2;
+  UNLOCK_CONNECTOR_STATUS_NOT_SUPPORTED = 3;
+}
+
+// -----------------------------------------------------------------------------
+// GetChargerStatus
+// -----------------------------------------------------------------------------
+
+message GetChargerStatusRequest {
+  string cp_id = 1;
+}
+
+message GetChargerStatusResponse {
+  string cp_id = 1;
+  // True iff the gateway currently holds the charger's WebSocket. Read
+  // from the Redis registry (task E2-9).
+  bool online = 2;
+  // ID of the gateway pod holding the WS, if online. For ops debugging.
+  string pod_id = 3;
+  // Latest StatusNotification value the charger reported. May be empty
+  // if no StatusNotification has arrived since boot.
+  string last_status = 4;
+  // ISO-8601 UTC server-receive timestamp of the latest Heartbeat.
+  // Empty if the charger has never been seen.
+  string last_heartbeat_at = 5;
+}
+
+// -----------------------------------------------------------------------------
+// Smart Charging — shared types
+// -----------------------------------------------------------------------------
+
+// Subset of OCPP 1.6 ChargingProfile relevant for RemoteStart. Full
+// SetChargingProfile RPC and broader profile management ship with the
+// Smart Charging profile (Phase 2/3, separate from this v1 freeze).
+message ChargingProfile {
+  int32 charging_profile_id = 1;
+  int32 stack_level = 2;
+  ChargingProfilePurpose charging_profile_purpose = 3;
+  ChargingProfileKind charging_profile_kind = 4;
+  ChargingSchedule charging_schedule = 5;
+}
+
+enum ChargingProfilePurpose {
+  CHARGING_PROFILE_PURPOSE_UNSPECIFIED = 0;
+  CHARGING_PROFILE_PURPOSE_CHARGE_POINT_MAX_PROFILE = 1;
+  CHARGING_PROFILE_PURPOSE_TX_DEFAULT_PROFILE = 2;
+  CHARGING_PROFILE_PURPOSE_TX_PROFILE = 3;
+}
+
+enum ChargingProfileKind {
+  CHARGING_PROFILE_KIND_UNSPECIFIED = 0;
+  CHARGING_PROFILE_KIND_ABSOLUTE = 1;
+  CHARGING_PROFILE_KIND_RECURRING = 2;
+  CHARGING_PROFILE_KIND_RELATIVE = 3;
+}
+
+message ChargingSchedule {
+  // Duration in seconds. 0 = unlimited.
+  int32 duration = 1;
+  ChargingRateUnit charging_rate_unit = 2;
+  repeated ChargingSchedulePeriod charging_schedule_period = 3;
+  // Optional kWh limit for the schedule.
+  double min_charging_rate = 4;
+}
+
+enum ChargingRateUnit {
+  CHARGING_RATE_UNIT_UNSPECIFIED = 0;
+  CHARGING_RATE_UNIT_W = 1;  // watts
+  CHARGING_RATE_UNIT_A = 2;  // amperes
+}
+
+message ChargingSchedulePeriod {
+  // Seconds since schedule start.
+  int32 start_period = 1;
+  double limit = 2;
+  // Optional: number of phases (1 or 3).
+  int32 number_phases = 3;
+}

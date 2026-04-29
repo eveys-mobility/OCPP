@@ -1,0 +1,248 @@
+// Copyright Eveys engineering. Proprietary.
+//
+// Kafka event envelopes published by `eveys/ocpp`.
+//
+// Stability: v1. Frozen at end of W3 per [02-tasks.md](../../../docs/02-tasks.md)
+// E2-3. Schema evolution rules:
+// - Adding fields is allowed (consumers must ignore unknown fields).
+// - Removing or renumbering fields is forbidden until v2.
+// - The `oneof payload` discriminator is what consumers switch on.
+//
+// Topic mapping:
+//   cp.connected → CpConnected   (charger opened a WS to us)
+//   cp.boot      → CpBoot        (BootNotification arrived)
+//   cp.status    → CpStatus      (StatusNotification arrived)
+//   cp.meter     → CpMeter       (MeterValues arrived)
+//   tx.started   → TxStarted     (StartTransaction arrived)
+//
+// Note: tx.stopped is intentionally absent — billing/CDR generation is
+// out of scope (see project conventions). StopTransaction state is
+// persisted to Postgres only.
+//
+// Partitioning: every record uses `cp_id` as the Kafka partition key
+// (per AGENTS rule "message ordering is preserved per charger"). This
+// guarantees a single consumer thread per charger.
+syntax = "proto3";
+
+package eveys.events.v1;
+
+option go_package = "gitlab.com/visiosoft/eveys/ocpp/proto/events/v1;events_v1";
+option java_package = "com.eveys.events.v1";
+option java_multiple_files = true;
+
+// -----------------------------------------------------------------------------
+// EventEnvelope — every record on every topic uses this wrapper
+// -----------------------------------------------------------------------------
+
+message EventEnvelope {
+  // ULID / UUID v7 generated server-side. Used for downstream dedup.
+  string event_id = 1;
+  // ISO-8601 UTC. The CSMS's server-receive time, NOT the charger's
+  // claimed timestamp (per AGENTS OCPP rule 7 — charger clocks are
+  // untrusted; the charger's own timestamp lives inside the payload).
+  string occurred_at = 2;
+  // Charger ID — also used as the Kafka record key for partitioning.
+  string cp_id = 3;
+  // Schema version of THIS specific payload. Lets consumers handle
+  // mixed-version traffic during a rollout.
+  string schema_version = 4;
+  // Optional opentelemetry trace identifier so operators can correlate
+  // a Kafka record with the gRPC + WS message that produced it.
+  string trace_id = 5;
+
+  oneof payload {
+    CpConnected cp_connected = 100;
+    CpBoot cp_boot = 101;
+    CpStatus cp_status = 102;
+    CpMeter cp_meter = 103;
+    TxStarted tx_started = 104;
+  }
+}
+
+// -----------------------------------------------------------------------------
+// cp.connected — charger opened a WS connection to us
+// -----------------------------------------------------------------------------
+
+message CpConnected {
+  // Subprotocol negotiated on the WS upgrade. Always "ocpp1.6" today;
+  // when 2.0.1 ships this distinguishes which protocol routed.
+  string subprotocol = 1;
+  // ID of the gateway pod that accepted the connection.
+  string pod_id = 2;
+}
+
+// -----------------------------------------------------------------------------
+// cp.boot — BootNotification arrived
+// -----------------------------------------------------------------------------
+
+message CpBoot {
+  string vendor = 1;
+  string model = 2;
+  string firmware_version = 3;
+  string serial_number = 4;
+  // The CSMS's response status. Always ACCEPTED in v0; future ADRs may
+  // add Pending / Rejected based on policy gating.
+  CpBootStatus status = 5;
+}
+
+enum CpBootStatus {
+  CP_BOOT_STATUS_UNSPECIFIED = 0;
+  CP_BOOT_STATUS_ACCEPTED = 1;
+  CP_BOOT_STATUS_PENDING = 2;
+  CP_BOOT_STATUS_REJECTED = 3;
+}
+
+// -----------------------------------------------------------------------------
+// cp.status — StatusNotification arrived
+// -----------------------------------------------------------------------------
+
+message CpStatus {
+  int32 connector_id = 1;
+  // Free-form OCPP status string; the JSON Schema enforces enum at the
+  // wire layer. Stored as string here for forward-compat with future
+  // OCPP versions that add new statuses.
+  // Values include: Available, Preparing, Charging, SuspendedEV,
+  // SuspendedEVSE, Finishing, Reserved, Unavailable, Faulted.
+  string status = 2;
+  // OCPP `errorCode`. "NoError" for clean transitions.
+  string error_code = 3;
+  // Vendor-specific info, optional.
+  string info = 4;
+  string vendor_id = 5;
+  string vendor_error_code = 6;
+  // Charger-claimed timestamp (untrusted; correlate with envelope's
+  // occurred_at for the server-receive time).
+  string charger_reported_at = 7;
+}
+
+// -----------------------------------------------------------------------------
+// cp.meter — MeterValues arrived (high-volume; ClickHouse-bound)
+// -----------------------------------------------------------------------------
+//
+// MeterValues is by far the highest-volume topic — at 10k chargers
+// reporting every 30s, ~333 messages/sec steady state. ADR-0004 routes
+// this to ClickHouse via the Kafka Engine table; Postgres never sees
+// MeterValues (AGENTS rule 4).
+message CpMeter {
+  int32 connector_id = 1;
+  // Optional. Present only if the meter values belong to a transaction.
+  int64 transaction_id = 2;
+  repeated SampledValue sampled_values = 3;
+  // Charger-claimed timestamp.
+  string charger_reported_at = 4;
+}
+
+message SampledValue {
+  // Numeric value as string — preserves precision across vendors.
+  // Consumers parse to float / Decimal as needed.
+  string value = 1;
+  // Optional dimensions per OCPP 1.6 §6.21.4. Empty = "Energy.Active.Import.Register".
+  Context context = 2;
+  Format format = 3;
+  Measurand measurand = 4;
+  Phase phase = 5;
+  Location location = 6;
+  Unit unit = 7;
+}
+
+enum Context {
+  CONTEXT_UNSPECIFIED = 0;
+  CONTEXT_INTERRUPTION_BEGIN = 1;
+  CONTEXT_INTERRUPTION_END = 2;
+  CONTEXT_OTHER = 3;
+  CONTEXT_SAMPLE_CLOCK = 4;
+  CONTEXT_SAMPLE_PERIODIC = 5;
+  CONTEXT_TRANSACTION_BEGIN = 6;
+  CONTEXT_TRANSACTION_END = 7;
+  CONTEXT_TRIGGER = 8;
+}
+
+enum Format {
+  FORMAT_UNSPECIFIED = 0;
+  FORMAT_RAW = 1;
+  FORMAT_SIGNED_DATA = 2;
+}
+
+enum Measurand {
+  MEASURAND_UNSPECIFIED = 0;
+  MEASURAND_ENERGY_ACTIVE_EXPORT_REGISTER = 1;
+  MEASURAND_ENERGY_ACTIVE_IMPORT_REGISTER = 2;
+  MEASURAND_ENERGY_REACTIVE_EXPORT_REGISTER = 3;
+  MEASURAND_ENERGY_REACTIVE_IMPORT_REGISTER = 4;
+  MEASURAND_ENERGY_ACTIVE_EXPORT_INTERVAL = 5;
+  MEASURAND_ENERGY_ACTIVE_IMPORT_INTERVAL = 6;
+  MEASURAND_ENERGY_REACTIVE_EXPORT_INTERVAL = 7;
+  MEASURAND_ENERGY_REACTIVE_IMPORT_INTERVAL = 8;
+  MEASURAND_POWER_ACTIVE_EXPORT = 9;
+  MEASURAND_POWER_ACTIVE_IMPORT = 10;
+  MEASURAND_POWER_OFFERED = 11;
+  MEASURAND_POWER_REACTIVE_EXPORT = 12;
+  MEASURAND_POWER_REACTIVE_IMPORT = 13;
+  MEASURAND_POWER_FACTOR = 14;
+  MEASURAND_CURRENT_IMPORT = 15;
+  MEASURAND_CURRENT_EXPORT = 16;
+  MEASURAND_CURRENT_OFFERED = 17;
+  MEASURAND_VOLTAGE = 18;
+  MEASURAND_FREQUENCY = 19;
+  MEASURAND_TEMPERATURE = 20;
+  MEASURAND_SOC = 21;  // state of charge, EV battery percent
+  MEASURAND_RPM = 22;
+}
+
+enum Phase {
+  PHASE_UNSPECIFIED = 0;
+  PHASE_L1 = 1;
+  PHASE_L2 = 2;
+  PHASE_L3 = 3;
+  PHASE_N = 4;
+  PHASE_L1_N = 5;
+  PHASE_L2_N = 6;
+  PHASE_L3_N = 7;
+  PHASE_L1_L2 = 8;
+  PHASE_L2_L3 = 9;
+  PHASE_L3_L1 = 10;
+}
+
+enum Location {
+  LOCATION_UNSPECIFIED = 0;
+  LOCATION_CABLE = 1;
+  LOCATION_EV = 2;
+  LOCATION_INLET = 3;
+  LOCATION_OUTLET = 4;
+  LOCATION_BODY = 5;
+}
+
+enum Unit {
+  UNIT_UNSPECIFIED = 0;
+  UNIT_WH = 1;
+  UNIT_KWH = 2;
+  UNIT_VARH = 3;
+  UNIT_KVARH = 4;
+  UNIT_W = 5;
+  UNIT_KW = 6;
+  UNIT_VAR = 7;
+  UNIT_KVAR = 8;
+  UNIT_VA = 9;
+  UNIT_KVA = 10;
+  UNIT_A = 11;
+  UNIT_V = 12;
+  UNIT_CELSIUS = 13;
+  UNIT_FAHRENHEIT = 14;
+  UNIT_K = 15;       // kelvin
+  UNIT_PERCENT = 16;
+  UNIT_HERTZ = 17;
+}
+
+// -----------------------------------------------------------------------------
+// tx.started — StartTransaction arrived
+// -----------------------------------------------------------------------------
+
+message TxStarted {
+  int64 transaction_id = 1;
+  int32 connector_id = 2;
+  string id_tag = 3;
+  // Initial meter reading in Wh (OCPP 1.6 fixed unit).
+  int64 meter_start_wh = 4;
+  // Charger-claimed timestamp. Server-receive time is in the envelope.
+  string charger_reported_at = 5;
+}
