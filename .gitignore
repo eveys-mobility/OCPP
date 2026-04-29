@@ -25,6 +25,12 @@ coverage.xml
 .mypy_cache/
 .ruff_cache/
 
+# Generated protobuf / grpclib stubs (regenerate with `make protoc`).
+# The top-level __init__.py is hand-written (sets up sys.path for the
+# generated absolute imports); everything else is generated.
+src/eveys_ocpp/_generated/*
+!src/eveys_ocpp/_generated/__init__.py
+
 # Editor / IDE
 .vscode/
 .idea/
