@@ -47,9 +47,9 @@
 | ID | Task | Output |
 |---|---|---|
 | E2-1 | Implement remaining ~20 OCPP 1.6 Core actions (handlers + tests) | All actions covered; per-action coverage table green |
-| E2-2 | Define `proto/ocpp_gw.proto` — gRPC commands | `RemoteStart`, `RemoteStop`, `Reset`, `ChangeConfiguration`, `TriggerMessage`, `UnlockConnector`, `GetChargerStatus` |
-| E2-3 | Define `proto/events.proto` — Kafka event envelopes | One canonical `EventEnvelope` + per-topic message types |
-| E2-4 | gRPC server scaffolding (`grpclib`) | gRPC server starts on a separate port |
+| E2-2 | Define `proto/ocpp_gw/v1/gateway.proto` — gRPC commands | ✅ done — service `OcppGateway` with 7 RPCs; canonical gRPC status codes + per-RPC outcome enums; SmartCharging types stubbed |
+| E2-3 | Define `proto/events/v1/events.proto` — Kafka event envelopes | ✅ done — single `EventEnvelope` with `oneof payload`; 5 topics (`cp.connected` / `cp.boot` / `cp.status` / `cp.meter` / `tx.started`); `cp_id` as Kafka partition key per AGENTS rule |
+| E2-4 | gRPC server scaffolding (`grpclib`) | ✅ done — `OcppGatewayService` implements all 7 RPCs as `UNIMPLEMENTED` placeholders (real bodies land E2-5/E2-6); `__main__.py` runs WS + gRPC concurrently via `asyncio.TaskGroup`; `make protoc` regenerates from `proto/`; runtime image stays at 171 MB via two-stage Docker build |
 | E2-5 | Implement gRPC `RemoteStart` end-to-end | gRPC call → WS Call → charger response → gRPC reply |
 | E2-6 | Implement remaining gRPC commands | All 7 implemented + tested |
 | E2-7 | Kafka producer (`aiokafka`) | Producer initialized at startup; reconnects on broker drop |
