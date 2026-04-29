@@ -11,12 +11,22 @@ stages:
 
 .python-job: &python-job
   image: python:3.13-slim
+  variables:
+    DEBIAN_FRONTEND: noninteractive
+    # Persist uv's download cache at a project-relative path so GitLab's
+    # cache mechanism can pick it up.
+    UV_CACHE_DIR: $CI_PROJECT_DIR/.uv-cache
+    # uv must use a project-relative venv (default `.venv`) so the cache
+    # path matches.
+    UV_PROJECT_ENVIRONMENT: $CI_PROJECT_DIR/.venv
   before_script:
     - apt-get update -qq && apt-get install -y --no-install-recommends curl ca-certificates >/dev/null
     - curl -LsSf https://astral.sh/uv/install.sh | sh
     - export PATH="$HOME/.local/bin:$PATH"
-    - uv venv .venv
-    - uv pip install --python .venv/bin/python --no-cache-dir -e ".[dev]"
+    # `--clear` so a venv restored from cache is rebuilt against the
+    # current pyproject.toml deterministically.
+    - uv venv --clear .venv
+    - uv pip install --python .venv/bin/python -e ".[dev]"
   cache:
     key:
       files:
