@@ -31,7 +31,7 @@
 | E1-3 | `eveys_ocpp.transport.ws_server` — `websockets.serve` + subprotocol negotiation + auth hook | ✅ done (auth hook stubbed; lands properly in Phase 5) |
 | E1-4 | `eveys_ocpp.connection.ChargePoint` subclass of `ocpp.v16.ChargePoint` | ✅ done |
 | E1-5 | Handler: `BootNotification` | ✅ done |
-| E1-6 | Handler: `Heartbeat` | ✅ done (Redis registry pending — E2-9) |
+| E1-6 | Handler: `Heartbeat` | ✅ done — refreshes Redis TTL via E2-9 registry; re-claims ownership if key expired between heartbeats |
 | E1-7 | Handler: `StatusNotification` | ✅ done (Kafka emit pending — E2-8) |
 | E1-8 | Handler: `Authorize` | ✅ done (auth-service mocked; real call in E3-3) |
 | E1-9 | Handler: `StartTransaction` / `StopTransaction` | ✅ done (Kafka emit pending — E2-8) |
@@ -54,7 +54,7 @@
 | E2-6 | Implement remaining gRPC commands | All 7 implemented + tested |
 | E2-7 | Kafka producer (`aiokafka`) | Producer initialized at startup; reconnects on broker drop |
 | E2-8 | Wire each handler to publish its event | E2E test: handler runs → message appears in `kcat` |
-| E2-9 | Redis online registry: `cp:online:{cp_id} → pod_id` with 120s TTL | Heartbeat refreshes TTL |
+| E2-9 | Redis online registry: `cp:online:{cp_id} → pod_id` with 120s TTL | ✅ done — `Registry` class wraps redis.asyncio; WS connect → `mark_online`, Heartbeat → `refresh` (re-claims if expired), WS disconnect → compare-and-delete via Lua to avoid clobbering a reconnected charger on another pod; `pod_id` from Settings (defaults to hostname; K8s downward API in prod); e2e test asserts key lifecycle |
 | E2-10 | Cross-pod command bus: pub/sub on `cp:cmd:{cp_id}` channel | Two-pod test passes |
 | E2-11 | Idempotency cache for `BootNotification` and `StopTransaction` | Replay test: same `message_id` twice = one downstream event |
 | E2-12 | gRPC contract: backward-compat tests (no breaking changes by accident) | CI fails on field renames |
