@@ -1,0 +1,210 @@
+# 08 — OCPP conformance matrix (CSMS, OCPP 1.6)
+
+> The audit-grade record of how `eveys/ocpp` (a **CSMS**, per [ADR-0005](./adr/0005-certification-target.md)) implements OCPP 1.6, **keyed by Appendix C test-case IDs** from the OCA OCPP 1.6 Certification Procedure. This is the artifact OCTT examiners, vendors, and internal QA all read.
+>
+> The cert-readiness *playbook* is in [`09-certification-readiness.md`](./09-certification-readiness.md). This doc is the *per-test-case* tracking matrix.
+
+## Status legend
+
+| Symbol | Meaning |
+|---|---|
+| ✅ | Implemented, unit-tested, OCTT subset green in CI for this TC, and reviewed against the OCA spec |
+| 🟡 | Implemented and unit-tested, but **OCTT not yet run** OR **spec-citation pending**. Treated as **non-certifiable** |
+| ⏳ | Not yet implemented; planned for the noted task |
+| ❌ | Out of scope (with a reason) |
+
+> **Today, every implemented row is 🟡.** No row promotes to ✅ until OCTT runs against it (which requires OCA membership — see Stream 1 in [`09-certification-readiness.md`](./09-certification-readiness.md)).
+
+---
+
+## Promotion process
+
+A row moves from 🟡 to ✅ only when **all** of the following are true:
+
+1. **OCTT subset run.** The relevant Appendix C test case has been run by OCTT against our CSMS (locally during dev, then in CI during W2+). Pass output is attached to the MR or stored in the QA shared drive.
+2. **Spec section reviewed.** TL or QA cert lead has read the corresponding section of the OCPP 1.6 Edition 2 spec + Errata v4.0 against the handler. Cite the section in the row's Notes.
+3. **Edge cases covered in unit tests.** Every status return code the spec allows is unit-tested, not just the happy path.
+4. **Deviations declared.** Any intentional deviation from the spec is documented in the handler docstring AND in the Notes column AND has TL approval recorded in the MR.
+
+**A 🟡 row may not be cited as "OCPP-conformant" in any external communication.** What we can say is in the [Defensible-claim template](#defensible-claim-template) at the bottom of this document.
+
+---
+
+## DUT type
+
+`eveys/ocpp` is certified as a **CSMS** ("Central System" in 1.6 terminology), not as a Charging Station. Test cases marked "Charging Station only" in Appendix C are out of scope.
+
+---
+
+## Profiles in scope (per [ADR-0005](./adr/0005-certification-target.md))
+
+- Core (mandatory)
+- Smart Charging
+- Advanced Security
+- Reservations
+- Local Authorization List Management
+- Remote Trigger
+
+---
+
+## Conformance matrix — Core profile (CSMS-mandatory cases)
+
+| TC ID | Scenario | Status | Implementation | Tests | Notes |
+|---|---|---|---|---|---|
+| TC_001 | Cold Boot Charge Point | 🟡 | [`handlers/v16/boot_notification.py`](../src/eveys_ocpp/handlers/v16/boot_notification.py) | [test_boot_notification.py](../tests/unit/handlers/v16/test_boot_notification.py) | Always Accepted; no charger blocklist; `interval` from settings. |
+| TC_003 | Regular Charging Session — Plugin First | 🟡 | [`handlers/v16/start_transaction.py`](../src/eveys_ocpp/handlers/v16/start_transaction.py) | [test_start_transaction.py](../tests/unit/handlers/v16/test_start_transaction.py) | Plugin-first flow accepted. |
+| TC_004_1 | Identification First | 🟡 | `authorize.py` + `start_transaction.py` | [test_authorize.py](../tests/unit/handlers/v16/test_authorize.py), [test_start_transaction.py](../tests/unit/handlers/v16/test_start_transaction.py) | Auth-first flow accepted. |
+| TC_004_2 | Identification First — ConnectionTimeOut | ⏳ | E2-5 | — | Requires RemoteStart timeout machinery. |
+| TC_007 | Regular Start — Cached Id | ⏳ | E3-4 | — | Requires Redis Authorize cache. |
+| TC_011_1 | Remote Start — Remote Start First | ⏳ | E2-5 | — | Requires gRPC RemoteStart command. |
+| TC_011_2 | Remote Start — Time Out | ⏳ | E2-5 | — | |
+| TC_012 | Remote Stop Charging Session | ⏳ | E2-6 | — | |
+| TC_013 | Hard Reset Without transaction | ⏳ | E2-6 | — | |
+| TC_014 | Soft Reset Without Transaction | ⏳ | E2-6 | — | |
+| TC_017_1 | Unlock connector — Not fixed cable | ⏳ | E2-6 | — | |
+| TC_017_2 | Unlock connector — Fixed cable | ⏳ | E2-6 | — | |
+| TC_021 | Change/set Configuration | ⏳ | E2-6 | — | |
+| TC_023_1 | Authorize invalid | 🟡 | [`handlers/v16/authorize.py`](../src/eveys_ocpp/handlers/v16/authorize.py) | [test_authorize.py](../tests/unit/handlers/v16/test_authorize.py) | **Mock policy** — `INVALID*` → Invalid. Real auth-service in E3-3. |
+| TC_023_2 | Authorize expired | ⏳ | E3-3 | — | Mock today never returns Expired; real auth-service must. |
+| TC_023_3 | Authorize blocked | ⏳ | E3-3 | — | Mock today never returns Blocked. |
+| TC_024 | Start Charging Session — Lock Failure | ⏳ | E2-1 | — | Charger reports lock failure; CSMS records. |
+| TC_026 | Remote Start Charging Session — Rejected | ⏳ | E2-5 | — | |
+| TC_028 | Remote Stop Transaction — Rejected | ⏳ | E2-6 | — | |
+| TC_030 | Unlock Connector — Unlock Failure | ⏳ | E2-1 | — | |
+| TC_031 | Unlock Connector — Unknown Connector | ⏳ | E2-6 | — | |
+| TC_032_1 | Power failure — stop transactions before going down | 🟡 (partial) | [`handlers/v16/stop_transaction.py`](../src/eveys_ocpp/handlers/v16/stop_transaction.py) | [test_stop_transaction.py](../tests/unit/handlers/v16/test_stop_transaction.py) | StopTransaction handler accepts post-power-loss messages; idempotency on replay. |
+| TC_040_1 | Configuration keys — NotSupported | ⏳ | E2-6 | — | |
+| TC_040_2 | Configuration Keys — Invalid value | ⏳ | E2-6 | — | |
+| TC_045_1 | Get Diagnostics | ⏳ | E2-1 | — | Includes interop check on FTP. |
+| TC_045_2 | Get Diagnostics — Upload Failed | ⏳ | E2-1 | — | |
+| TC_054 | Trigger Message | ⏳ | E2-6 | — | |
+| TC_062 | Data Transfer to a Charge Point | ⏳ | E2-1 | — | Reply UnknownVendorId is acceptable. |
+| TC_064 | Data Transfer to a Central System | ⏳ | E2-1 | — | We accept and log; rejecting is also acceptable. |
+| TC_073 | Update Charge Point Password | ⏳ | Phase 5 | — | Security extension. |
+| TC_075_1 | Install ManufacturerRootCertificate | ⏳ | Phase 5 | — | |
+| TC_075_2 | Install CentralSystemRootCertificate | ⏳ | Phase 5 | — | |
+| TC_076 | Delete a specific certificate | ⏳ | Phase 5 | — | |
+| TC_078 | Invalid CentralSystemCertificate Security Event | ⏳ | Phase 5 | — | |
+| TC_079 | Get Security Log | ⏳ | Phase 5 | — | |
+| TC_080 | Secure Firmware Update | ⏳ | Phase 5 | — | |
+| TC_081 | Secure Firmware Update — Invalid Signature | ⏳ | Phase 5 | — | |
+| TC_085 | Basic Authentication | ⏳ | Phase 5 | — | E5-6. |
+| TC_086 | TLS server-side certificate | ⏳ | Phase 5 | — | |
+| TC_088 | WebSocket Subprotocol negotiation | 🟡 | [`transport/ws_server.py`](../src/eveys_ocpp/transport/ws_server.py) | — (covered by simulator e2e) | Subprotocol `ocpp1.6` enforced. |
+
+### Core profile — handlers shipped in W1 not on the mandatory CSMS list above
+
+These are charger-initiated actions the CSMS must respond to. Appendix C tests them indirectly via the scenarios above; we still ship and unit-test them.
+
+| Handler | Tests | Status | Notes |
+|---|---|---|---|
+| Heartbeat | [test_heartbeat.py](../tests/unit/handlers/v16/test_heartbeat.py) | 🟡 | Refresh `last_heartbeat_at`; return server UTC. |
+| StatusNotification | [test_status_notification.py](../tests/unit/handlers/v16/test_status_notification.py) | 🟡 | `last_status` only; per-state history goes to ClickHouse via Kafka (E2-8, E2-14). |
+
+---
+
+## Conformance matrix — Smart Charging profile (CSMS, in scope)
+
+| TC ID | Scenario | Status | Implementation |
+|---|---|---|---|
+| TC_056 | Central Smart Charging — TxDefaultProfile | ⏳ Phase 2/3 | New: gRPC `SetChargingProfile` |
+| TC_057 | Central Smart Charging — TxProfile | ⏳ Phase 2/3 | New: per-tx profiles |
+| TC_058_1 | No ongoing transaction | ⏳ Phase 2/3 | Validation path |
+| TC_058_2 | Wrong transactionId | ⏳ Phase 2/3 | Validation path |
+| TC_059 | Remote Start Transaction with Charging Profile | ⏳ Phase 2/3 | Extends RemoteStart payload |
+| TC_060 | Remote Start with Charging Profile — Rejected | ⏳ Phase 2/3 | |
+| TC_066 | Get Composite Schedule | ⏳ Phase 2/3 | New gRPC command |
+| TC_067 | Clear Charging Profile | ⏳ Phase 2/3 | |
+| TC_082 | TxDefaultProfile with ongoing transaction | ⏳ Phase 2/3 | |
+
+---
+
+## Conformance matrix — Advanced Security profile (CSMS, in scope)
+
+| TC ID | Scenario | Status | Implementation |
+|---|---|---|---|
+| TC_074 | Update Charge Point Certificate by request of Central System | ⏳ Phase 5 | mTLS work (E5-5) |
+| TC_077 | Invalid ChargePointCertificate Security Event | ⏳ Phase 5 | |
+| TC_087 | TLS — Client-side certificate — valid certificate | ⏳ Phase 5 | |
+
+---
+
+## Conformance matrix — Reservations profile (CSMS, in scope)
+
+| TC ID | Scenario | Status |
+|---|---|---|
+| TC_046 | Reservation of a Connector — Transaction | ⏳ Phase 2 |
+| TC_047 | Reservation of a Connector — Expire | ⏳ Phase 2 |
+| TC_048_4 | Reservation of a Connector — Rejected | ⏳ Phase 2 |
+| TC_049 | Reservation of a Charge Point — Transaction | ⏳ Phase 2 |
+| TC_051 | Cancel Reservation | ⏳ Phase 2 |
+
+---
+
+## Conformance matrix — Local Authorization List profile (CSMS, in scope)
+
+| TC ID | Scenario | Status |
+|---|---|---|
+| TC_042_2 | Get Local List Version (empty) | ⏳ Phase 3 |
+| TC_043_3 | Send Local Authorization List — Failed | ⏳ Phase 3 |
+| TC_043_4 | Send Local Authorization List — Full | ⏳ Phase 3 |
+| TC_043_5 | Send Local Authorization List — Differential | ⏳ Phase 3 |
+
+---
+
+## Conformance matrix — Remote Trigger profile (CSMS, in scope)
+
+| TC ID | Scenario | Status |
+|---|---|---|
+| TC_054 | Trigger Message | ⏳ E2-6 (Phase 2) |
+
+---
+
+## Schemas
+
+The OCA-published JSON Schemas are bundled inside the `mobilityhouse/ocpp` PyPI package and are loaded by the library at every message validation point. We do **NOT** vendor them into our repo.
+
+To inspect locally:
+
+```bash
+ls .venv/lib/python3.13/site-packages/ocpp/v16/schemas/
+```
+
+The library version is pinned in `pyproject.toml` (`ocpp>=2.1,<2.2`) so schema behavior cannot drift unintentionally between MRs. Bumping the pin requires re-running every promoted ✅ row's OCTT test in CI.
+
+> **AGENTS hard rule 2 restated:** JSON Schemas are authoritative. Do not edit dataclasses without consulting the schema. Do not disable validation under load.
+
+---
+
+## Defensible-claim template
+
+External communication (operator decks, RFP responses, marketing) about the CSMS conformance status:
+
+> *"`eveys/ocpp` is built on the OCA-recommended `mobilityhouse/ocpp` library, which bundles and validates against the official OCA JSON Schemas (the wire format is therefore standard-compliant by construction). The CSMS is engineered against the OCPP 1.6 Certification Procedure (OCA, 2023) and is on track for OCA OCPP 1.6 certification covering the Core, Smart Charging, Advanced Security, Reservations, Local Authorization List, and Remote Trigger profiles. The cert program is detailed in [`docs/09-certification-readiness.md`](./09-certification-readiness.md); per-test-case status is tracked in this matrix. Final cert is contingent on (a) OCA membership and OCTT access, (b) lab engagement scheduled for W8."*
+
+This is the strongest claim that holds today. **Anything stronger overstates.** In particular:
+
+- ❌ "OCPP-certified" → No certificate has been issued.
+- ❌ "OCTT-passing" → OCTT has not been run; OCA membership pending.
+- ❌ "Conformant to OCPP 1.6" → No row promoted to ✅; promotion requires OCTT.
+
+---
+
+## How to update this document
+
+1. **Adding a handler** → add row(s) keyed by Appendix C TC ID(s) in the right profile section, status starts at 🟡.
+2. **Promoting a row to ✅** → only after the [Promotion process](#promotion-process) is complete; reference the MR + OCTT test artifact.
+3. **Bumping the `ocpp` library minor version** → re-promote every previously ✅ row from 🟡 until the OCTT subset re-runs green.
+4. **Schema drift detected by OCTT or by a real charger interop bug** → file a bug, mark the affected row 🟡, link the bug.
+
+This document is part of **every** handler MR. A handler change without a matrix update is incomplete (AGENTS rule 8).
+
+## References
+
+- OCA — Open Charge Alliance: <https://www.openchargealliance.org/>
+- OCPP 1.6 Certification Procedure (OCA, 2023) — see [`09-certification-readiness.md`](./09-certification-readiness.md). Copy held on shared drive.
+- OCPP 1.6 Edition 2 specification — task C-1, on shared drive.
+- `mobilityhouse/ocpp` library: <https://github.com/mobilityhouse/ocpp>
+- ADR-0002 — Adopt mobilityhouse/ocpp: [`adr/0002-mobilityhouse-ocpp-library.md`](./adr/0002-mobilityhouse-ocpp-library.md).
+- ADR-0005 — Certification target: [`adr/0005-certification-target.md`](./adr/0005-certification-target.md).
+- AGENTS.md — OCPP-specific hard rules (§ "OCPP-specific rules") — at the repo root.

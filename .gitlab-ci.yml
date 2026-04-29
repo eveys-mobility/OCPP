@@ -1,0 +1,19 @@
+stages:
+  - docs
+
+docs:build:
+  stage: docs
+  image: python:3.13-slim
+  rules:
+    - if: $CI_COMMIT_TAG
+  script:
+    - cd docs
+    - pip install --no-cache-dir -r requirements.txt
+    # CI runs in a clean python:3.13-slim container, so we skip the local
+    # Makefile's venv setup and invoke sphinx-build directly.
+    - sphinx-build -M html . _build -W --keep-going -n
+  artifacts:
+    name: "eveys-ocpp-docs-$CI_COMMIT_TAG"
+    paths:
+      - docs/_build/html
+    expire_in: 30 days
