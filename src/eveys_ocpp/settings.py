@@ -6,6 +6,8 @@ elsewhere are forbidden (see `03-coding-standards.md`).
 
 from __future__ import annotations
 
+import socket
+
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -32,6 +34,36 @@ class Settings(BaseSettings):
     # ---- gRPC server ----------------------------------------------------
     grpc_host: str = Field(default="0.0.0.0", description="gRPC bind address")
     grpc_port: int = Field(default=50051, description="gRPC bind port")
+
+    # ---- Redis online registry (E2-9) -----------------------------------
+    redis_url: str = Field(
+        default="redis://localhost:6379/0",
+        description="Redis DSN for the online-charger registry + pub/sub bus",
+    )
+    redis_online_ttl_seconds: int = Field(
+        default=120,
+        ge=30,
+        le=600,
+        description=(
+            "TTL on `cp:online:{cp_id}` keys. Heartbeat refreshes the key; "
+            "if the charger goes silent the key expires and the charger is "
+            "considered offline. 120s aligns with OCPP 1.6 default heartbeat "
+            "of 60s — gives ~2 missed heartbeats before declaring offline."
+        ),
+    )
+
+    # ---- Identity -------------------------------------------------------
+    # Used by the Redis registry to record which pod holds a charger's
+    # WebSocket. In Kubernetes set this from the downward API:
+    #     env:
+    #       - name: EVEYS_OCPP_POD_ID
+    #         valueFrom:
+    #           fieldRef:
+    #             fieldPath: metadata.name
+    pod_id: str = Field(
+        default_factory=lambda: socket.gethostname(),
+        description="Identity of this pod for cross-pod routing",
+    )
 
     # ---- Postgres -------------------------------------------------------
     db_url: str = Field(

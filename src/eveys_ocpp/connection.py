@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
     from websockets.asyncio.server import ServerConnection
 
+    from eveys_ocpp.registry import Registry
     from eveys_ocpp.settings import Settings
 
 
@@ -36,6 +37,8 @@ class EveysChargePoint(Cpv16):
     Holds:
     - the WebSocket
     - a reference to the process-wide session factory + settings
+    - the Redis registry handle (None in unit tests + W1-style local
+      stack without Redis)
     - per-charger context for logging
     """
 
@@ -46,10 +49,12 @@ class EveysChargePoint(Cpv16):
         *,
         session_factory: async_sessionmaker[AsyncSession],
         settings: Settings,
+        registry: Registry | None = None,
     ) -> None:
         super().__init__(cp_id, connection)
         self.session_factory = session_factory
         self.settings = settings
+        self.registry = registry
 
     # ---- handler delegation -------------------------------------------------
     # Each handler module exports a `handle(...)` coroutine. We thin-wrap
