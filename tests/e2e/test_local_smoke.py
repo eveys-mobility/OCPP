@@ -64,8 +64,7 @@ if _unreachable_services and os.environ.get("E2E_REQUIRE") == "1":
     # rather than a silent skip. A green-but-skipped CI pipeline is worse
     # than a red one because it pretends to test something it isn't.
     raise RuntimeError(
-        "E2E_REQUIRE=1 but services not reachable: "
-        + ", ".join(_unreachable_services)
+        "E2E_REQUIRE=1 but services not reachable: " + ", ".join(_unreachable_services)
     )
 
 pytestmark = pytest.mark.skipif(
@@ -185,9 +184,7 @@ async def db_engine() -> AsyncIterator[sa.ext.asyncio.AsyncEngine]:
 
 async def _drive_full_transaction(cp_id: str) -> int:
     """Connect a sim, drive Boot→Auth→Start→Stop, return the transaction_id."""
-    async with connect(
-        f"ws://localhost:{_TEST_WS_PORT}/{cp_id}", subprotocols=["ocpp1.6"]
-    ) as ws:
+    async with connect(f"ws://localhost:{_TEST_WS_PORT}/{cp_id}", subprotocols=["ocpp1.6"]) as ws:
         sim = _SimChargePoint(cp_id, ws)
         loop_task = asyncio.create_task(sim.start())
 
@@ -282,9 +279,7 @@ async def test_stop_transaction_replay_is_idempotent(
     # Second StopTransaction with the same triple → idempotency key collision.
     # The handler still replies Accepted (charger doesn't need to know it's a
     # replay); the DB row should be unchanged.
-    async with connect(
-        f"ws://localhost:{_TEST_WS_PORT}/{cp_id}", subprotocols=["ocpp1.6"]
-    ) as ws:
+    async with connect(f"ws://localhost:{_TEST_WS_PORT}/{cp_id}", subprotocols=["ocpp1.6"]) as ws:
         sim = _SimChargePoint(cp_id, ws)
         loop_task = asyncio.create_task(sim.start())
 
@@ -304,9 +299,7 @@ async def test_stop_transaction_replay_is_idempotent(
     async with db_engine.connect() as conn:
         row_count = (
             await conn.execute(
-                sa.text(
-                    "SELECT COUNT(*) FROM transactions WHERE transaction_id = :tx_id"
-                ),
+                sa.text("SELECT COUNT(*) FROM transactions WHERE transaction_id = :tx_id"),
                 {"tx_id": transaction_id},
             )
         ).scalar_one()
