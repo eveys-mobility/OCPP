@@ -1,0 +1,40 @@
+# Sphinx build output and venv
+docs/_build/
+docs/.venv/
+
+# Python project venv (created by uv)
+.venv/
+
+# Python build / cache artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+build/
+dist/
+.eggs/
+
+# Test / coverage artifacts
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# Type-checker caches
+.mypy_cache/
+.ruff_cache/
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# macOS
+.DS_Store
+
+# Local env overrides
+.env
+.env.local
+*.local

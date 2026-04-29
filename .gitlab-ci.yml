@@ -1,0 +1,174 @@
+stages:
+  - quality   # lint + mypy in parallel
+  - test      # pytest with coverage
+  - docs      # tagged-release docs build (existing)
+
+# ---- shared anchors --------------------------------------------------------
+#
+# All Python jobs share: the project's runtime base image, uv as installer,
+# and a venv at .venv/ that's cached between runs. The first job in a
+# pipeline pays the install cost; the rest of the pipeline reuses the venv.
+
+.python-job: &python-job
+  image: python:3.13-slim
+  variables:
+    DEBIAN_FRONTEND: noninteractive
+    # Persist uv's download cache at a project-relative path so GitLab's
+    # cache mechanism can pick it up.
+    UV_CACHE_DIR: $CI_PROJECT_DIR/.uv-cache
+    # uv must use a project-relative venv (default `.venv`) so the cache
+    # path matches.
+    UV_PROJECT_ENVIRONMENT: $CI_PROJECT_DIR/.venv
+  before_script:
+    - apt-get update -qq && apt-get install -y --no-install-recommends curl ca-certificates >/dev/null
+    - curl -LsSf https://astral.sh/uv/install.sh | sh
+    - export PATH="$HOME/.local/bin:$PATH"
+    # `--clear` so a venv restored from cache is rebuilt against the
+    # current pyproject.toml deterministically.
+    - uv venv --clear .venv
+    - uv pip install --python .venv/bin/python -e ".[dev]"
+  cache:
+    key:
+      files:
+        - pyproject.toml
+    paths:
+      - .venv/
+      - .uv-cache/
+  rules:
+    # Run on MRs into any branch, and on pushes to main. Skip on tag pushes
+    # (the docs job handles those separately).
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# ---- E0-3 quality gate -----------------------------------------------------
+
+lint:
+  <<: *python-job
+  stage: quality
+  script:
+    - .venv/bin/ruff check src tests
+
+types:
+  <<: *python-job
+  stage: quality
+  script:
+    - .venv/bin/mypy
+
+tests:
+  <<: *python-job
+  stage: test
+  script:
+    # Unit tests only. E2E tests skip themselves when the data plane
+    # isn't reachable — they run in `tests:e2e` below, which provides
+    # the data plane via GitLab `services:` sidecars.
+    - .venv/bin/pytest tests/unit tests/test_package.py --cov-report=xml --cov-report=term
+  coverage: '/Total coverage: (\d+\.\d+)%/'
+  artifacts:
+    when: always
+    reports:
+      coverage_report:
+        coverage_format: cobertura
+        path: coverage.xml
+    paths:
+      - coverage.xml
+    expire_in: 14 days
+
+tests:e2e:
+  <<: *python-job
+  stage: test
+  # The data-plane stack as GitLab `services:` sidecars. Image versions
+  # mirror deploy/compose/docker-compose.yml so dev and CI behavior match.
+  services:
+    - name: postgres:16-alpine
+      alias: postgres
+      variables:
+        POSTGRES_USER: eveys
+        POSTGRES_PASSWORD: eveys
+        POSTGRES_DB: eveys_ocpp
+    - name: redis:7-alpine
+      alias: redis
+    - name: apache/kafka:3.7.0
+      alias: kafka
+      variables:
+        KAFKA_NODE_ID: "1"
+        KAFKA_PROCESS_ROLES: "broker,controller"
+        # Inside the service container, the alias `kafka` does NOT resolve
+        # to itself. Use `localhost:9093` for the controller quorum (the
+        # broker talks to its own controller process via loopback). Clients
+        # in the job container still reach the broker as `kafka:9092` over
+        # the GitLab services network.
+        KAFKA_CONTROLLER_QUORUM_VOTERS: "1@localhost:9093"
+        KAFKA_LISTENERS: "PLAINTEXT://:9092,CONTROLLER://:9093"
+        KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka:9092"
+        KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT"
+        KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+        KAFKA_INTER_BROKER_LISTENER_NAME: "PLAINTEXT"
+        KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+        KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+        KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+        KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+        KAFKA_LOG_DIRS: "/tmp/kraft-combined-logs"
+        CLUSTER_ID: "MkU3OEVBNTcwNTJENDM2Qk"
+    - name: clickhouse/clickhouse-server:24
+      alias: clickhouse
+      variables:
+        CLICKHOUSE_DB: eveys_ocpp
+  variables:
+    # `services:` aliases become resolvable hostnames inside the job
+    # container. Override the test defaults of `localhost` so the e2e
+    # tests can find Postgres / Redis / Kafka / ClickHouse.
+    DEBIAN_FRONTEND: noninteractive
+    UV_CACHE_DIR: $CI_PROJECT_DIR/.uv-cache
+    UV_PROJECT_ENVIRONMENT: $CI_PROJECT_DIR/.venv
+    E2E_PG_HOST: postgres
+    E2E_REDIS_HOST: redis
+    E2E_KAFKA_HOST: kafka
+    E2E_CH_HOST: clickhouse
+    # In CI, refuse to silently skip the e2e tests if a service isn't
+    # reachable — a green-but-skipped pipeline is worse than a red one.
+    E2E_REQUIRE: "1"
+    # Same DSN the runtime reads from — used by alembic.
+    EVEYS_OCPP_DB_URL: postgresql+asyncpg://eveys:eveys@postgres:5432/eveys_ocpp
+  script:
+    # Wait for every service to accept TCP connections. Services boot in
+    # parallel with the job container; Kafka in particular needs ~20s for
+    # the KRaft controller to come up and the broker listener to bind.
+    - apt-get install -y --no-install-recommends postgresql-client netcat-openbsd >/dev/null
+    - |
+      wait_tcp() {
+        local host=$1 port=$2 timeout=${3:-90}
+        for i in $(seq 1 "$timeout"); do
+          if nc -z "$host" "$port" 2>/dev/null; then
+            echo "  $host:$port reachable after ${i}s"
+            return 0
+          fi
+          sleep 1
+        done
+        echo "ERROR: $host:$port not reachable after ${timeout}s"
+        return 1
+      }
+      wait_tcp postgres 5432 60
+      wait_tcp redis 6379 60
+      wait_tcp clickhouse 8123 60
+      wait_tcp kafka 9092 90
+    - .venv/bin/alembic upgrade head
+    - .venv/bin/pytest tests/e2e -v --no-cov
+
+# ---- docs (tagged-release artifact, unchanged) -----------------------------
+
+docs:build:
+  stage: docs
+  image: python:3.13-slim
+  rules:
+    - if: $CI_COMMIT_TAG
+  script:
+    - cd docs
+    - pip install --no-cache-dir -r requirements.txt
+    # CI runs in a clean python:3.13-slim container, so we skip the local
+    # Makefile's venv setup and invoke sphinx-build directly.
+    - sphinx-build -M html . _build -W --keep-going -n
+  artifacts:
+    name: "eveys-ocpp-docs-$CI_COMMIT_TAG"
+    paths:
+      - docs/_build/html
+    expire_in: 30 days
