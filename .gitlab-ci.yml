@@ -27,6 +27,17 @@ stages:
     # current pyproject.toml deterministically.
     - uv venv --clear .venv
     - uv pip install --python .venv/bin/python -e ".[dev]"
+    # Generate gRPC stubs so mypy / pytest can import them. Locally
+    # `make install` does this; CI calls protoc directly to skip the
+    # Makefile's .venv-creation steps.
+    - .venv/bin/python -m grpc_tools.protoc
+        --plugin=protoc-gen-grpclib_python=.venv/bin/protoc-gen-grpclib_python
+        --proto_path=proto
+        --python_out=src/eveys_ocpp/_generated
+        --grpclib_python_out=src/eveys_ocpp/_generated
+        proto/ocpp_gw/v1/gateway.proto
+        proto/events/v1/events.proto
+    - find src/eveys_ocpp/_generated -mindepth 1 -type d -exec touch {}/__init__.py \;
   cache:
     key:
       files:
