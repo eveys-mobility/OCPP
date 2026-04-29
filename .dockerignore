@@ -1,0 +1,41 @@
+# Keep the build context small — only ship what's needed for the wheel.
+
+# Local virtualenvs
+.venv/
+docs/.venv/
+
+# Build / test caches
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Docs output
+docs/_build/
+
+# VCS + IDE
+.git/
+.gitignore
+.gitattributes
+.editorconfig
+.vscode/
+.idea/
+
+# CI / project metadata not needed at runtime
+.gitlab-ci.yml
+Makefile
+docs/
+deploy/compose/
+scripts/
+tests/
+alembic/
+alembic.ini
+AGENTS.md
+CLAUDE.md

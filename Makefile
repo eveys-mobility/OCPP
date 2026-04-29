@@ -13,7 +13,7 @@ COMPOSE    := docker compose -f deploy/compose/docker-compose.yml
 
 .PHONY: help doctor install format lint types tests smoke clean distclean \
         compose-up compose-down compose-status compose-down-volumes \
-        docs docs-clean
+        build-image docs docs-clean
 
 # ---- meta -------------------------------------------------------------------
 
@@ -29,11 +29,12 @@ help:
 	@echo "  make tests              full pre-commit gate: lint + types + pytest with coverage"
 	@echo ""
 	@echo "Local stack (data plane):"
-	@echo "  make compose-up         start Postgres + Redis + Kafka + ClickHouse"
+	@echo "  make compose-up         start Postgres + Redis + Kafka + ClickHouse + service"
 	@echo "  make compose-down       stop containers, keep data volumes"
 	@echo "  make compose-down-volumes  stop AND wipe data (DESTRUCTIVE)"
 	@echo "  make compose-status     show container health"
-	@echo "  make smoke              run the local-stack smoke test (lands with E1-13)"
+	@echo "  make build-image        build the eveys-ocpp:dev container image"
+	@echo "  make smoke              run the local-stack smoke test (E1-13)"
 	@echo ""
 	@echo "Docs:"
 	@echo "  make docs               build the docs site (Sphinx + MyST)"
@@ -78,6 +79,9 @@ tests: lint types
 	$(VENV)/bin/pytest
 
 # ---- local stack ------------------------------------------------------------
+
+build-image:
+	docker build -f deploy/Dockerfile -t eveys-ocpp:dev .
 
 compose-up:
 	$(COMPOSE) up -d

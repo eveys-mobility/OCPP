@@ -111,28 +111,31 @@ services:
       retries: 6
       start_period: 10s
 
-  # eveys/ocpp service — uncomment once E0-5 (Dockerfile) and E1-1..E1-9
-  # (handlers) land. Until then, run from the host: `python -m eveys_ocpp`.
-  #
-  # ocpp:
-  #   build:
-  #     context: ../..
-  #     dockerfile: deploy/Dockerfile
-  #   container_name: eveys-ocpp
-  #   ports:
-  #     - "9000:9000"      # WebSocket
-  #     - "50051:50051"    # gRPC
-  #     - "9100:9100"      # Prometheus metrics
-  #   environment:
-  #     EVEYS_OCPP_DB_URL: postgres://eveys:eveys@postgres:5432/eveys_ocpp
-  #     EVEYS_OCPP_REDIS_URL: redis://redis:6379/0
-  #     EVEYS_OCPP_KAFKA_BROKERS: kafka:9092
-  #     EVEYS_OCPP_CLICKHOUSE_URL: http://clickhouse:8123
-  #   depends_on:
-  #     postgres: { condition: service_healthy }
-  #     redis: { condition: service_healthy }
-  #     kafka: { condition: service_healthy }
-  #     clickhouse: { condition: service_healthy }
+  ocpp:
+    # Built locally from deploy/Dockerfile (distroless multi-stage; ~168 MB).
+    # Use `make build-image` (or `docker compose build ocpp`) before
+    # `make compose-up` to refresh the image.
+    build:
+      context: ../..
+      dockerfile: deploy/Dockerfile
+    image: eveys-ocpp:dev
+    container_name: eveys-ocpp
+    # Host port 19000 instead of 9000: standalone ClickHouse client and many
+    # IDEs (PhpStorm, JetBrains TBE) squat on 9000. Inside the compose
+    # network the service still listens on 9000.
+    ports:
+      - "19000:9000"     # WebSocket (host 19000 → container 9000)
+      - "50051:50051"    # gRPC (lands with E2-4)
+      - "9100:9100"      # Prometheus metrics (lands with E4-1)
+    environment:
+      EVEYS_OCPP_DB_URL: postgresql+asyncpg://eveys:eveys@postgres:5432/eveys_ocpp
+      EVEYS_OCPP_LOG_JSON: "true"
+      EVEYS_OCPP_LOG_LEVEL: "INFO"
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      kafka: { condition: service_healthy }
+      clickhouse: { condition: service_healthy }
 
 volumes:
   postgres_data:
