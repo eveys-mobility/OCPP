@@ -11,6 +11,7 @@ import sys
 from typing import TYPE_CHECKING
 
 from eveys_ocpp import __version__
+from eveys_ocpp.connections import ConnectionMap
 from eveys_ocpp.events import KafkaEventProducer
 from eveys_ocpp.observability import configure_logging, get_logger
 from eveys_ocpp.persistence.db import make_engine, make_session_factory
@@ -28,9 +29,14 @@ async def _serve_all(
     session_factory: async_sessionmaker[AsyncSession],
     settings: Settings,
     registry: Registry,
+    connections: ConnectionMap,
     event_producer: KafkaEventProducer,
 ) -> None:
-    """Run WS and gRPC servers concurrently; cancel both if either fails."""
+    """Run WS and gRPC servers concurrently; cancel both if either fails.
+
+    Both servers share the same `ConnectionMap` and `Registry` so the
+    gRPC RemoteStart can find the WS opened by the WS server.
+    """
     log = get_logger(__name__)
     log.info(
         "servers.starting",
@@ -47,12 +53,18 @@ async def _serve_all(
                     session_factory=session_factory,
                     settings=settings,
                     registry=registry,
+                    connections=connections,
                     event_producer=event_producer,
                 ),
                 name="ws_server",
             )
             tg.create_task(
-                serve_grpc_forever(session_factory=session_factory, settings=settings),
+                serve_grpc_forever(
+                    session_factory=session_factory,
+                    settings=settings,
+                    connections=connections,
+                    registry=registry,
+                ),
                 name="grpc_server",
             )
     finally:
@@ -85,6 +97,7 @@ def main() -> None:
     )
     session_factory = make_session_factory(engine)
     registry = Registry.from_settings(settings)
+    connections = ConnectionMap()
     event_producer = KafkaEventProducer.from_settings(settings)
 
     asyncio.run(
@@ -92,6 +105,7 @@ def main() -> None:
             session_factory=session_factory,
             settings=settings,
             registry=registry,
+            connections=connections,
             event_producer=event_producer,
         )
     )
