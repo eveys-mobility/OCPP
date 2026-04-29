@@ -13,7 +13,7 @@ COMPOSE    := docker compose -f deploy/compose/docker-compose.yml
 
 .PHONY: help doctor install format lint types tests e2e smoke precommit clean distclean \
         compose-up compose-down compose-status compose-down-volumes compose-wait \
-        build-image docs docs-clean
+        build-image protoc docs docs-clean
 
 # ---- meta -------------------------------------------------------------------
 
@@ -64,6 +64,7 @@ $(VENV)/bin/python:
 
 install: $(VENV)/bin/python
 	$(UV) pip install --python $(VENV)/bin/python -e ".[dev]"
+	@$(MAKE) protoc
 	@# Activate pre-commit hooks if the config exists. Idempotent — safe
 	@# to re-run; pre-commit detects an already-installed hook script.
 	@if [ -f .pre-commit-config.yaml ] && [ -d .git ]; then \
@@ -71,6 +72,26 @@ install: $(VENV)/bin/python
 		$(VENV)/bin/pre-commit install --hook-type commit-msg >/dev/null 2>&1 && \
 		echo "pre-commit hooks installed"; \
 	fi
+
+# Regenerate Python stubs from proto/ into src/eveys_ocpp/_generated/.
+# Generated files are .gitignored — regenerate after pyproject install or
+# whenever a .proto file changes. Idempotent.
+protoc: $(VENV)/bin/python
+	@mkdir -p src/eveys_ocpp/_generated
+	@# protoc-gen-grpclib_python ships with the `grpclib` package and is
+	@# at $(VENV)/bin/. Pass via --plugin so $PATH lookup isn't needed.
+	$(VENV)/bin/python -m grpc_tools.protoc \
+		--plugin=protoc-gen-grpclib_python=$(VENV)/bin/protoc-gen-grpclib_python \
+		--proto_path=proto \
+		--python_out=src/eveys_ocpp/_generated \
+		--grpclib_python_out=src/eveys_ocpp/_generated \
+		proto/ocpp_gw/v1/gateway.proto \
+		proto/events/v1/events.proto
+	@# protoc emits files into directory hierarchy matching package; add
+	@# __init__.py at every nested level so they're importable. The
+	@# top-level _generated/__init__.py is hand-written and adds itself
+	@# to sys.path so the generated absolute imports resolve.
+	@find src/eveys_ocpp/_generated -mindepth 1 -type d -exec touch {}/__init__.py \;
 
 # ---- code quality -----------------------------------------------------------
 

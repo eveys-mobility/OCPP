@@ -1,15 +1,44 @@
-"""Entry point: `python -m eveys_ocpp`."""
+"""Entry point: `python -m eveys_ocpp`.
+
+Boots WS + gRPC servers in the same event loop. Either failing causes
+the whole process to exit (no half-up state).
+"""
 
 from __future__ import annotations
 
 import asyncio
 import sys
+from typing import TYPE_CHECKING
 
 from eveys_ocpp import __version__
 from eveys_ocpp.observability import configure_logging, get_logger
 from eveys_ocpp.persistence.db import make_engine, make_session_factory
-from eveys_ocpp.settings import get_settings
-from eveys_ocpp.transport.ws_server import serve_forever
+from eveys_ocpp.settings import Settings, get_settings
+from eveys_ocpp.transport.grpc_server import serve_forever as serve_grpc_forever
+from eveys_ocpp.transport.ws_server import serve_forever as serve_ws_forever
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+
+async def _serve_all(
+    *,
+    session_factory: async_sessionmaker[AsyncSession],
+    settings: Settings,
+) -> None:
+    """Run WS and gRPC servers concurrently; cancel both if either fails."""
+    log = get_logger(__name__)
+    log.info("servers.starting", ws_port=settings.ws_port, grpc_port=settings.grpc_port)
+
+    async with asyncio.TaskGroup() as tg:
+        tg.create_task(
+            serve_ws_forever(session_factory=session_factory, settings=settings),
+            name="ws_server",
+        )
+        tg.create_task(
+            serve_grpc_forever(session_factory=session_factory, settings=settings),
+            name="grpc_server",
+        )
 
 
 def main() -> None:
@@ -37,7 +66,7 @@ def main() -> None:
     )
     session_factory = make_session_factory(engine)
 
-    asyncio.run(serve_forever(session_factory=session_factory, settings=settings))
+    asyncio.run(_serve_all(session_factory=session_factory, settings=settings))
 
 
 if __name__ == "__main__":

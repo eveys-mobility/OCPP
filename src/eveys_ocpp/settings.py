@@ -29,6 +29,10 @@ class Settings(BaseSettings):
     ws_host: str = Field(default="0.0.0.0", description="WebSocket bind address")
     ws_port: int = Field(default=9000, description="WebSocket bind port")
 
+    # ---- gRPC server ----------------------------------------------------
+    grpc_host: str = Field(default="0.0.0.0", description="gRPC bind address")
+    grpc_port: int = Field(default=50051, description="gRPC bind port")
+
     # ---- Postgres -------------------------------------------------------
     db_url: str = Field(
         default="postgresql+asyncpg://eveys:eveys@localhost:5432/eveys_ocpp",
