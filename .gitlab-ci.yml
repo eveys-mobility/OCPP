@@ -58,10 +58,10 @@ tests:
   <<: *python-job
   stage: test
   script:
-    # E2E tests skip themselves when the compose stack isn't reachable —
-    # CI runs without a stack, so only unit tests execute. Wiring docker
-    # services into CI is a follow-up task.
-    - .venv/bin/pytest --cov-report=xml --cov-report=term
+    # Unit tests only. E2E tests skip themselves when the data plane
+    # isn't reachable — they run in `tests:e2e` below, which provides
+    # the data plane via GitLab `services:` sidecars.
+    - .venv/bin/pytest tests/unit tests/test_package.py --cov-report=xml --cov-report=term
   coverage: '/Total coverage: (\d+\.\d+)%/'
   artifacts:
     when: always
@@ -72,6 +72,62 @@ tests:
     paths:
       - coverage.xml
     expire_in: 14 days
+
+tests:e2e:
+  <<: *python-job
+  stage: test
+  # The data-plane stack as GitLab `services:` sidecars. Image versions
+  # mirror deploy/compose/docker-compose.yml so dev and CI behavior match.
+  services:
+    - name: postgres:16-alpine
+      alias: postgres
+      variables:
+        POSTGRES_USER: eveys
+        POSTGRES_PASSWORD: eveys
+        POSTGRES_DB: eveys_ocpp
+    - name: redis:7-alpine
+      alias: redis
+    - name: apache/kafka:3.7.0
+      alias: kafka
+      variables:
+        KAFKA_NODE_ID: "1"
+        KAFKA_PROCESS_ROLES: "broker,controller"
+        KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka:9093"
+        KAFKA_LISTENERS: "PLAINTEXT://:9092,CONTROLLER://:9093"
+        KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka:9092"
+        KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT"
+        KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+        KAFKA_INTER_BROKER_LISTENER_NAME: "PLAINTEXT"
+        KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+        KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+        KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+        KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+        KAFKA_LOG_DIRS: "/tmp/kraft-combined-logs"
+        CLUSTER_ID: "MkU3OEVBNTcwNTJENDM2Qk"
+    - name: clickhouse/clickhouse-server:24
+      alias: clickhouse
+      variables:
+        CLICKHOUSE_DB: eveys_ocpp
+  variables:
+    # `services:` aliases become resolvable hostnames inside the job
+    # container. Override the test defaults of `localhost` so the e2e
+    # tests can find Postgres / Redis / Kafka / ClickHouse.
+    DEBIAN_FRONTEND: noninteractive
+    UV_CACHE_DIR: $CI_PROJECT_DIR/.uv-cache
+    UV_PROJECT_ENVIRONMENT: $CI_PROJECT_DIR/.venv
+    E2E_PG_HOST: postgres
+    E2E_REDIS_HOST: redis
+    E2E_KAFKA_HOST: kafka
+    E2E_CH_HOST: clickhouse
+    # Same DSN the runtime reads from — used by alembic.
+    EVEYS_OCPP_DB_URL: postgresql+asyncpg://eveys:eveys@postgres:5432/eveys_ocpp
+  script:
+    # Wait for Postgres to accept connections (services boot in parallel
+    # with the job container; pg_isready is the canonical wait pattern).
+    - apt-get install -y --no-install-recommends postgresql-client >/dev/null
+    - until pg_isready -h postgres -U eveys -d eveys_ocpp >/dev/null 2>&1; do echo waiting for postgres; sleep 1; done
+    - .venv/bin/alembic upgrade head
+    - .venv/bin/pytest tests/e2e -v --no-cov
 
 # ---- docs (tagged-release artifact, unchanged) -----------------------------
 
