@@ -9,15 +9,13 @@ to discipline its own clock.
 
 JSON Schemas: `ocpp.v16.schemas.Heartbeat` and `HeartbeatResponse`.
 
-Behavior in v0:
-1. Refresh `last_heartbeat_at` for the charger row.
-2. Return server-current UTC time. Per AGENTS rule 7 the charger's clock
+Behavior:
+1. Refresh `last_heartbeat_at` for the charger row in Postgres.
+2. Refresh the Redis online-registry TTL on `cp:online:{cp_id}`. If
+   the key is gone (TTL expired since the last heartbeat — possible if
+   the network was choppy), re-mark as online.
+3. Return server-current UTC time. Per AGENTS rule 7 the charger's clock
    is untrusted; the Heartbeat response is the canonical clock signal.
-
-Deviations from the OCA spec to verify before W2 / OCTT
-(see `docs/08-ocpp-conformance.md`):
-- Redis online-registry TTL refresh is NOT done here — that lands with
-  task E2-9.
 """
 
 from __future__ import annotations
@@ -43,6 +41,13 @@ async def handle(cp: EveysChargePoint) -> call_result.Heartbeat:
     now = datetime.now(UTC)
     async with session_scope(cp.session_factory) as session:
         await update_heartbeat(session, cp_id=cp.id, at=now)
+
+    if cp.registry is not None:
+        refreshed = await cp.registry.refresh(cp.id)
+        if not refreshed:
+            # Key expired between heartbeats. Re-claim ownership.
+            await cp.registry.mark_online(cp.id)
+            log.info("heartbeat.registry_reclaimed")
 
     log.debug("heartbeat.tick")
 

@@ -135,22 +135,34 @@ async def running_service() -> AsyncIterator[None]:
 
     saved_env = {
         k: os.environ.get(k)
-        for k in ("EVEYS_OCPP_WS_PORT", "EVEYS_OCPP_DB_URL", "EVEYS_OCPP_LOG_JSON")
+        for k in (
+            "EVEYS_OCPP_WS_PORT",
+            "EVEYS_OCPP_DB_URL",
+            "EVEYS_OCPP_REDIS_URL",
+            "EVEYS_OCPP_LOG_JSON",
+        )
     }
     os.environ["EVEYS_OCPP_WS_PORT"] = str(_TEST_WS_PORT)
     os.environ["EVEYS_OCPP_DB_URL"] = _TEST_DB_URL
+    os.environ["EVEYS_OCPP_REDIS_URL"] = f"redis://{_REDIS_HOST}:6379/0"
     os.environ["EVEYS_OCPP_LOG_JSON"] = "false"
 
     from eveys_ocpp.persistence.db import make_engine, make_session_factory
+    from eveys_ocpp.registry import Registry
     from eveys_ocpp.settings import get_settings
     from eveys_ocpp.transport.ws_server import serve_forever
 
     settings = get_settings()
     db_engine = make_engine(settings.db_url)
     session_factory = make_session_factory(db_engine)
+    registry = Registry.from_settings(settings)
 
     server_task = asyncio.create_task(
-        serve_forever(session_factory=session_factory, settings=settings)
+        serve_forever(
+            session_factory=session_factory,
+            settings=settings,
+            registry=registry,
+        )
     )
     # Give the server a beat to bind.
     await asyncio.sleep(0.2)
@@ -162,6 +174,7 @@ async def running_service() -> AsyncIterator[None]:
         # Cancellation surfaces as CancelledError; tolerate any teardown error.
         with suppress(asyncio.CancelledError, Exception):
             await server_task
+        await registry.close()
         await db_engine.dispose()
         # Restore env so subsequent tests see process-default settings.
         for key, original in saved_env.items():
@@ -304,3 +317,49 @@ async def test_stop_transaction_replay_is_idempotent(
             )
         ).scalar_one()
     assert row_count == 1
+
+
+@pytest.mark.asyncio
+async def test_registry_marks_charger_online_then_offline(
+    running_service: None,
+) -> None:
+    """E2-9 — connect a sim, assert `cp:online:{cp_id}` exists in Redis;
+    disconnect, assert the key is gone (compare-and-delete on our pod_id).
+    """
+    import socket as _socket
+
+    from redis.asyncio import Redis
+
+    cp_id = "SMOKE_E2_9_001"
+    redis = Redis.from_url(f"redis://{_REDIS_HOST}:6379/0", decode_responses=True)
+    try:
+        # No leftover from previous runs (idempotent).
+        await redis.delete(f"cp:online:{cp_id}")
+
+        async with connect(
+            f"ws://localhost:{_TEST_WS_PORT}/{cp_id}", subprotocols=["ocpp1.6"]
+        ) as ws:
+            sim = _SimChargePoint(cp_id, ws)
+            loop_task = asyncio.create_task(sim.start())
+            await sim.call(
+                call.BootNotification(charge_point_vendor="ACME", charge_point_model="X1")
+            )
+
+            # Boot succeeded → registry key must exist with our pod_id.
+            value = await redis.get(f"cp:online:{cp_id}")
+            assert value == _socket.gethostname(), (
+                f"registry key missing or wrong owner: got {value!r}"
+            )
+
+            # TTL was set (must be ≤ configured TTL; default 120).
+            ttl = await redis.ttl(f"cp:online:{cp_id}")
+            assert 0 < ttl <= 120
+
+            loop_task.cancel()
+
+        # WS closed → mark_offline ran → key should be gone.
+        await asyncio.sleep(0.1)  # mark_offline runs in finally
+        value_after = await redis.get(f"cp:online:{cp_id}")
+        assert value_after is None, f"registry key not cleaned up: {value_after!r}"
+    finally:
+        await redis.aclose()

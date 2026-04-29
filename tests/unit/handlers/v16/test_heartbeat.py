@@ -33,3 +33,48 @@ async def test_refreshes_last_heartbeat(fake_cp: Any, monkeypatch: pytest.Monkey
     update.assert_awaited_once()
     assert update.await_args is not None
     assert update.await_args.kwargs["cp_id"] == "TEST_CP_001"
+
+
+@pytest.mark.asyncio
+async def test_refreshes_redis_ttl_when_registry_attached(
+    fake_cp: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(heartbeat, "update_heartbeat", AsyncMock())
+
+    fake_registry = AsyncMock()
+    fake_registry.refresh = AsyncMock(return_value=True)
+    fake_cp.registry = fake_registry
+
+    await heartbeat.handle(fake_cp)
+
+    fake_registry.refresh.assert_awaited_once_with("TEST_CP_001")
+    fake_registry.mark_online.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_reclaims_registry_when_key_expired(
+    fake_cp: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If TTL expired between heartbeats, re-mark the charger as online."""
+    monkeypatch.setattr(heartbeat, "update_heartbeat", AsyncMock())
+
+    fake_registry = AsyncMock()
+    fake_registry.refresh = AsyncMock(return_value=False)
+    fake_cp.registry = fake_registry
+
+    await heartbeat.handle(fake_cp)
+
+    fake_registry.refresh.assert_awaited_once_with("TEST_CP_001")
+    fake_registry.mark_online.assert_awaited_once_with("TEST_CP_001")
+
+
+@pytest.mark.asyncio
+async def test_no_registry_calls_when_registry_is_none(
+    fake_cp: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """W1-style local stack without Redis: handler must still work."""
+    monkeypatch.setattr(heartbeat, "update_heartbeat", AsyncMock())
+    fake_cp.registry = None
+
+    result = await heartbeat.handle(fake_cp)
+    assert result is not None  # no exception

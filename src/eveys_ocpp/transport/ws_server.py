@@ -20,6 +20,7 @@ from eveys_ocpp.observability import bind_contextvars, clear_contextvars, get_lo
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+    from eveys_ocpp.registry import Registry
     from eveys_ocpp.settings import Settings
 
 log = get_logger(__name__)
@@ -32,6 +33,7 @@ async def _on_connect(
     *,
     session_factory: async_sessionmaker[AsyncSession],
     settings: Settings,
+    registry: Registry | None,
 ) -> None:
     """Per-connection coroutine. Lives for the duration of the WS."""
     if connection.subprotocol != OCPP_SUBPROTOCOL:
@@ -50,21 +52,47 @@ async def _on_connect(
     bind_contextvars(cp_id=cp_id)
     log.info("ws.connected")
 
-    cp = EveysChargePoint(cp_id, connection, session_factory=session_factory, settings=settings)
+    if registry is not None:
+        await registry.mark_online(cp_id)
+
+    cp = EveysChargePoint(
+        cp_id,
+        connection,
+        session_factory=session_factory,
+        settings=settings,
+        registry=registry,
+    )
     try:
         await cp.start()
     finally:
+        if registry is not None:
+            # Compare-and-delete: only clear if we still own the key.
+            # A reconnect to a different pod between disconnect and
+            # this call must not clobber the new owner.
+            await registry.mark_offline(cp_id)
         log.info("ws.disconnected")
         clear_contextvars()
 
 
 async def serve_forever(
-    *, session_factory: async_sessionmaker[AsyncSession], settings: Settings
+    *,
+    session_factory: async_sessionmaker[AsyncSession],
+    settings: Settings,
+    registry: Registry | None = None,
 ) -> None:
-    """Start the WS server and block until cancelled."""
+    """Start the WS server and block until cancelled.
+
+    `registry` is optional so unit tests + the W1-style local stack can
+    skip Redis. Production wiring (`__main__.py`) always passes one.
+    """
 
     async def handler(connection: ServerConnection) -> None:
-        await _on_connect(connection, session_factory=session_factory, settings=settings)
+        await _on_connect(
+            connection,
+            session_factory=session_factory,
+            settings=settings,
+            registry=registry,
+        )
 
     async with serve(
         handler,
