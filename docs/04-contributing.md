@@ -25,6 +25,23 @@ Every MR must:
 - [ ] Be reviewed by **at least one other engineer**. Tech-lead approval for: gRPC contract changes, ADRs, deploy/infra changes, security-sensitive code.
 - [ ] Pass **all pre-commit hooks** locally before pushing.
 
+### Pre-commit hooks
+
+`make install` activates the hooks (configured in `.pre-commit-config.yaml`). They run automatically on every `git commit`:
+
+- **ruff** — lint + format. Same rules as CI's `lint` job; fixes most issues automatically.
+- **mypy** — strict type-check on `src/` only.
+- **stock hygiene** — trailing whitespace, end-of-file fixer, large-file guard, merge-conflict markers, mixed line endings.
+- **conventional-pre-commit** — enforces the commit-message format below.
+
+To run the hooks against the whole tree without committing:
+
+```bash
+make precommit
+```
+
+If a hook auto-fixes something, re-stage and re-commit. **Never bypass hooks with `--no-verify`** (AGENTS.md hard rule 7).
+
 ## Commit conventions
 
 [Conventional Commits](https://www.conventionalcommits.org). Format:
