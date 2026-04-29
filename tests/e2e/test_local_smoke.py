@@ -17,6 +17,7 @@ Two layers of testing in this file:
 from __future__ import annotations
 
 import asyncio
+import os
 import socket
 from collections.abc import AsyncIterator, Iterator
 from contextlib import closing, suppress
@@ -28,6 +29,14 @@ from ocpp.v16 import ChargePoint as Cp
 from ocpp.v16 import call
 from sqlalchemy.ext.asyncio import create_async_engine
 from websockets.asyncio.client import connect
+
+# Data-plane hosts. Default to `localhost` (`make compose-up` on a dev
+# laptop). In GitLab CI, where the stack runs as `services:` sidecars, the
+# pipeline overrides these via env to the service aliases (e.g. `postgres`).
+_PG_HOST = os.environ.get("E2E_PG_HOST", "localhost")
+_REDIS_HOST = os.environ.get("E2E_REDIS_HOST", "localhost")
+_KAFKA_HOST = os.environ.get("E2E_KAFKA_HOST", "localhost")
+_CH_HOST = os.environ.get("E2E_CH_HOST", "localhost")
 
 
 def _can_connect(host: str, port: int, timeout: float = 0.5) -> bool:
@@ -43,10 +52,10 @@ def _can_connect(host: str, port: int, timeout: float = 0.5) -> bool:
 pytestmark = pytest.mark.skipif(
     not all(
         [
-            _can_connect("localhost", 5432),  # Postgres
-            _can_connect("localhost", 6379),  # Redis
-            _can_connect("localhost", 9092),  # Kafka
-            _can_connect("localhost", 8123),  # ClickHouse HTTP
+            _can_connect(_PG_HOST, 5432),  # Postgres
+            _can_connect(_REDIS_HOST, 6379),  # Redis
+            _can_connect(_KAFKA_HOST, 9092),  # Kafka
+            _can_connect(_CH_HOST, 8123),  # ClickHouse HTTP
         ]
     ),
     reason="local stack not reachable — run `make compose-up` first",
@@ -55,16 +64,16 @@ pytestmark = pytest.mark.skipif(
 
 # Fixed test port distinct from any ClickHouse / IDE squat on 9000.
 _TEST_WS_PORT = 19432
-_TEST_DB_URL = "postgresql+asyncpg://eveys:eveys@localhost:5432/eveys_ocpp"
+_TEST_DB_URL = f"postgresql+asyncpg://eveys:eveys@{_PG_HOST}:5432/eveys_ocpp"
 
 
 @pytest.fixture
 def compose_endpoints() -> Iterator[dict[str, str]]:
     yield {
-        "postgres": "localhost:5432",
-        "redis": "localhost:6379",
-        "kafka": "localhost:9092",
-        "clickhouse": "localhost:8123",
+        "postgres": f"{_PG_HOST}:5432",
+        "redis": f"{_REDIS_HOST}:6379",
+        "kafka": f"{_KAFKA_HOST}:9092",
+        "clickhouse": f"{_CH_HOST}:8123",
     }
 
 
@@ -78,7 +87,7 @@ def test_clickhouse_responds_ok() -> None:
     """ClickHouse `/ping` must return `Ok.\\n`."""
     import urllib.request
 
-    with urllib.request.urlopen("http://localhost:8123/ping", timeout=2) as resp:
+    with urllib.request.urlopen(f"http://{_CH_HOST}:8123/ping", timeout=2) as resp:
         body = resp.read().decode()
     assert body.strip() == "Ok."
 
