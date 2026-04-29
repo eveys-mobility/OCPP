@@ -74,8 +74,10 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-# Fixed test port distinct from any ClickHouse / IDE squat on 9000.
+# Fixed test ports distinct from any conflicts (ClickHouse / IDE / live
+# `make compose-up` ocpp container which uses 9000 and 50051).
 _TEST_WS_PORT = 19432
+_TEST_GRPC_PORT = 19433
 _TEST_DB_URL = f"postgresql+asyncpg://eveys:eveys@{_PG_HOST}:5432/eveys_ocpp"
 
 
@@ -137,6 +139,7 @@ async def running_service() -> AsyncIterator[None]:
         k: os.environ.get(k)
         for k in (
             "EVEYS_OCPP_WS_PORT",
+            "EVEYS_OCPP_GRPC_PORT",
             "EVEYS_OCPP_DB_URL",
             "EVEYS_OCPP_REDIS_URL",
             "EVEYS_OCPP_KAFKA_BROKERS",
@@ -144,42 +147,57 @@ async def running_service() -> AsyncIterator[None]:
         )
     }
     os.environ["EVEYS_OCPP_WS_PORT"] = str(_TEST_WS_PORT)
+    os.environ["EVEYS_OCPP_GRPC_PORT"] = str(_TEST_GRPC_PORT)
     os.environ["EVEYS_OCPP_DB_URL"] = _TEST_DB_URL
     os.environ["EVEYS_OCPP_REDIS_URL"] = f"redis://{_REDIS_HOST}:6379/0"
     os.environ["EVEYS_OCPP_KAFKA_BROKERS"] = f"{_KAFKA_HOST}:9092"
     os.environ["EVEYS_OCPP_LOG_JSON"] = "false"
 
+    from eveys_ocpp.connections import ConnectionMap
     from eveys_ocpp.events import KafkaEventProducer
     from eveys_ocpp.persistence.db import make_engine, make_session_factory
     from eveys_ocpp.registry import Registry
     from eveys_ocpp.settings import get_settings
-    from eveys_ocpp.transport.ws_server import serve_forever
+    from eveys_ocpp.transport.grpc_server import serve_forever as serve_grpc_forever
+    from eveys_ocpp.transport.ws_server import serve_forever as serve_ws_forever
 
     settings = get_settings()
     db_engine = make_engine(settings.db_url)
     session_factory = make_session_factory(db_engine)
     registry = Registry.from_settings(settings)
+    connections = ConnectionMap()
     event_producer = KafkaEventProducer.from_settings(settings)
     await event_producer.start()
 
-    server_task = asyncio.create_task(
-        serve_forever(
+    ws_task = asyncio.create_task(
+        serve_ws_forever(
             session_factory=session_factory,
             settings=settings,
             registry=registry,
+            connections=connections,
             event_producer=event_producer,
         )
     )
-    # Give the server a beat to bind.
+    grpc_task = asyncio.create_task(
+        serve_grpc_forever(
+            session_factory=session_factory,
+            settings=settings,
+            connections=connections,
+            registry=registry,
+        )
+    )
+    # Give both servers a beat to bind.
     await asyncio.sleep(0.2)
 
     try:
         yield
     finally:
-        server_task.cancel()
-        # Cancellation surfaces as CancelledError; tolerate any teardown error.
+        ws_task.cancel()
+        grpc_task.cancel()
         with suppress(asyncio.CancelledError, Exception):
-            await server_task
+            await ws_task
+        with suppress(asyncio.CancelledError, Exception):
+            await grpc_task
         await event_producer.stop()
         await registry.close()
         await db_engine.dispose()
@@ -467,3 +485,76 @@ async def test_meter_values_publishes_to_kafka(
         assert len(envelope.cp_meter.sampled_values) == 2
     finally:
         await consumer.stop()
+
+
+@pytest.mark.asyncio
+async def test_grpc_remote_start_dispatches_to_charger(
+    running_service: None,
+) -> None:
+    """E2-5 — call gRPC RemoteStart against a connected sim, verify the
+    sim received the OCPP RemoteStartTransaction.req and the gRPC reply
+    carries the charger's status.
+    """
+    import asyncio as _asyncio
+
+    from grpclib.client import Channel as _Channel
+    from ocpp.routing import on as _on
+    from ocpp.v16 import call_result as _call_result
+    from ocpp.v16.enums import Action as _Action
+
+    from eveys_ocpp._generated.ocpp_gw.v1 import gateway_grpc as _gateway_grpc
+    from eveys_ocpp._generated.ocpp_gw.v1 import gateway_pb2 as _gateway_pb2
+
+    cp_id = "SMOKE_E2_5_001"
+    received: list[tuple[str, int | None]] = []
+
+    class _SimWithRemoteStart(_SimChargePoint):
+        @_on(_Action.remote_start_transaction)
+        async def on_remote_start(  # type: ignore[no-untyped-def]
+            self, id_tag: str, connector_id: int | None = None, **_: object
+        ):
+            received.append((id_tag, connector_id))
+            return _call_result.RemoteStartTransaction(status="Accepted")
+
+    async with connect(f"ws://localhost:{_TEST_WS_PORT}/{cp_id}", subprotocols=["ocpp1.6"]) as ws:
+        sim = _SimWithRemoteStart(cp_id, ws)
+        loop_task = _asyncio.create_task(sim.start())
+        # Boot first so the charger row exists and the connection is
+        # tracked in the in-process ConnectionMap.
+        await sim.call(call.BootNotification(charge_point_vendor="ACME", charge_point_model="X1"))
+
+        # Now hit gRPC RemoteStart against the running service. The
+        # service is on this same pod; ConnectionMap.get(cp_id) will
+        # return our sim's EveysChargePoint, which forwards to our WS.
+        async with _Channel("127.0.0.1", _TEST_GRPC_PORT) as ch:
+            stub = _gateway_grpc.OcppGatewayStub(ch)
+            response = await stub.RemoteStart(
+                _gateway_pb2.RemoteStartRequest(
+                    cp_id=cp_id, id_tag="VALID_RFID_001", connector_id=2
+                )
+            )
+
+        assert response.status == _gateway_pb2.REMOTE_START_STATUS_ACCEPTED
+        # Sim received the OCPP request with the right fields.
+        assert received == [("VALID_RFID_001", 2)]
+
+        loop_task.cancel()
+
+
+@pytest.mark.asyncio
+async def test_grpc_remote_start_offline_charger_returns_not_found(
+    running_service: None,
+) -> None:
+    """No sim connected → registry has no key → NOT_FOUND."""
+    from grpclib.client import Channel as _Channel
+    from grpclib.const import Status as _Status
+    from grpclib.exceptions import GRPCError as _GRPCError
+
+    from eveys_ocpp._generated.ocpp_gw.v1 import gateway_grpc as _gateway_grpc
+    from eveys_ocpp._generated.ocpp_gw.v1 import gateway_pb2 as _gateway_pb2
+
+    async with _Channel("127.0.0.1", _TEST_GRPC_PORT) as ch:
+        stub = _gateway_grpc.OcppGatewayStub(ch)
+        with pytest.raises(_GRPCError) as exc:
+            await stub.RemoteStart(_gateway_pb2.RemoteStartRequest(cp_id="NEVER_SEEN", id_tag="X"))
+    assert exc.value.status == _Status.NOT_FOUND
