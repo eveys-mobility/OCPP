@@ -1,17 +1,21 @@
-"""Unit tests for the gRPC server scaffold (E2-4).
+"""Unit tests for the gRPC server (E2-4 scaffold + E2-5 RemoteStart).
 
-These tests don't need a real backend — they verify:
-- Generated stubs load.
-- The server class exposes every RPC defined in the proto.
-- Each RPC raises UNIMPLEMENTED through the grpclib error path.
-- Server start/stop is clean.
+The tests against the still-unimplemented RPCs (Reset, ChangeConfiguration,
+TriggerMessage, UnlockConnector, RemoteStop, GetChargerStatus) verify
+they each return UNIMPLEMENTED through the real grpclib error path.
+
+The RemoteStart tests cover all four routing branches:
+- Charger offline (not in registry) → NOT_FOUND
+- Charger online but on a different pod → UNAVAILABLE
+- Charger on this pod, charger Accepts → ACCEPTED
+- Charger on this pod, charger Rejects → REJECTED
 """
 
 from __future__ import annotations
 
 import asyncio
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from grpclib.client import Channel
@@ -20,6 +24,7 @@ from grpclib.exceptions import GRPCError
 from grpclib.server import Server
 
 from eveys_ocpp._generated.ocpp_gw.v1 import gateway_grpc, gateway_pb2
+from eveys_ocpp.connections import ConnectionMap
 from eveys_ocpp.settings import Settings
 from eveys_ocpp.transport.grpc_server import OcppGatewayService
 
@@ -32,6 +37,21 @@ def fake_session_factory() -> Any:
 @pytest.fixture
 def settings() -> Settings:
     return Settings()
+
+
+# ---- helpers ---------------------------------------------------------------
+
+
+async def _spawn_server(service: OcppGatewayService) -> tuple[Server, int]:
+    """Bind a grpclib server to 127.0.0.1 on an OS-assigned port."""
+    server = Server([service])
+    await server.start(host="127.0.0.1", port=0)
+    sockets = server._server.sockets if server._server else []  # type: ignore[union-attr]
+    assert sockets, "server didn't bind"
+    return server, sockets[0].getsockname()[1]
+
+
+# ---- service-class shape ---------------------------------------------------
 
 
 def test_service_class_implements_every_rpc(fake_session_factory: Any, settings: Settings) -> None:
@@ -52,32 +72,13 @@ def test_service_class_implements_every_rpc(fake_session_factory: Any, settings:
         assert asyncio.iscoroutinefunction(method), f"{rpc} must be async"
 
 
-@pytest.mark.asyncio
-async def test_remote_start_returns_unimplemented(
-    fake_session_factory: Any, settings: Settings
-) -> None:
-    """End-to-end through a real grpclib server on a loopback socket.
+def test_settings_grpc_defaults() -> None:
+    s = Settings()
+    assert s.grpc_host == "0.0.0.0"
+    assert s.grpc_port == 50051
 
-    Spawns the server bound to 127.0.0.1 on an OS-assigned port; opens
-    a channel; calls RemoteStart; expects UNIMPLEMENTED.
-    """
-    service = OcppGatewayService(session_factory=fake_session_factory, settings=settings)
-    server = Server([service])
-    await server.start(host="127.0.0.1", port=0)
-    # OS-assigned port discoverable via the underlying socket.
-    sockets = server._server.sockets if server._server else []  # type: ignore[union-attr]
-    assert sockets, "server didn't bind"
-    port = sockets[0].getsockname()[1]
 
-    try:
-        async with Channel("127.0.0.1", port) as ch:
-            stub = gateway_grpc.OcppGatewayStub(ch)
-            with pytest.raises(GRPCError) as exc:
-                await stub.RemoteStart(gateway_pb2.RemoteStartRequest(cp_id="TEST", id_tag="VALID"))
-        assert exc.value.status == Status.UNIMPLEMENTED
-    finally:
-        server.close()
-        await server.wait_closed()
+# ---- still-unimplemented RPCs ----------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -85,11 +86,7 @@ async def test_get_charger_status_returns_unimplemented(
     fake_session_factory: Any, settings: Settings
 ) -> None:
     service = OcppGatewayService(session_factory=fake_session_factory, settings=settings)
-    server = Server([service])
-    await server.start(host="127.0.0.1", port=0)
-    sockets = server._server.sockets if server._server else []  # type: ignore[union-attr]
-    port = sockets[0].getsockname()[1]
-
+    server, port = await _spawn_server(service)
     try:
         async with Channel("127.0.0.1", port) as ch:
             stub = gateway_grpc.OcppGatewayStub(ch)
@@ -101,7 +98,201 @@ async def test_get_charger_status_returns_unimplemented(
         await server.wait_closed()
 
 
-def test_settings_grpc_defaults() -> None:
-    s = Settings()
-    assert s.grpc_host == "0.0.0.0"
-    assert s.grpc_port == 50051
+@pytest.mark.asyncio
+async def test_remote_stop_returns_unimplemented(
+    fake_session_factory: Any, settings: Settings
+) -> None:
+    service = OcppGatewayService(session_factory=fake_session_factory, settings=settings)
+    server, port = await _spawn_server(service)
+    try:
+        async with Channel("127.0.0.1", port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            with pytest.raises(GRPCError) as exc:
+                await stub.RemoteStop(gateway_pb2.RemoteStopRequest(cp_id="TEST", transaction_id=1))
+        assert exc.value.status == Status.UNIMPLEMENTED
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+# ---- E2-5 RemoteStart -------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_remote_start_charger_offline_returns_not_found(
+    fake_session_factory: Any, settings: Settings
+) -> None:
+    """No connection on this pod, registry says nobody owns it."""
+    fake_registry = AsyncMock()
+    fake_registry.get_pod = AsyncMock(return_value=None)
+
+    service = OcppGatewayService(
+        session_factory=fake_session_factory,
+        settings=settings,
+        connections=ConnectionMap(),
+        registry=fake_registry,
+    )
+    server, port = await _spawn_server(service)
+    try:
+        async with Channel("127.0.0.1", port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            with pytest.raises(GRPCError) as exc:
+                await stub.RemoteStart(gateway_pb2.RemoteStartRequest(cp_id="GHOST", id_tag="ABC"))
+        assert exc.value.status == Status.NOT_FOUND
+        assert "GHOST" in (exc.value.message or "")
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_remote_start_charger_on_other_pod_returns_unavailable(
+    fake_session_factory: Any, settings: Settings
+) -> None:
+    """Registry says another pod owns the WS — UNAVAILABLE pending E2-10."""
+    fake_registry = AsyncMock()
+    fake_registry.get_pod = AsyncMock(return_value="pod-other-007")
+
+    service = OcppGatewayService(
+        session_factory=fake_session_factory,
+        settings=settings,
+        connections=ConnectionMap(),
+        registry=fake_registry,
+    )
+    server, port = await _spawn_server(service)
+    try:
+        async with Channel("127.0.0.1", port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            with pytest.raises(GRPCError) as exc:
+                await stub.RemoteStart(gateway_pb2.RemoteStartRequest(cp_id="CP_001", id_tag="ABC"))
+        assert exc.value.status == Status.UNAVAILABLE
+        assert "pod-other-007" in (exc.value.message or "")
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_remote_start_on_this_pod_accepted(
+    fake_session_factory: Any, settings: Settings
+) -> None:
+    """Charger on this pod, charger replies Accepted."""
+    fake_cp = MagicMock()
+    fake_cp.id = "CP_001"
+    fake_ocpp_response = MagicMock()
+    fake_ocpp_response.status = "Accepted"
+    fake_cp.call = AsyncMock(return_value=fake_ocpp_response)
+
+    connections = ConnectionMap()
+    connections.add(fake_cp)
+
+    service = OcppGatewayService(
+        session_factory=fake_session_factory,
+        settings=settings,
+        connections=connections,
+    )
+    server, port = await _spawn_server(service)
+    try:
+        async with Channel("127.0.0.1", port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            response = await stub.RemoteStart(
+                gateway_pb2.RemoteStartRequest(
+                    cp_id="CP_001", id_tag="VALID_RFID_001", connector_id=1
+                )
+            )
+        assert response.status == gateway_pb2.REMOTE_START_STATUS_ACCEPTED
+        fake_cp.call.assert_awaited_once()
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_remote_start_on_this_pod_rejected(
+    fake_session_factory: Any, settings: Settings
+) -> None:
+    """Charger on this pod, charger replies Rejected."""
+    fake_cp = MagicMock()
+    fake_cp.id = "CP_001"
+    fake_ocpp_response = MagicMock()
+    fake_ocpp_response.status = "Rejected"
+    fake_cp.call = AsyncMock(return_value=fake_ocpp_response)
+
+    connections = ConnectionMap()
+    connections.add(fake_cp)
+
+    service = OcppGatewayService(
+        session_factory=fake_session_factory,
+        settings=settings,
+        connections=connections,
+    )
+    server, port = await _spawn_server(service)
+    try:
+        async with Channel("127.0.0.1", port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            response = await stub.RemoteStart(
+                gateway_pb2.RemoteStartRequest(cp_id="CP_001", id_tag="X")
+            )
+        assert response.status == gateway_pb2.REMOTE_START_STATUS_REJECTED
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_remote_start_empty_cp_id_returns_invalid_argument(
+    fake_session_factory: Any, settings: Settings
+) -> None:
+    service = OcppGatewayService(
+        session_factory=fake_session_factory,
+        settings=settings,
+        connections=ConnectionMap(),
+    )
+    server, port = await _spawn_server(service)
+    try:
+        async with Channel("127.0.0.1", port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            with pytest.raises(GRPCError) as exc:
+                await stub.RemoteStart(gateway_pb2.RemoteStartRequest(cp_id="", id_tag="ABC"))
+        assert exc.value.status == Status.INVALID_ARGUMENT
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_remote_start_charger_timeout_returns_deadline_exceeded(
+    fake_session_factory: Any, settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Charger on this pod but never replies → DEADLINE_EXCEEDED."""
+    # Patch the timeout constant down so the test runs in <1s.
+    from eveys_ocpp.transport import grpc_server as gs_module
+
+    monkeypatch.setattr(gs_module, "_OCPP_REQUEST_TIMEOUT_SECONDS", 0.1)
+
+    fake_cp = MagicMock()
+    fake_cp.id = "CP_001"
+
+    async def _hang(*_a: object, **_kw: object) -> None:
+        await asyncio.sleep(10)  # well past 0.1s timeout
+
+    fake_cp.call = AsyncMock(side_effect=_hang)
+
+    connections = ConnectionMap()
+    connections.add(fake_cp)
+
+    service = OcppGatewayService(
+        session_factory=fake_session_factory,
+        settings=settings,
+        connections=connections,
+    )
+    server, port = await _spawn_server(service)
+    try:
+        async with Channel("127.0.0.1", port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            with pytest.raises(GRPCError) as exc:
+                await stub.RemoteStart(gateway_pb2.RemoteStartRequest(cp_id="CP_001", id_tag="X"))
+        assert exc.value.status == Status.DEADLINE_EXCEEDED
+    finally:
+        server.close()
+        await server.wait_closed()
