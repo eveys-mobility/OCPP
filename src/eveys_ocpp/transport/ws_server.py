@@ -20,6 +20,7 @@ from eveys_ocpp.observability import bind_contextvars, clear_contextvars, get_lo
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+    from eveys_ocpp.events import EventProducer
     from eveys_ocpp.registry import Registry
     from eveys_ocpp.settings import Settings
 
@@ -34,6 +35,7 @@ async def _on_connect(
     session_factory: async_sessionmaker[AsyncSession],
     settings: Settings,
     registry: Registry | None,
+    event_producer: EventProducer | None = None,
 ) -> None:
     """Per-connection coroutine. Lives for the duration of the WS."""
     if connection.subprotocol != OCPP_SUBPROTOCOL:
@@ -61,6 +63,7 @@ async def _on_connect(
         session_factory=session_factory,
         settings=settings,
         registry=registry,
+        event_producer=event_producer,
     )
     try:
         await cp.start()
@@ -79,11 +82,13 @@ async def serve_forever(
     session_factory: async_sessionmaker[AsyncSession],
     settings: Settings,
     registry: Registry | None = None,
+    event_producer: EventProducer | None = None,
 ) -> None:
     """Start the WS server and block until cancelled.
 
-    `registry` is optional so unit tests + the W1-style local stack can
-    skip Redis. Production wiring (`__main__.py`) always passes one.
+    `registry` and `event_producer` are optional so unit tests + the
+    W1-style local stack can skip Redis / Kafka. Production wiring
+    (`__main__.py`) always passes both.
     """
 
     async def handler(connection: ServerConnection) -> None:
@@ -92,6 +97,7 @@ async def serve_forever(
             session_factory=session_factory,
             settings=settings,
             registry=registry,
+            event_producer=event_producer,
         )
 
     async with serve(

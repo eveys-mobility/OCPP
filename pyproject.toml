@@ -22,6 +22,7 @@ dependencies = [
     "grpclib>=0.4.7",              # async-native gRPC (ADR-0001)
     "protobuf>=5.28",              # runtime for grpclib-generated stubs
     "redis>=5.2",                  # async Redis client for online registry + pub/sub bus (E2-9, E2-10)
+    "aiokafka>=0.12",              # async Kafka producer for event firehose (E2-7, E2-8); first use is MeterValues
 ]
 
 [project.optional-dependencies]
@@ -109,6 +110,12 @@ module = ["redis.*"]
 ignore_missing_imports = true
 follow_untyped_imports = true
 
+# aiokafka ships no py.typed marker. Treat as opaque at the boundary;
+# `KafkaEventProducer` keeps strict types for its callers.
+[[tool.mypy.overrides]]
+module = ["aiokafka.*"]
+ignore_missing_imports = true
+
 # mobilityhouse/ocpp does not ship a py.typed marker yet (upstream issue).
 # Treat its public API as untyped so we don't have to spray `# type: ignore`
 # across every handler. Our wrappers around it are still strictly typed.
@@ -118,11 +125,17 @@ ignore_missing_imports = true
 follow_untyped_imports = true
 
 # Our connection module bridges to the untyped library — relax the
-# decorator + untyped-call rules just here.
+# decorator + untyped-call rules just here. Handlers that touch the
+# opaque `_generated.events.v1.events_pb2` stubs get the same.
 [[tool.mypy.overrides]]
-module = ["eveys_ocpp.connection", "eveys_ocpp.transport.ws_server"]
+module = [
+    "eveys_ocpp.connection",
+    "eveys_ocpp.transport.ws_server",
+    "eveys_ocpp.handlers.v16.meter_values",
+]
 disallow_untyped_decorators = false
 disallow_untyped_calls = false
+disable_error_code = ["name-defined", "attr-defined", "no-any-return"]
 
 # ---- pytest -----------------------------------------------------------------
 [tool.pytest.ini_options]

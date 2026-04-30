@@ -46,13 +46,13 @@
 
 | ID | Task | Output |
 |---|---|---|
-| E2-1 | Implement remaining ~20 OCPP 1.6 Core actions (handlers + tests) | All actions covered; per-action coverage table green |
+| E2-1 | Implement remaining ~20 OCPP 1.6 Core actions (handlers + tests) | 🟡 in progress — `MeterValues` shipped (handler + sanity-range quarantine + Kafka publish via `EventProducer`; unit tests + e2e); rest of Core actions still TODO |
 | E2-2 | Define `proto/ocpp_gw/v1/gateway.proto` — gRPC commands | ✅ done — service `OcppGateway` with 7 RPCs; canonical gRPC status codes + per-RPC outcome enums; SmartCharging types stubbed |
 | E2-3 | Define `proto/events/v1/events.proto` — Kafka event envelopes | ✅ done — single `EventEnvelope` with `oneof payload`; 5 topics (`cp.connected` / `cp.boot` / `cp.status` / `cp.meter` / `tx.started`); `cp_id` as Kafka partition key per AGENTS rule |
 | E2-4 | gRPC server scaffolding (`grpclib`) | ✅ done — `OcppGatewayService` implements all 7 RPCs as `UNIMPLEMENTED` placeholders (real bodies land E2-5/E2-6); `__main__.py` runs WS + gRPC concurrently via `asyncio.TaskGroup`; `make protoc` regenerates from `proto/`; runtime image stays at 171 MB via two-stage Docker build |
 | E2-5 | Implement gRPC `RemoteStart` end-to-end | gRPC call → WS Call → charger response → gRPC reply |
 | E2-6 | Implement remaining gRPC commands | All 7 implemented + tested |
-| E2-7 | Kafka producer (`aiokafka`) | Producer initialized at startup; reconnects on broker drop |
+| E2-7 | Kafka producer (`aiokafka`) | 🟡 partial — `KafkaEventProducer` (aiokafka) shipped with E2-1 MeterValues; `start()`/`stop()` lifecycle wired into `__main__`; reconnect-on-broker-drop tuning + batching defaults still TODO here |
 | E2-8 | Wire each handler to publish its event | E2E test: handler runs → message appears in `kcat` |
 | E2-9 | Redis online registry: `cp:online:{cp_id} → pod_id` with 120s TTL | ✅ done — `Registry` class wraps redis.asyncio; WS connect → `mark_online`, Heartbeat → `refresh` (re-claims if expired), WS disconnect → compare-and-delete via Lua to avoid clobbering a reconnected charger on another pod; `pod_id` from Settings (defaults to hostname; K8s downward API in prod); e2e test asserts key lifecycle |
 | E2-10 | Cross-pod command bus: pub/sub on `cp:cmd:{cp_id}` channel | Two-pod test passes |
