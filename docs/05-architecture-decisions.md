@@ -75,6 +75,7 @@ ADRs are **never deleted**. They are append-only history.
 | [0003](./adr/0003-monorepo-layout.md) | Monorepo layout (`eveys/<service>`) | Accepted | 2026-04-29 |
 | [0004](./adr/0004-clickhouse-timeseries-store.md) | ClickHouse as the time-series store | Accepted | 2026-04-29 |
 | [0005](./adr/0005-certification-target.md) | Certification target: OCPP 1.6 CSMS, all profiles | Accepted | 2026-04-29 |
+| [0015](./adr/0015-kafka-event-envelope-format.md) | Kafka event envelope format (one envelope, five topics, `cp_id` partition key) | Accepted | 2026-04-30 |
 
 ## Pending / planned
 
