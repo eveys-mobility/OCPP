@@ -38,6 +38,10 @@ from eveys_ocpp.transport.grpc_server import OcppGatewayService
 
 _REDIS_HOST = os.environ.get("E2E_REDIS_HOST", "localhost")
 _REDIS_PORT = int(os.environ.get("E2E_REDIS_PORT", "6379"))
+# CI sets this; when set, a missing Redis is a hard failure rather than
+# a silent skip. This file is the literal "two-pod test passes" acceptance
+# criterion for E2-10 — a green-but-skipped run would defeat its purpose.
+_REDIS_REQUIRED = os.environ.get("E2E_REQUIRE") == "1"
 
 
 def _redis_reachable() -> bool:
@@ -50,10 +54,17 @@ def _redis_reachable() -> bool:
         return True
 
 
-pytestmark = pytest.mark.skipif(
-    not _redis_reachable(),
-    reason=f"Redis at {_REDIS_HOST}:{_REDIS_PORT} unreachable; two-pod test needs it",
-)
+if not _redis_reachable():
+    _msg = f"Redis at {_REDIS_HOST}:{_REDIS_PORT} unreachable; two-pod test needs it"
+    if _REDIS_REQUIRED:
+        pytest.fail(
+            f"{_msg}. E2E_REQUIRE=1 — the tests:e2e job must keep its "
+            "`redis:7-alpine` service. CI config bug, not env issue. "
+            "This is the E2-10 acceptance test; skipping it silently is "
+            "a false-green.",
+            pytrace=False,
+        )
+    pytestmark = pytest.mark.skip(reason=_msg)
 
 
 @pytest.fixture
