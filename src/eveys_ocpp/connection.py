@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     from websockets.asyncio.server import ServerConnection
 
     from eveys_ocpp.events import EventProducer
+    from eveys_ocpp.idempotency import IdempotencyCache
     from eveys_ocpp.registry import Registry
     from eveys_ocpp.settings import Settings
 
@@ -53,12 +54,14 @@ class EveysChargePoint(Cpv16):
         settings: Settings,
         registry: Registry | None = None,
         event_producer: EventProducer | None = None,
+        idempotency: IdempotencyCache | None = None,
     ) -> None:
         super().__init__(cp_id, connection)
         self.session_factory = session_factory
         self.settings = settings
         self.registry = registry
         self.event_producer = event_producer
+        self.idempotency = idempotency
 
     # ---- handler delegation -------------------------------------------------
     # Each handler module exports a `handle(...)` coroutine. We thin-wrap
@@ -71,9 +74,17 @@ class EveysChargePoint(Cpv16):
     # real types. Tightening this to a Protocol/TypedDict would mean
     # restating the schema — net negative.
 
+    # Two handlers must be idempotent on inbound replays (AGENTS rule 3,
+    # E2-11). We add `call_unique_id` to the dispatch signature so the
+    # mobilityhouse/ocpp library passes the OCPP frame's MessageId — that's
+    # the dedup key. The library only forwards the kwarg if it's named
+    # explicitly in the signature; with bare `**kwargs` it's omitted.
+
     @on(Action.boot_notification)
-    async def on_boot_notification(self, **kwargs: Any) -> call_result.BootNotification:
-        return await boot_notification.handle(self, **kwargs)
+    async def on_boot_notification(
+        self, *, call_unique_id: str | None = None, **kwargs: Any
+    ) -> call_result.BootNotification:
+        return await boot_notification.handle(self, message_id=call_unique_id, **kwargs)
 
     @on(Action.heartbeat)
     async def on_heartbeat(self) -> call_result.Heartbeat:
@@ -92,8 +103,10 @@ class EveysChargePoint(Cpv16):
         return await start_transaction.handle(self, **kwargs)
 
     @on(Action.stop_transaction)
-    async def on_stop_transaction(self, **kwargs: Any) -> call_result.StopTransaction:
-        return await stop_transaction.handle(self, **kwargs)
+    async def on_stop_transaction(
+        self, *, call_unique_id: str | None = None, **kwargs: Any
+    ) -> call_result.StopTransaction:
+        return await stop_transaction.handle(self, message_id=call_unique_id, **kwargs)
 
     @on(Action.meter_values)
     async def on_meter_values(self, **kwargs: Any) -> call_result.MeterValues:

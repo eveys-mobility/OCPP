@@ -10,10 +10,15 @@ JSON Schemas: `ocpp.v16.schemas.BootNotification` (request) and
 mobilityhouse/ocpp library (ADR-0002) — we cannot send a malformed payload.
 
 Behavior in v0:
-1. Upsert the charger row (idempotent on `cp_id` — AGENTS rule 3).
-2. Reply with `RegistrationStatus.accepted` and the configured heartbeat
-   interval (`interval` is in seconds, per the BootNotificationResponse
-   schema).
+1. **Replay gate (E2-11, AGENTS rule 3).** Consult the idempotency
+   cache keyed by ``(cp_id, message_id)``. Cache hit → this is a
+   retry of a request we already handled; skip the DB upsert AND the
+   Kafka emit, return the canonical Accepted response. Cache miss →
+   proceed and the cache key is now recorded.
+2. Upsert the charger row.
+3. Reply with `RegistrationStatus.accepted` and the configured
+   heartbeat interval (`interval` is in seconds, per the
+   BootNotificationResponse schema).
 
 The spec also defines `Pending` and `Rejected` for the response status:
 - `Pending` is used when the CSMS wants to delay registration (e.g. firmware
@@ -45,9 +50,18 @@ if TYPE_CHECKING:
 log = get_logger(__name__)
 
 
+def _accepted_response(received_at: datetime, interval: int) -> call_result.BootNotification:
+    return call_result.BootNotification(
+        current_time=received_at.isoformat(),
+        interval=interval,
+        status=RegistrationStatus.accepted,
+    )
+
+
 async def handle(
     cp: EveysChargePoint,
     *,
+    message_id: str | None = None,
     charge_point_vendor: str | None = None,
     charge_point_model: str | None = None,
     firmware_version: str | None = None,
@@ -57,6 +71,22 @@ async def handle(
     bind_contextvars(cp_id=cp.id, action="BootNotification", direction="rx")
 
     received_at = datetime.now(UTC)
+
+    # Replay gate (E2-11). If the cache says we've seen this exact
+    # message_id within the TTL window, return the same response and
+    # skip the DB write + Kafka emit. A Redis outage here falls
+    # through to the normal path — better a rare double-write than a
+    # wedged handler when the cache is the problem (ADR-0017).
+    if cp.idempotency is not None and message_id:
+        try:
+            replay = await cp.idempotency.check_and_record(cp_id=cp.id, message_id=message_id)
+        except Exception as exc:
+            log.warning("boot_notification.idempotency_failed", error=str(exc))
+            replay = False
+        if replay:
+            log.info("boot_notification.replay_ignored", message_id=message_id)
+            return _accepted_response(received_at, cp.settings.heartbeat_interval_seconds)
+
     async with session_scope(cp.session_factory) as session:
         await upsert_charge_point_boot(
             session,
@@ -74,8 +104,4 @@ async def handle(
         model=charge_point_model,
     )
 
-    return call_result.BootNotification(
-        current_time=received_at.isoformat(),
-        interval=cp.settings.heartbeat_interval_seconds,
-        status=RegistrationStatus.accepted,
-    )
+    return _accepted_response(received_at, cp.settings.heartbeat_interval_seconds)
