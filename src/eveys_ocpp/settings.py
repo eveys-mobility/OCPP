@@ -100,6 +100,13 @@ class Settings(BaseSettings):
     # as the registry (see `redis_url`).
     bus_request_timeout_seconds: int = Field(default=30, ge=1, le=120)
 
+    # ---- Idempotency cache (E2-11) --------------------------------------
+    # Window for treating a repeat (cp_id, message_id) as a replay.
+    # Real OCPP retry storms resolve within seconds; 5 minutes gives
+    # ample margin. Longer windows accumulate keys without benefit;
+    # OCPP message_ids are UUIDs and never reused across power cycles.
+    idempotency_ttl_seconds: int = Field(default=300, ge=30, le=3600)
+
 
 def get_settings() -> Settings:
     """Build a fresh `Settings` from the current environment.

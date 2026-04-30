@@ -16,6 +16,7 @@ from eveys_ocpp import __version__
 from eveys_ocpp.bus import CommandBus
 from eveys_ocpp.connections import ConnectionMap
 from eveys_ocpp.events import KafkaEventProducer
+from eveys_ocpp.idempotency import IdempotencyCache
 from eveys_ocpp.observability import configure_logging, get_logger
 from eveys_ocpp.persistence.db import make_engine, make_session_factory
 from eveys_ocpp.registry import Registry
@@ -36,12 +37,14 @@ async def _serve_all(
     connections: ConnectionMap,
     event_producer: KafkaEventProducer,
     bus: CommandBus,
+    idempotency: IdempotencyCache,
 ) -> None:
     """Run WS and gRPC servers concurrently; cancel both if either fails.
 
-    Servers share the same ``ConnectionMap``, ``Registry``, and
-    ``CommandBus`` so cross-pod gRPC commands can find the WS opened
-    by another pod's WS server.
+    Servers share the same ``ConnectionMap``, ``Registry``,
+    ``CommandBus``, and ``IdempotencyCache`` so cross-pod gRPC commands
+    can find the WS opened by another pod's WS server, and replay
+    detection works regardless of which pod ack'd the original.
     """
     log = get_logger(__name__)
     log.info(
@@ -62,6 +65,7 @@ async def _serve_all(
                     registry=registry,
                     connections=connections,
                     event_producer=event_producer,
+                    idempotency=idempotency,
                 ),
                 name="ws_server",
             )
@@ -124,6 +128,7 @@ def main() -> None:
         connections=connections,
         request_timeout_seconds=float(settings.bus_request_timeout_seconds),
     )
+    idempotency = IdempotencyCache(redis_client, settings=settings)
 
     asyncio.run(
         _serve_all(
@@ -134,6 +139,7 @@ def main() -> None:
             connections=connections,
             event_producer=event_producer,
             bus=bus,
+            idempotency=idempotency,
         )
     )
 

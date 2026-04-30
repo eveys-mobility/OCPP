@@ -67,3 +67,97 @@ async def test_reject_invalid_id_tag(fake_cp: Any, monkeypatch: pytest.MonkeyPat
     )
 
     assert result.id_tag_info.status == AuthorizationStatus.invalid
+
+
+# ---- E2-11 idempotency -----------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_replay_skips_db_write(fake_cp: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Cache hit → return Accepted without invoking the DB-layer stop."""
+    stop = AsyncMock(return_value=True)
+    monkeypatch.setattr(stop_transaction, "stop_transaction", stop)
+
+    fake_idem = AsyncMock()
+    fake_idem.check_and_record = AsyncMock(return_value=True)  # replay
+    fake_cp.idempotency = fake_idem
+
+    result = await stop_transaction.handle(
+        fake_cp,
+        message_id="MSG-RETRY-1",
+        transaction_id=999,
+        meter_stop=12345,
+        timestamp="2026-04-29T01:00:00+00:00",
+    )
+
+    assert result.id_tag_info.status == AuthorizationStatus.accepted
+    stop.assert_not_awaited()
+    fake_idem.check_and_record.assert_awaited_once_with(
+        cp_id="TEST_CP_001", message_id="MSG-RETRY-1"
+    )
+
+
+@pytest.mark.asyncio
+async def test_first_sighting_runs_handler(fake_cp: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    stop = AsyncMock(return_value=True)
+    monkeypatch.setattr(stop_transaction, "stop_transaction", stop)
+
+    fake_idem = AsyncMock()
+    fake_idem.check_and_record = AsyncMock(return_value=False)  # not a replay
+    fake_cp.idempotency = fake_idem
+
+    result = await stop_transaction.handle(
+        fake_cp,
+        message_id="MSG-FIRST",
+        transaction_id=999,
+        meter_stop=12345,
+        timestamp="2026-04-29T01:00:00+00:00",
+    )
+
+    assert result.id_tag_info.status == AuthorizationStatus.accepted
+    stop.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_cache_outage_falls_through_to_db_dedup(
+    fake_cp: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Redis outage → fall through to the DB-layer dedup. Defense in depth."""
+    stop = AsyncMock(return_value=True)
+    monkeypatch.setattr(stop_transaction, "stop_transaction", stop)
+
+    fake_idem = AsyncMock()
+    fake_idem.check_and_record = AsyncMock(side_effect=RuntimeError("redis down"))
+    fake_cp.idempotency = fake_idem
+
+    result = await stop_transaction.handle(
+        fake_cp,
+        message_id="MSG-Y",
+        transaction_id=999,
+        meter_stop=12345,
+        timestamp="2026-04-29T01:00:00+00:00",
+    )
+
+    assert result.id_tag_info.status == AuthorizationStatus.accepted
+    stop.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_no_idempotency_cache_falls_through(
+    fake_cp: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """idempotency=None → DB-layer dedup is the only line of defense."""
+    stop = AsyncMock(return_value=True)
+    monkeypatch.setattr(stop_transaction, "stop_transaction", stop)
+    fake_cp.idempotency = None
+
+    result = await stop_transaction.handle(
+        fake_cp,
+        message_id="MSG-Z",
+        transaction_id=999,
+        meter_stop=12345,
+        timestamp="2026-04-29T01:00:00+00:00",
+    )
+
+    assert result.id_tag_info.status == AuthorizationStatus.accepted
+    stop.assert_awaited_once()
