@@ -65,6 +65,61 @@ types:
   script:
     - .venv/bin/mypy
 
+# ---- E2-12 proto backward-compat gate (ADR-0018) ---------------------------
+#
+# Runs `buf breaking` against `main` so a field rename / removal /
+# renumbering / oneof-shape change in `proto/ocpp_gw/v1/` or
+# `proto/events/v1/` fails the MR before it can land. Hard-fails by
+# design — the proto contracts are explicitly frozen at v1
+# (`proto/README.md`); this gate enforces what the docs already promise.
+#
+# Only runs on MR pipelines (where there's a `main` to compare against).
+# On pushes to `main` itself there's nothing to compare.
+#
+# Bypass: an intentional v1→v2 break adds the `bypass-breaking-change`
+# label to the MR. The job exits 0 with a loud WARNING but the policy
+# (per ADR-0018) requires a tech-lead approval and a same-MR package
+# version bump.
+proto-breaking:
+  image: alpine:3.20
+  stage: quality
+  rules:
+    # MR pipelines only. On main push pipelines the gate is a no-op.
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+  variables:
+    # Pinned in line with ADR-0018 § Risks. Bump deliberately.
+    BUF_VERSION: "1.45.0"
+  before_script:
+    - apk add --no-cache curl git ca-certificates
+    # Install pinned `buf` binary. One static Go binary, ~25 MB.
+    - curl -sSL "https://github.com/bufbuild/buf/releases/download/v${BUF_VERSION}/buf-Linux-x86_64"
+        -o /usr/local/bin/buf
+    - chmod +x /usr/local/bin/buf
+    - buf --version
+    # MR pipelines fetch only the source branch by default. Fetch `main`
+    # explicitly so `buf breaking --against '.git#branch=main'` has a
+    # baseline to compare against.
+    - git fetch --depth=50 origin "${CI_DEFAULT_BRANCH}:${CI_DEFAULT_BRANCH}" || true
+  script:
+    # Bypass for intentional v1→v2 breaks. Per ADR-0018 the policy is
+    # tech-lead approval + same-MR version bump; this script just lets
+    # the pipeline pass — it does not enforce the policy itself.
+    - |
+      if echo "${CI_MERGE_REQUEST_LABELS}" | tr ',' '\n' | grep -Fxq "bypass-breaking-change"; then
+        echo "WARNING: bypass-breaking-change label present — proto-breaking gate skipped."
+        echo "Per ADR-0018, this requires tech-lead approval and a same-MR package version bump."
+        exit 0
+      fi
+    # `buf breaking` with a v2 multi-module workspace needs to be
+    # invoked per module; comparing the whole workspace against a
+    # whole-workspace baseline conflates the two modules' image counts.
+    # Loop over each module and compare it to its own subdir on main.
+    - |
+      for module in proto/ocpp_gw/v1 proto/events/v1; do
+        echo "=== buf breaking: $module ==="
+        buf breaking "$module" --against ".git#branch=${CI_DEFAULT_BRANCH},subdir=$module"
+      done
+
 tests:
   <<: *python-job
   stage: test
