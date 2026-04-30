@@ -2,8 +2,8 @@
 
 - **Status**: Accepted
 - **Date**: 2026-04-30
-- **Author**: AI-assisted (E2-11)
-- **Reviewers**: TBD on MR
+- **Author**: Eveys engineering (E2-11; AI-assisted draft, human-reviewed and merged)
+- **Reviewers**: Project tech lead (post-merge sign-off)
 
 ## Context
 
