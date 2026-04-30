@@ -118,23 +118,31 @@ async def running_service() -> AsyncIterator[None]:
     Skips the entire test if the schema isn't applied — the test relies on
     `charge_points` and `transactions` tables existing.
     """
-    # Skip if schema not applied (alembic hasn't run against the compose DB).
+    # If schema isn't applied: skip on dev laptop, hard-fail in CI. CI runs
+    # `alembic upgrade head` before pytest (see tests:e2e in .gitlab-ci.yml);
+    # if that step silently no-op'd, this test would otherwise green-skip.
     engine = create_async_engine(_TEST_DB_URL)
     async with engine.connect() as conn:
         try:
             await conn.execute(sa.text("SELECT 1 FROM charge_points LIMIT 1"))
             await conn.execute(sa.text("SELECT 1 FROM transactions LIMIT 1"))
         except Exception:
-            pytest.skip("schema not applied — run `alembic upgrade head` first")
+            msg = "schema not applied — run `alembic upgrade head` first"
+            if os.environ.get("E2E_REQUIRE") == "1":
+                pytest.fail(
+                    f"{msg}. E2E_REQUIRE=1 — `alembic upgrade head` should "
+                    "have run in the tests:e2e job before pytest.",
+                    pytrace=False,
+                )
+            pytest.skip(msg)
     await engine.dispose()
 
     # Override settings via env BEFORE importing the entry-point dependencies.
-    # We use module-level imports inside this fixture so `Settings()` reads our
-    # overrides, not the defaults from the running test process. Saved values
-    # are restored on teardown so other tests in the same pytest run see the
-    # process-default settings.
-    import os
-
+    # `os` is already imported at module scope; we don't reimport here (a
+    # second `import os` inside the function shadows the module-level name
+    # for the whole function and breaks the earlier reference above).
+    # Saved values are restored on teardown so other tests in the same
+    # pytest run see the process-default settings.
     saved_env = {
         k: os.environ.get(k)
         for k in (
