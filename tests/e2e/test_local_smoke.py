@@ -558,3 +558,117 @@ async def test_grpc_remote_start_offline_charger_returns_not_found(
         with pytest.raises(_GRPCError) as exc:
             await stub.RemoteStart(_gateway_pb2.RemoteStartRequest(cp_id="NEVER_SEEN", id_tag="X"))
     assert exc.value.status == _Status.NOT_FOUND
+
+
+@pytest.mark.asyncio
+async def test_grpc_remote_stop_dispatches_to_charger(
+    running_service: None,
+) -> None:
+    """E2-6 — gRPC RemoteStop reaches the charger and the reply translates."""
+    import asyncio as _asyncio
+
+    from grpclib.client import Channel as _Channel
+    from ocpp.routing import on as _on
+    from ocpp.v16 import call_result as _call_result
+    from ocpp.v16.enums import Action as _Action
+
+    from eveys_ocpp._generated.ocpp_gw.v1 import gateway_grpc as _gateway_grpc
+    from eveys_ocpp._generated.ocpp_gw.v1 import gateway_pb2 as _gateway_pb2
+
+    cp_id = "SMOKE_E2_6_001"
+    received_tx: list[int] = []
+
+    class _SimWithRemoteStop(_SimChargePoint):
+        @_on(_Action.remote_stop_transaction)
+        async def on_remote_stop(  # type: ignore[no-untyped-def]
+            self, transaction_id: int, **_: object
+        ):
+            received_tx.append(transaction_id)
+            return _call_result.RemoteStopTransaction(status="Accepted")
+
+    async with connect(f"ws://localhost:{_TEST_WS_PORT}/{cp_id}", subprotocols=["ocpp1.6"]) as ws:
+        sim = _SimWithRemoteStop(cp_id, ws)
+        loop_task = _asyncio.create_task(sim.start())
+        await sim.call(call.BootNotification(charge_point_vendor="ACME", charge_point_model="X1"))
+
+        async with _Channel("127.0.0.1", _TEST_GRPC_PORT) as ch:
+            stub = _gateway_grpc.OcppGatewayStub(ch)
+            response = await stub.RemoteStop(
+                _gateway_pb2.RemoteStopRequest(cp_id=cp_id, transaction_id=12345)
+            )
+
+        assert response.status == _gateway_pb2.REMOTE_STOP_STATUS_ACCEPTED
+        assert received_tx == [12345]
+
+        loop_task.cancel()
+
+
+@pytest.mark.asyncio
+async def test_grpc_get_charger_status_offline(
+    running_service: None,
+) -> None:
+    """E2-6 — GetChargerStatus answers from registry+postgres, no OCPP round-trip.
+
+    A charger that has never connected yields online=False, empty pod_id,
+    empty last_status, empty last_heartbeat_at.
+    """
+    from grpclib.client import Channel as _Channel
+
+    from eveys_ocpp._generated.ocpp_gw.v1 import gateway_grpc as _gateway_grpc
+    from eveys_ocpp._generated.ocpp_gw.v1 import gateway_pb2 as _gateway_pb2
+
+    async with _Channel("127.0.0.1", _TEST_GRPC_PORT) as ch:
+        stub = _gateway_grpc.OcppGatewayStub(ch)
+        response = await stub.GetChargerStatus(
+            _gateway_pb2.GetChargerStatusRequest(cp_id="NEVER_SEEN_BY_E2_6")
+        )
+
+    assert response.cp_id == "NEVER_SEEN_BY_E2_6"
+    assert response.online is False
+    assert response.pod_id == ""
+    assert response.last_status == ""
+    assert response.last_heartbeat_at == ""
+
+
+@pytest.mark.asyncio
+async def test_grpc_get_charger_status_online_with_cached_state(
+    running_service: None,
+) -> None:
+    """Connect a sim, send Boot + StatusNotification, then read GetChargerStatus.
+
+    Verifies the registry online flag + the Postgres-cached `last_status`.
+    """
+    import asyncio as _asyncio
+
+    from grpclib.client import Channel as _Channel
+
+    from eveys_ocpp._generated.ocpp_gw.v1 import gateway_grpc as _gateway_grpc
+    from eveys_ocpp._generated.ocpp_gw.v1 import gateway_pb2 as _gateway_pb2
+
+    cp_id = "SMOKE_E2_6_STATUS_001"
+    async with connect(f"ws://localhost:{_TEST_WS_PORT}/{cp_id}", subprotocols=["ocpp1.6"]) as ws:
+        sim = _SimChargePoint(cp_id, ws)
+        loop_task = _asyncio.create_task(sim.start())
+        await sim.call(call.BootNotification(charge_point_vendor="ACME", charge_point_model="X1"))
+        await sim.call(
+            call.StatusNotification(
+                connector_id=1,
+                error_code="NoError",
+                status="Available",
+            )
+        )
+
+        # Tiny sleep to let the WS handler's Postgres write commit before we read.
+        await _asyncio.sleep(0.1)
+
+        async with _Channel("127.0.0.1", _TEST_GRPC_PORT) as ch:
+            stub = _gateway_grpc.OcppGatewayStub(ch)
+            response = await stub.GetChargerStatus(
+                _gateway_pb2.GetChargerStatusRequest(cp_id=cp_id)
+            )
+
+        assert response.online is True
+        assert response.pod_id != ""  # whatever this test process registered as
+        assert response.last_status == "Available"
+
+        loop_task.cancel()
