@@ -45,6 +45,12 @@ class Settings(BaseSettings):
     # MeterValues never go to Postgres — Kafka is the only persistence
     # path; ClickHouse consumes from this topic (E2-14).
     kafka_topic_cp_meter: str = Field(default="cp.meter")
+    # Topics wired in E2-8. Names match the frozen proto contract
+    # (proto/events/v1/events.proto, E2-3) so consumers can subscribe
+    # without reading our settings.
+    kafka_topic_cp_boot: str = Field(default="cp.boot")
+    kafka_topic_cp_status: str = Field(default="cp.status")
+    kafka_topic_tx_started: str = Field(default="tx.started")
 
     # ---- Redis online registry (E2-9) -----------------------------------
     redis_url: str = Field(

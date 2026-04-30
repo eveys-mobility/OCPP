@@ -4,7 +4,7 @@
 
 `eveys/ocpp` is a standalone, horizontally scalable Python service that owns every charger's WebSocket connection and exposes a stable internal API (gRPC + Kafka events) for the rest of the platform.
 
-This repository is in **Phase 2 — Full OCPP 1.6 Core** (in progress). Phase 1 is closed: the WS server, the seven Phase-1 handlers, the Postgres schema, and the local docker-compose stack all run. Phase 2 has landed the v1 protos, the gRPC server, all seven RPC bodies — `RemoteStart`, `RemoteStop`, `Reset`, `ChangeConfiguration`, `TriggerMessage`, `UnlockConnector`, `GetChargerStatus` — with **cross-pod routing** via Redis pub/sub (E2-10, see ADR-0016), the Redis online registry, and the `MeterValues` → Kafka path. Still in flight: Kafka emit on the other handlers (E2-8) and the rest of OCPP 1.6 Core actions (E2-1). See [`docs/02-tasks.md`](./docs/02-tasks.md).
+This repository is in **Phase 2 — Full OCPP 1.6 Core** (in progress). Phase 1 is closed: the WS server, the seven Phase-1 handlers, the Postgres schema, and the local docker-compose stack all run. Phase 2 has landed the v1 protos, the gRPC server, all seven RPC bodies — `RemoteStart`, `RemoteStop`, `Reset`, `ChangeConfiguration`, `TriggerMessage`, `UnlockConnector`, `GetChargerStatus` — with **cross-pod routing** via Redis pub/sub (E2-10, see ADR-0016), the Redis online registry, and the four-topic Kafka event firehose: `cp.boot`, `cp.status`, `cp.meter`, and `tx.started` (E2-8). Still in flight: the rest of OCPP 1.6 Core actions (E2-1), the idempotency cache (E2-11), and ClickHouse ingestion (E2-13/E2-14). See [`docs/02-tasks.md`](./docs/02-tasks.md).
 
 ## Quick start
 

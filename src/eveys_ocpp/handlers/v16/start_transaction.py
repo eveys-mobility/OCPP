@@ -16,7 +16,15 @@ Behavior in v0:
    rather than auto-creating — silent auto-create would mask BootNotification
    bugs.
 3. Insert a transaction row; surrogate `id` doubles as `transaction_id`.
-4. Reply `Accepted`.
+4. Publish a `tx.started` event to Kafka (E2-8) so the session/billing
+   side of the platform can react. Best-effort — publish failure is
+   logged and dropped, never raised, since the OCPP `Accepted` reply is
+   already on its way back.
+5. Reply `Accepted`.
+
+The publish-after-commit ordering is intentional: only events for
+durably-recorded transactions are emitted. We don't emit on the
+INVALID id_tag or unknown-charger branches.
 
 Deviations from the OCA spec to verify before W2 / OCTT
 (see `docs/08-ocpp-conformance.md`):
@@ -30,13 +38,15 @@ Deviations from the OCA spec to verify before W2 / OCTT
 
 from __future__ import annotations
 
-from datetime import datetime
+import uuid
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from ocpp.v16 import call_result
 from ocpp.v16.datatypes import IdTagInfo
 from ocpp.v16.enums import AuthorizationStatus
 
+from eveys_ocpp._generated.events.v1 import events_pb2
 from eveys_ocpp.observability import bind_contextvars, get_logger
 from eveys_ocpp.persistence.db import session_scope
 from eveys_ocpp.persistence.repositories import get_charge_point_pk, insert_transaction
@@ -45,6 +55,17 @@ if TYPE_CHECKING:
     from eveys_ocpp.connection import EveysChargePoint
 
 log = get_logger(__name__)
+
+
+def _build_envelope(*, cp_id: str, payload: events_pb2.TxStarted, occurred_at: datetime) -> bytes:
+    envelope = events_pb2.EventEnvelope(
+        event_id=str(uuid.uuid4()),
+        occurred_at=occurred_at.isoformat(),
+        cp_id=cp_id,
+        schema_version="v1",
+        tx_started=payload,
+    )
+    return envelope.SerializeToString()
 
 
 async def handle(
@@ -90,6 +111,32 @@ async def handle(
         connector_id=connector_id,
         id_tag=id_tag,
     )
+
+    if cp.event_producer is not None:
+        payload = events_pb2.TxStarted(
+            transaction_id=transaction_id,
+            connector_id=connector_id,
+            id_tag=id_tag,
+            meter_start_wh=meter_start,
+            charger_reported_at=timestamp,
+        )
+        envelope_bytes = _build_envelope(
+            cp_id=cp.id, payload=payload, occurred_at=datetime.now(UTC)
+        )
+        # Best-effort publish — broker drop must not crash the OCPP
+        # handler. Same rationale as meter_values + boot_notification.
+        try:
+            await cp.event_producer.publish(
+                topic=cp.settings.kafka_topic_tx_started,
+                key=cp.id,
+                value=envelope_bytes,
+            )
+        except Exception as exc:
+            log.warning(
+                "start_transaction.publish_failed",
+                transaction_id=transaction_id,
+                error=str(exc),
+            )
 
     return call_result.StartTransaction(
         transaction_id=transaction_id,
