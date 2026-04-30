@@ -139,14 +139,17 @@ async def running_service() -> AsyncIterator[None]:
             "EVEYS_OCPP_WS_PORT",
             "EVEYS_OCPP_DB_URL",
             "EVEYS_OCPP_REDIS_URL",
+            "EVEYS_OCPP_KAFKA_BROKERS",
             "EVEYS_OCPP_LOG_JSON",
         )
     }
     os.environ["EVEYS_OCPP_WS_PORT"] = str(_TEST_WS_PORT)
     os.environ["EVEYS_OCPP_DB_URL"] = _TEST_DB_URL
     os.environ["EVEYS_OCPP_REDIS_URL"] = f"redis://{_REDIS_HOST}:6379/0"
+    os.environ["EVEYS_OCPP_KAFKA_BROKERS"] = f"{_KAFKA_HOST}:9092"
     os.environ["EVEYS_OCPP_LOG_JSON"] = "false"
 
+    from eveys_ocpp.events import KafkaEventProducer
     from eveys_ocpp.persistence.db import make_engine, make_session_factory
     from eveys_ocpp.registry import Registry
     from eveys_ocpp.settings import get_settings
@@ -156,12 +159,15 @@ async def running_service() -> AsyncIterator[None]:
     db_engine = make_engine(settings.db_url)
     session_factory = make_session_factory(db_engine)
     registry = Registry.from_settings(settings)
+    event_producer = KafkaEventProducer.from_settings(settings)
+    await event_producer.start()
 
     server_task = asyncio.create_task(
         serve_forever(
             session_factory=session_factory,
             settings=settings,
             registry=registry,
+            event_producer=event_producer,
         )
     )
     # Give the server a beat to bind.
@@ -174,6 +180,7 @@ async def running_service() -> AsyncIterator[None]:
         # Cancellation surfaces as CancelledError; tolerate any teardown error.
         with suppress(asyncio.CancelledError, Exception):
             await server_task
+        await event_producer.stop()
         await registry.close()
         await db_engine.dispose()
         # Restore env so subsequent tests see process-default settings.
@@ -363,3 +370,100 @@ async def test_registry_marks_charger_online_then_offline(
         assert value_after is None, f"registry key not cleaned up: {value_after!r}"
     finally:
         await redis.aclose()
+
+
+@pytest.mark.asyncio
+async def test_meter_values_publishes_to_kafka(
+    running_service: None,
+) -> None:
+    """E2-1 — sim sends MeterValues; envelope should land in `cp.meter`.
+
+    Uses a fresh aiokafka consumer subscribed to `cp.meter` from
+    `latest`; we need to subscribe BEFORE the sim publishes so we don't
+    miss the message.
+    """
+    from aiokafka import AIOKafkaConsumer
+
+    from eveys_ocpp._generated.events.v1 import events_pb2
+
+    cp_id = "SMOKE_E2_1_001"
+    consumer = AIOKafkaConsumer(
+        "cp.meter",
+        bootstrap_servers=f"{_KAFKA_HOST}:9092",
+        # Read only messages produced from now onward.
+        auto_offset_reset="latest",
+        group_id=None,  # standalone consumer; no group coordination
+        enable_auto_commit=False,
+    )
+    await consumer.start()
+    try:
+        # Give the broker a beat to register the assignment.
+        await asyncio.sleep(0.5)
+
+        async with connect(
+            f"ws://localhost:{_TEST_WS_PORT}/{cp_id}", subprotocols=["ocpp1.6"]
+        ) as ws:
+            sim = _SimChargePoint(cp_id, ws)
+            loop_task = asyncio.create_task(sim.start())
+
+            # Boot first so the cp row exists (BootNotification handler
+            # writes to Postgres; not strictly required for MeterValues
+            # but mirrors a real charger's lifecycle).
+            await sim.call(
+                call.BootNotification(charge_point_vendor="ACME", charge_point_model="X1")
+            )
+
+            from ocpp.v16.call import MeterValues as _MeterValuesCall
+
+            await sim.call(
+                _MeterValuesCall(
+                    connector_id=2,
+                    transaction_id=999,
+                    meter_value=[
+                        {
+                            "timestamp": "2026-04-30T01:23:45+00:00",
+                            "sampled_value": [
+                                {
+                                    "value": "5421",
+                                    "unit": "Wh",
+                                    "measurand": "Energy.Active.Import.Register",
+                                },
+                                {
+                                    "value": "11.2",
+                                    "unit": "A",
+                                    "measurand": "Current.Import",
+                                },
+                            ],
+                        }
+                    ],
+                )
+            )
+
+            loop_task.cancel()
+
+        # Now consume — there should be exactly one record on `cp.meter`
+        # for our cp_id. Wait up to 5 seconds.
+        deadline = asyncio.get_event_loop().time() + 5.0
+        record = None
+        while asyncio.get_event_loop().time() < deadline:
+            msg_batch = await consumer.getmany(timeout_ms=500, max_records=10)
+            for _tp, records in msg_batch.items():
+                for r in records:
+                    if r.key == cp_id.encode("utf-8"):
+                        record = r
+                        break
+                if record is not None:
+                    break
+            if record is not None:
+                break
+
+        assert record is not None, "no record on cp.meter for our cp_id"
+        envelope = events_pb2.EventEnvelope()
+        envelope.ParseFromString(record.value)
+        assert envelope.cp_id == cp_id
+        assert envelope.HasField("cp_meter")
+        assert envelope.cp_meter.connector_id == 2
+        assert envelope.cp_meter.transaction_id == 999
+        assert len(envelope.cp_meter.sampled_values) == 2
+    finally:
+        await consumer.stop()
