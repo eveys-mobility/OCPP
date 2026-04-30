@@ -56,8 +56,8 @@ A row moves from 🟡 to ✅ only when **all** of the following are true:
 | TC_004_1 | Identification First | 🟡 | `authorize.py` + `start_transaction.py` | [test_authorize.py](../tests/unit/handlers/v16/test_authorize.py), [test_start_transaction.py](../tests/unit/handlers/v16/test_start_transaction.py) | Auth-first flow accepted. |
 | TC_004_2 | Identification First — ConnectionTimeOut | ⏳ | E2-5 | — | Requires RemoteStart timeout machinery. |
 | TC_007 | Regular Start — Cached Id | ⏳ | E3-4 | — | Requires Redis Authorize cache. |
-| TC_011_1 | Remote Start — Remote Start First | ⏳ | E2-5 | — | Requires gRPC RemoteStart command. |
-| TC_011_2 | Remote Start — Time Out | ⏳ | E2-5 | — | |
+| TC_011_1 | Remote Start — Remote Start First | 🟡 | [`transport/grpc_server.py`](../src/eveys_ocpp/transport/grpc_server.py) (`RemoteStart`) | [test_grpc_server.py](../tests/unit/transport/test_grpc_server.py), [test_local_smoke.py::test_grpc_remote_start_dispatches_to_charger](../tests/e2e/test_local_smoke.py) | Same-pod routing via in-process `ConnectionMap`. Cross-pod (E2-10) returns `UNAVAILABLE` with owning pod_id. |
+| TC_011_2 | Remote Start — Time Out | 🟡 | [`transport/grpc_server.py`](../src/eveys_ocpp/transport/grpc_server.py) | — (unit-level only) | 30s WS-call deadline; charger non-response → gRPC `DEADLINE_EXCEEDED`. Idempotent retry semantics deferred (charger may have executed). |
 | TC_012 | Remote Stop Charging Session | ⏳ | E2-6 | — | |
 | TC_013 | Hard Reset Without transaction | ⏳ | E2-6 | — | |
 | TC_014 | Soft Reset Without Transaction | ⏳ | E2-6 | — | |
@@ -68,7 +68,7 @@ A row moves from 🟡 to ✅ only when **all** of the following are true:
 | TC_023_2 | Authorize expired | ⏳ | E3-3 | — | Mock today never returns Expired; real auth-service must. |
 | TC_023_3 | Authorize blocked | ⏳ | E3-3 | — | Mock today never returns Blocked. |
 | TC_024 | Start Charging Session — Lock Failure | ⏳ | E2-1 | — | Charger reports lock failure; CSMS records. |
-| TC_026 | Remote Start Charging Session — Rejected | ⏳ | E2-5 | — | |
+| TC_026 | Remote Start Charging Session — Rejected | 🟡 | [`transport/grpc_server.py`](../src/eveys_ocpp/transport/grpc_server.py) | [test_grpc_server.py](../tests/unit/transport/test_grpc_server.py) | Charger Rejected → gRPC `REMOTE_START_STATUS_REJECTED`. Currently same-pod only. |
 | TC_028 | Remote Stop Transaction — Rejected | ⏳ | E2-6 | — | |
 | TC_030 | Unlock Connector — Unlock Failure | ⏳ | E2-1 | — | |
 | TC_031 | Unlock Connector — Unknown Connector | ⏳ | E2-6 | — | |
@@ -100,7 +100,7 @@ These are charger-initiated actions the CSMS must respond to. Appendix C tests t
 |---|---|---|---|
 | Heartbeat | [test_heartbeat.py](../tests/unit/handlers/v16/test_heartbeat.py) | 🟡 | Refresh `last_heartbeat_at`; return server UTC; refresh Redis online TTL. |
 | StatusNotification | [test_status_notification.py](../tests/unit/handlers/v16/test_status_notification.py) | 🟡 | `last_status` only; per-state history goes to ClickHouse via Kafka (E2-8, E2-14). |
-| MeterValues (TC_070 sampled / TC_071 clock-aligned) | [test_meter_values.py](../tests/unit/handlers/v16/test_meter_values.py) | 🟡 | Forwards to Kafka topic `cp.meter` (CpMeter envelope). Per-sample sanity check at 100 MWh ([AGENTS rule 6](../AGENTS.md)). Postgres never sees MeterValues (AGENTS rule 4 + ADR-0004). Reconnect-on-broker-drop hardening pending E2-7. |
+| MeterValues (TC_070 sampled / TC_071 clock-aligned) | [test_meter_values.py](../tests/unit/handlers/v16/test_meter_values.py) | 🟡 | Forwards to Kafka topic `cp.meter` (CpMeter envelope). Per-sample sanity check at 100 MWh (AGENTS rule 6). Postgres never sees MeterValues (AGENTS rule 4 + ADR-0004). Broker errors are logged + dropped — they never crash the WS (`test_handler_survives_kafka_publish_exception`). Reconnect-on-broker-drop tuning + batching defaults pending E2-7. |
 
 ---
 
