@@ -32,6 +32,10 @@ from eveys_ocpp.connections import ConnectionMap
 
 _REDIS_HOST = os.environ.get("E2E_REDIS_HOST", "localhost")
 _REDIS_PORT = int(os.environ.get("E2E_REDIS_PORT", "6379"))
+# In CI we set this to "1" so a missing Redis service surfaces as a real
+# test failure instead of a silent skip that would let coverage drop.
+# Mirrors the env var that the tests:e2e job already uses.
+_REDIS_REQUIRED = os.environ.get("E2E_REQUIRE") == "1"
 
 
 def _redis_reachable() -> bool:
@@ -44,10 +48,18 @@ def _redis_reachable() -> bool:
         return True
 
 
-pytestmark = pytest.mark.skipif(
-    not _redis_reachable(),
-    reason=f"Redis at {_REDIS_HOST}:{_REDIS_PORT} unreachable; bus tests need it",
-)
+# When Redis is unreachable we either skip (dev laptop) or hard-fail (CI).
+# A required-but-missing Redis on the unit job would otherwise let the bus
+# module's coverage silently fall below the 80% gate.
+if not _redis_reachable():
+    _msg = f"Redis at {_REDIS_HOST}:{_REDIS_PORT} unreachable; bus tests need it"
+    if _REDIS_REQUIRED:
+        pytest.fail(
+            f"{_msg}. E2E_REQUIRE=1 — the CI tests job must declare a "
+            "`redis:7-alpine` service. CI config bug, not env issue.",
+            pytrace=False,
+        )
+    pytestmark = pytest.mark.skip(reason=_msg)
 
 
 # ---- fixtures ---------------------------------------------------------------
