@@ -88,5 +88,5 @@ Constraints:
 - [`proto/events/v1/events.proto`](../../proto/events/v1/events.proto) — the canonical schema this ADR formalizes.
 - [ADR-0004 — ClickHouse as the time-series store](./0004-clickhouse-timeseries-store.md) — the storage end of the same data path.
 - ADR-0014 (planned) — Schema Registry choice for Kafka events. Will revisit "JSON / Avro / protobuf" if a registry materially changes the trade-offs.
-- [`AGENTS.md`](../../AGENTS.md) — hard rule 4 (`MeterValues` to Kafka, never Postgres) and the per-charger-ordering rule.
+- `AGENTS.md` (at the repo root) — hard rule 4 (`MeterValues` to Kafka, never Postgres) and the per-charger-ordering rule.
 - [`docs/02-tasks.md`](../02-tasks.md) — E2-3 (proto frozen end of W3), E2-7 (producer), E2-8 (per-handler wiring).
