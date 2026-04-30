@@ -125,12 +125,14 @@ ignore_missing_imports = true
 follow_untyped_imports = true
 
 # Our connection module bridges to the untyped library — relax the
-# decorator + untyped-call rules just here. Handlers that touch the
-# opaque `_generated.events.v1.events_pb2` stubs get the same.
+# decorator + untyped-call rules just here. The gRPC server and the
+# MeterValues handler also touch opaque `_generated.*` proto stubs
+# and (for gRPC) the untyped `ocpp.v16.call` namespace; same relaxation.
 [[tool.mypy.overrides]]
 module = [
     "eveys_ocpp.connection",
     "eveys_ocpp.transport.ws_server",
+    "eveys_ocpp.transport.grpc_server",
     "eveys_ocpp.handlers.v16.meter_values",
 ]
 disallow_untyped_decorators = false
