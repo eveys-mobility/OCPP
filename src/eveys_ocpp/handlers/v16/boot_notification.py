@@ -16,7 +16,11 @@ Behavior in v0:
    Kafka emit, return the canonical Accepted response. Cache miss →
    proceed and the cache key is now recorded.
 2. Upsert the charger row.
-3. Reply with `RegistrationStatus.accepted` and the configured
+3. Publish a `cp.boot` event to Kafka (E2-8) for downstream consumers
+   (mobile BFF, fleet dashboards) — best-effort: a publish failure is
+   logged and dropped, never raised. The OCPP response still goes back
+   to the charger.
+4. Reply with `RegistrationStatus.accepted` and the configured
    heartbeat interval (`interval` is in seconds, per the
    BootNotificationResponse schema).
 
@@ -34,12 +38,14 @@ Deviations from the OCA spec to verify before W2 / OCTT (see
 
 from __future__ import annotations
 
+import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from ocpp.v16 import call_result
 from ocpp.v16.enums import RegistrationStatus
 
+from eveys_ocpp._generated.events.v1 import events_pb2
 from eveys_ocpp.observability import bind_contextvars, get_logger
 from eveys_ocpp.persistence.db import session_scope
 from eveys_ocpp.persistence.repositories import upsert_charge_point_boot
@@ -56,6 +62,17 @@ def _accepted_response(received_at: datetime, interval: int) -> call_result.Boot
         interval=interval,
         status=RegistrationStatus.accepted,
     )
+
+
+def _build_envelope(*, cp_id: str, payload: events_pb2.CpBoot, occurred_at: datetime) -> bytes:
+    envelope = events_pb2.EventEnvelope(
+        event_id=str(uuid.uuid4()),
+        occurred_at=occurred_at.isoformat(),
+        cp_id=cp_id,
+        schema_version="v1",
+        cp_boot=payload,
+    )
+    return envelope.SerializeToString()
 
 
 async def handle(
@@ -103,5 +120,26 @@ async def handle(
         vendor=charge_point_vendor,
         model=charge_point_model,
     )
+
+    if cp.event_producer is not None:
+        payload = events_pb2.CpBoot(
+            vendor=charge_point_vendor or "",
+            model=charge_point_model or "",
+            firmware_version=firmware_version or "",
+            serial_number=charge_point_serial_number or "",
+            status=events_pb2.CP_BOOT_STATUS_ACCEPTED,
+        )
+        envelope_bytes = _build_envelope(cp_id=cp.id, payload=payload, occurred_at=received_at)
+        # Best-effort publish — a broker drop must not crash the OCPP
+        # handler, otherwise a flaky broker DoSes the gateway as
+        # chargers retry. Match the meter_values pattern.
+        try:
+            await cp.event_producer.publish(
+                topic=cp.settings.kafka_topic_cp_boot,
+                key=cp.id,
+                value=envelope_bytes,
+            )
+        except Exception as exc:
+            log.warning("boot_notification.publish_failed", error=str(exc))
 
     return _accepted_response(received_at, cp.settings.heartbeat_interval_seconds)

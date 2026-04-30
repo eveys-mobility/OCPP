@@ -162,10 +162,18 @@ async def handle(
             charger_reported_at=charger_reported_at,
         )
         envelope_bytes = _build_envelope(cp_id=cp.id, payload=payload)
-        await cp.event_producer.publish(
-            topic=cp.settings.kafka_topic_cp_meter,
-            key=cp.id,
-            value=envelope_bytes,
-        )
+        # Best-effort publish — a Kafka broker drop must not crash the
+        # OCPP handler. Without this guard, a flaky broker would DoS the
+        # gateway: the OCPP library treats handler exceptions as crashes,
+        # the charger gets no MeterValuesResponse, and chargers retry
+        # aggressively. Same pattern the other E2-8 emitters use.
+        try:
+            await cp.event_producer.publish(
+                topic=cp.settings.kafka_topic_cp_meter,
+                key=cp.id,
+                value=envelope_bytes,
+            )
+        except Exception as exc:
+            log.warning("meter_values.publish_failed", error=str(exc))
 
     return call_result.MeterValues()
