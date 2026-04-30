@@ -134,6 +134,11 @@ module = [
     "eveys_ocpp.transport.ws_server",
     "eveys_ocpp.transport.grpc_server",
     "eveys_ocpp.handlers.v16.meter_values",
+    # E2-8 emitters touch the same generated `events_pb2` types — same
+    # untyped-stub story as meter_values.
+    "eveys_ocpp.handlers.v16.boot_notification",
+    "eveys_ocpp.handlers.v16.status_notification",
+    "eveys_ocpp.handlers.v16.start_transaction",
 ]
 disallow_untyped_decorators = false
 disallow_untyped_calls = false

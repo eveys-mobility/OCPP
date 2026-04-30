@@ -131,7 +131,7 @@ The rollout ramp (Phase 7) is **gate-driven** — moving from W1 → W5 only hap
 | E2-5: gRPC `RemoteStart` end-to-end | SB1 | E2-4, E2-9 |
 | E2-6: remaining gRPC commands (`RemoteStop`, `Reset`, `ChangeConfiguration`, `TriggerMessage`, `UnlockConnector`, `GetChargerStatus`) [P] | SB1, SB2 | E2-5 |
 | E2-7: Kafka producer (`aiokafka`) [P] | SB2 | E2-3 |
-| E2-8: wire each handler to publish its event | SB2 | E2-7 |
+| E2-8: wire each handler to publish its event ✅ | SB2 | E2-7 |
 | E2-10: cross-pod command bus (Redis pub/sub) ✅ | SB1 | E2-9 |
 | E2-11: idempotency cache (`BootNotification`, `StopTransaction`) ✅ [P] | SB2 | E2-9 |
 | E2-12: gRPC backward-compat tests (CI fails on field rename) [P] | QA | E2-6 |
