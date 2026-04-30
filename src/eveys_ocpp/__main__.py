@@ -10,7 +10,10 @@ import asyncio
 import sys
 from typing import TYPE_CHECKING
 
+from redis.asyncio import Redis
+
 from eveys_ocpp import __version__
+from eveys_ocpp.bus import CommandBus
 from eveys_ocpp.connections import ConnectionMap
 from eveys_ocpp.events import KafkaEventProducer
 from eveys_ocpp.observability import configure_logging, get_logger
@@ -28,14 +31,17 @@ async def _serve_all(
     *,
     session_factory: async_sessionmaker[AsyncSession],
     settings: Settings,
+    redis: Redis,
     registry: Registry,
     connections: ConnectionMap,
     event_producer: KafkaEventProducer,
+    bus: CommandBus,
 ) -> None:
     """Run WS and gRPC servers concurrently; cancel both if either fails.
 
-    Both servers share the same `ConnectionMap` and `Registry` so the
-    gRPC RemoteStart can find the WS opened by the WS server.
+    Servers share the same ``ConnectionMap``, ``Registry``, and
+    ``CommandBus`` so cross-pod gRPC commands can find the WS opened
+    by another pod's WS server.
     """
     log = get_logger(__name__)
     log.info(
@@ -46,6 +52,7 @@ async def _serve_all(
     )
 
     await event_producer.start()
+    await bus.start()
     try:
         async with asyncio.TaskGroup() as tg:
             tg.create_task(
@@ -64,12 +71,16 @@ async def _serve_all(
                     settings=settings,
                     connections=connections,
                     registry=registry,
+                    bus=bus,
                 ),
                 name="grpc_server",
             )
     finally:
+        await bus.stop()
         await event_producer.stop()
-        await registry.close()
+        # Single close on the shared client; `registry.close()` would
+        # close the same connection twice.
+        await redis.aclose()
 
 
 def main() -> None:
@@ -96,17 +107,33 @@ def main() -> None:
         max_overflow=settings.db_max_overflow,
     )
     session_factory = make_session_factory(engine)
-    registry = Registry.from_settings(settings)
+
+    # Share one Redis client between the registry and the bus to keep
+    # connection count flat (otherwise each pod opens 2x pools to Redis).
+    redis_client = Redis.from_url(
+        settings.redis_url,
+        decode_responses=True,
+        health_check_interval=30,
+    )
+    registry = Registry(redis_client, settings=settings)
     connections = ConnectionMap()
     event_producer = KafkaEventProducer.from_settings(settings)
+    bus = CommandBus(
+        redis_client,
+        pod_id=settings.pod_id,
+        connections=connections,
+        request_timeout_seconds=float(settings.bus_request_timeout_seconds),
+    )
 
     asyncio.run(
         _serve_all(
             session_factory=session_factory,
             settings=settings,
+            redis=redis_client,
             registry=registry,
             connections=connections,
             event_producer=event_producer,
+            bus=bus,
         )
     )
 
