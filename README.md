@@ -4,16 +4,19 @@
 
 `eveys/ocpp` is a standalone, horizontally scalable Python service that owns every charger's WebSocket connection and exposes a stable internal API (gRPC + Kafka events) for the rest of the platform.
 
-This repository is in **Phase 0 — Foundations**. Documentation is the deliverable; implementation begins after these docs are reviewed and approved.
+This repository is in **Phase 2 — Full OCPP 1.6 Core** (in progress). Phase 1 is closed: the WS server, the seven Phase-1 handlers, the Postgres schema, and the local docker-compose stack all run. Phase 2 has landed the v1 protos, the gRPC server scaffolding, the Redis online registry, and the `MeterValues` → Kafka path; the rest of Core, the remaining gRPC bodies, and Kafka emit on the other handlers are still in flight (see [`docs/02-tasks.md`](./docs/02-tasks.md)).
 
-## Quick start (when implemented)
+## Quick start
 
 ```bash
-make install        # install deps
-make tests          # full pre-commit gate (ruff, mypy, pytest)
-make format         # auto-format
-docker compose up   # local Postgres + Redis + Kafka + the service
+make install        # create .venv via uv + install runtime + dev deps + run protoc
+make tests          # full pre-commit gate (ruff, mypy, pytest with coverage)
+make format         # auto-format (isort + black)
+make compose-up     # local Postgres + Redis + Kafka + ClickHouse + the service container
+make e2e            # full e2e: compose-up → alembic upgrade → e2e tests → compose-down
 ```
+
+The service exposes the WS endpoint on `:9000` (chargers connect here) and the gRPC endpoint on `:50051` (the rest of the platform calls in here). Both are started together by `python -m eveys_ocpp` via an `asyncio.TaskGroup` (see `src/eveys_ocpp/__main__.py`).
 
 ## Documentation
 
@@ -82,6 +85,6 @@ See [ADR-0001](./docs/adr/0001-python-asyncio-stack.md), [ADR-0002](./docs/adr/0
 
 | Field | Value |
 |---|---|
-| Phase | **0 — Foundations** (docs only) |
+| Phase | **2 — Full OCPP 1.6 Core** (in progress; Phase 1 closed) |
 | Tech lead | TBD |
 | License | Proprietary — Eveys |
