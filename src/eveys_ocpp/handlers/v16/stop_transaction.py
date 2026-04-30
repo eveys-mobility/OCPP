@@ -10,26 +10,27 @@ provided).
 JSON Schemas: `ocpp.v16.schemas.StopTransaction` and `StopTransactionResponse`.
 
 Behavior in v0:
-1. Mark the transaction stopped (idempotent on `idempotency_key`).
-2. Reply with `IdTagInfo.status` for the optional id_tag.
+1. **Replay gate (E2-11, AGENTS rule 3).** Consult the Redis-backed
+   idempotency cache keyed by ``(cp_id, message_id)``. Cache hit →
+   skip the DB write, return the canonical Accepted response.
+2. Mark the transaction stopped at the DB layer (also idempotent —
+   defense in depth via the ``idempotency_key`` natural key).
+3. Reply with `IdTagInfo.status` for the optional id_tag.
 
-Idempotency model (AGENTS rule 3):
-- Key = `f"{cp_id}:{transaction_id}:{meter_stop}"`.
-- Replays (charger retries because our ACK was lost) carry the same
-  triple → repository returns `applied=False` → no double-write.
-- We always reply `Accepted` to the charger; the charger doesn't know
-  or care that we treated the call as a replay.
+Why two layers of dedup:
+- Redis (E2-11) is fast and catches the common case (charger retries
+  within seconds). Saves the DB round-trip.
+- Postgres ``idempotency_key`` (legacy) survives Redis flushes and
+  cross-pod retries that arrive after the cache TTL expires.
 
 Deviations from the OCA spec to verify before W2 / OCTT
 (see `docs/08-ocpp-conformance.md`):
 - `transactionData` (an array of MeterValues) is accepted but NOT
   persisted by this handler. MeterValues are ClickHouse-bound via Kafka
-  (tasks E2-8 + E2-14). Until those land, the array is logged but not
-  stored.
+  (tasks E2-8 + E2-14).
 - We don't validate that the inbound `transaction_id` actually exists —
   the repository's UPDATE simply matches zero rows and returns
-  `applied=False`. OCTT may flag this; if so, add an explicit lookup
-  and return a 4xx-equivalent error.
+  `applied=False`.
 - Real `session-service.CloseSession` integration lands in E3-6.
 """
 
@@ -52,9 +53,19 @@ if TYPE_CHECKING:
 log = get_logger(__name__)
 
 
+def _response(id_tag: str | None) -> call_result.StopTransaction:
+    info_status = (
+        AuthorizationStatus.invalid
+        if id_tag and id_tag.upper().startswith("INVALID")
+        else AuthorizationStatus.accepted
+    )
+    return call_result.StopTransaction(id_tag_info=IdTagInfo(status=info_status))
+
+
 async def handle(
     cp: EveysChargePoint,
     *,
+    message_id: str | None = None,
     transaction_id: int,
     meter_stop: int,
     timestamp: str,
@@ -69,13 +80,24 @@ async def handle(
         transaction_id=transaction_id,
     )
 
+    # Redis replay gate (E2-11). Cache hit → return the canonical
+    # response without DB work. Falls through to the DB path if Redis
+    # is misbehaving — the DB-layer dedup below still catches replays.
+    if cp.idempotency is not None and message_id:
+        try:
+            replay = await cp.idempotency.check_and_record(cp_id=cp.id, message_id=message_id)
+        except Exception as exc:
+            log.warning("stop_transaction.idempotency_failed", error=str(exc))
+            replay = False
+        if replay:
+            log.info("stop_transaction.replay_ignored_cache", message_id=message_id)
+            return _response(id_tag)
+
     reported_at = datetime.fromisoformat(timestamp)
 
-    # Use the OCPP message_id as the idempotency key when available.
-    # The mobilityhouse library exposes the current incoming message via
-    # `cp._unique_id_generator`'s peer state; in practice we synthesize a
-    # stable key from (cp_id, transaction_id, meter_stop) which is unique
-    # per logical stop event. Replays carry the same triple.
+    # DB-layer dedup. Survives a Redis flush or a TTL-expired retry.
+    # Key shape pre-dates E2-11; the Redis layer above catches the
+    # hot path so this rarely fires now.
     idem_key = f"{cp.id}:{transaction_id}:{meter_stop}"
 
     async with session_scope(cp.session_factory) as session:
@@ -91,11 +113,6 @@ async def handle(
     if applied:
         log.info("stop_transaction.applied", reason=reason, meter_stop=meter_stop)
     else:
-        log.info("stop_transaction.replay_ignored")
+        log.info("stop_transaction.replay_ignored_db")
 
-    info_status = (
-        AuthorizationStatus.invalid
-        if id_tag and id_tag.upper().startswith("INVALID")
-        else AuthorizationStatus.accepted
-    )
-    return call_result.StopTransaction(id_tag_info=IdTagInfo(status=info_status))
+    return _response(id_tag)
