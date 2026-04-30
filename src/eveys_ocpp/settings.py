@@ -93,6 +93,13 @@ class Settings(BaseSettings):
     # 300s is the OCPP-recommended default; tighter intervals scale poorly.
     heartbeat_interval_seconds: int = Field(default=300, ge=30, le=86400)
 
+    # ---- Cross-pod command bus (E2-10) ----------------------------------
+    # Cap on how long the requesting pod waits for a cross-pod reply.
+    # Defaults to the 30s OCPP request ceiling — the bus shouldn't add
+    # headroom over the underlying call. Pubs/subs share the same Redis
+    # as the registry (see `redis_url`).
+    bus_request_timeout_seconds: int = Field(default=30, ge=1, le=120)
+
 
 def get_settings() -> Settings:
     """Build a fresh `Settings` from the current environment.
