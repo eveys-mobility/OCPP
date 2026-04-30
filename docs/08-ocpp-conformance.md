@@ -98,8 +98,9 @@ These are charger-initiated actions the CSMS must respond to. Appendix C tests t
 
 | Handler | Tests | Status | Notes |
 |---|---|---|---|
-| Heartbeat | [test_heartbeat.py](../tests/unit/handlers/v16/test_heartbeat.py) | 🟡 | Refresh `last_heartbeat_at`; return server UTC. |
+| Heartbeat | [test_heartbeat.py](../tests/unit/handlers/v16/test_heartbeat.py) | 🟡 | Refresh `last_heartbeat_at`; return server UTC; refresh Redis online TTL. |
 | StatusNotification | [test_status_notification.py](../tests/unit/handlers/v16/test_status_notification.py) | 🟡 | `last_status` only; per-state history goes to ClickHouse via Kafka (E2-8, E2-14). |
+| MeterValues (TC_070 sampled / TC_071 clock-aligned) | [test_meter_values.py](../tests/unit/handlers/v16/test_meter_values.py) | 🟡 | Forwards to Kafka topic `cp.meter` (CpMeter envelope). Per-sample sanity check at 100 MWh ([AGENTS rule 6](../AGENTS.md)). Postgres never sees MeterValues (AGENTS rule 4 + ADR-0004). Reconnect-on-broker-drop hardening pending E2-7. |
 
 ---
 
