@@ -4,7 +4,7 @@
 
 `eveys/ocpp` is a standalone, horizontally scalable Python service that owns every charger's WebSocket connection and exposes a stable internal API (gRPC + Kafka events) for the rest of the platform.
 
-This repository is in **Phase 2 — Full OCPP 1.6 Core** (in progress). Phase 1 is closed: the WS server, the seven Phase-1 handlers, the Postgres schema, and the local docker-compose stack all run. Phase 2 has landed the v1 protos, the gRPC server scaffolding, the Redis online registry, and the `MeterValues` → Kafka path; the rest of Core, the remaining gRPC bodies, and Kafka emit on the other handlers are still in flight (see [`docs/02-tasks.md`](./docs/02-tasks.md)).
+This repository is in **Phase 2 — Full OCPP 1.6 Core** (in progress). Phase 1 is closed: the WS server, the seven Phase-1 handlers, the Postgres schema, and the local docker-compose stack all run. Phase 2 has landed the v1 protos, the gRPC server scaffolding, the Redis online registry, the `MeterValues` → Kafka path, and the first real gRPC RPC body — `RemoteStart` (same-pod routing via in-process `ConnectionMap`). Still in flight: the remaining six gRPC bodies (E2-6), Kafka emit on the other handlers (E2-8), the cross-pod command bus (E2-10), and the rest of Core (E2-1). See [`docs/02-tasks.md`](./docs/02-tasks.md).
 
 ## Quick start
 

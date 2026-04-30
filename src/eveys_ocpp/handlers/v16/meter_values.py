@@ -162,10 +162,18 @@ async def handle(
             charger_reported_at=charger_reported_at,
         )
         envelope_bytes = _build_envelope(cp_id=cp.id, payload=payload)
-        await cp.event_producer.publish(
-            topic=cp.settings.kafka_topic_cp_meter,
-            key=cp.id,
-            value=envelope_bytes,
-        )
+        # Broker errors (down, leader election, network) must NOT crash
+        # the WS — the charger isn't waiting on Kafka, and a flaky broker
+        # would otherwise DoS the gateway. Log + drop the sample; the
+        # charger gets a clean MeterValuesResponse and keeps streaming.
+        # Reconnect/retry tuning lives in E2-7.
+        try:
+            await cp.event_producer.publish(
+                topic=cp.settings.kafka_topic_cp_meter,
+                key=cp.id,
+                value=envelope_bytes,
+            )
+        except Exception as exc:
+            log.warning("meter_values.publish_failed", error=str(exc))
 
     return call_result.MeterValues()

@@ -158,3 +158,26 @@ async def test_unparseable_value_is_quarantined(fake_cp: Any) -> None:
     )
     # No samples got through → no publish.
     fake_producer.publish.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_handler_survives_kafka_publish_exception(fake_cp: Any) -> None:
+    """Broker down must not crash the WS — the charger isn't waiting on Kafka."""
+    fake_producer = AsyncMock()
+    fake_producer.publish.side_effect = ConnectionError("kafka down")
+    fake_cp.event_producer = fake_producer
+
+    result = await meter_values.handle(
+        fake_cp,
+        connector_id=1,
+        meter_value=[
+            {
+                "timestamp": "2026-04-30T00:00:00Z",
+                "sampled_value": [_sample("1234")],
+            }
+        ],
+    )
+
+    # Handler must return a clean MeterValuesResponse — exception was logged + dropped.
+    assert isinstance(result, call_result.MeterValues)
+    fake_producer.publish.assert_awaited_once()
