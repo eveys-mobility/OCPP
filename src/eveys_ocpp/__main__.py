@@ -11,6 +11,7 @@ import sys
 from typing import TYPE_CHECKING
 
 from eveys_ocpp import __version__
+from eveys_ocpp.events import KafkaEventProducer
 from eveys_ocpp.observability import configure_logging, get_logger
 from eveys_ocpp.persistence.db import make_engine, make_session_factory
 from eveys_ocpp.registry import Registry
@@ -27,6 +28,7 @@ async def _serve_all(
     session_factory: async_sessionmaker[AsyncSession],
     settings: Settings,
     registry: Registry,
+    event_producer: KafkaEventProducer,
 ) -> None:
     """Run WS and gRPC servers concurrently; cancel both if either fails."""
     log = get_logger(__name__)
@@ -37,6 +39,7 @@ async def _serve_all(
         pod_id=settings.pod_id,
     )
 
+    await event_producer.start()
     try:
         async with asyncio.TaskGroup() as tg:
             tg.create_task(
@@ -44,6 +47,7 @@ async def _serve_all(
                     session_factory=session_factory,
                     settings=settings,
                     registry=registry,
+                    event_producer=event_producer,
                 ),
                 name="ws_server",
             )
@@ -52,6 +56,7 @@ async def _serve_all(
                 name="grpc_server",
             )
     finally:
+        await event_producer.stop()
         await registry.close()
 
 
@@ -80,12 +85,14 @@ def main() -> None:
     )
     session_factory = make_session_factory(engine)
     registry = Registry.from_settings(settings)
+    event_producer = KafkaEventProducer.from_settings(settings)
 
     asyncio.run(
         _serve_all(
             session_factory=session_factory,
             settings=settings,
             registry=registry,
+            event_producer=event_producer,
         )
     )
 

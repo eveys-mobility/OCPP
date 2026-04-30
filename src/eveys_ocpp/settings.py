@@ -35,6 +35,17 @@ class Settings(BaseSettings):
     grpc_host: str = Field(default="0.0.0.0", description="gRPC bind address")
     grpc_port: int = Field(default=50051, description="gRPC bind port")
 
+    # ---- Kafka event firehose (E2-7, E2-8) ------------------------------
+    # Comma-separated list (matches aiokafka's bootstrap_servers param).
+    kafka_brokers: str = Field(
+        default="localhost:9092",
+        description="Kafka bootstrap servers (comma-separated host:port)",
+    )
+    # Topic for the MeterValues firehose. Per AGENTS rule 4 + ADR-0004,
+    # MeterValues never go to Postgres — Kafka is the only persistence
+    # path; ClickHouse consumes from this topic (E2-14).
+    kafka_topic_cp_meter: str = Field(default="cp.meter")
+
     # ---- Redis online registry (E2-9) -----------------------------------
     redis_url: str = Field(
         default="redis://localhost:6379/0",
