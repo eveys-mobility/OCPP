@@ -18,6 +18,7 @@ from eveys_ocpp.handlers.v16 import (
     authorize,
     boot_notification,
     heartbeat,
+    meter_values,
     start_transaction,
     status_notification,
     stop_transaction,
@@ -27,6 +28,7 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
     from websockets.asyncio.server import ServerConnection
 
+    from eveys_ocpp.events import EventProducer
     from eveys_ocpp.registry import Registry
     from eveys_ocpp.settings import Settings
 
@@ -36,10 +38,10 @@ class EveysChargePoint(Cpv16):
 
     Holds:
     - the WebSocket
-    - a reference to the process-wide session factory + settings
-    - the Redis registry handle (None in unit tests + W1-style local
-      stack without Redis)
-    - per-charger context for logging
+    - process-wide session factory + settings
+    - Redis registry handle (None in unit tests + Kafka-less stacks)
+    - Kafka event producer (None in unit tests + Kafka-less stacks)
+    - per-charger logging context
     """
 
     def __init__(
@@ -50,11 +52,13 @@ class EveysChargePoint(Cpv16):
         session_factory: async_sessionmaker[AsyncSession],
         settings: Settings,
         registry: Registry | None = None,
+        event_producer: EventProducer | None = None,
     ) -> None:
         super().__init__(cp_id, connection)
         self.session_factory = session_factory
         self.settings = settings
         self.registry = registry
+        self.event_producer = event_producer
 
     # ---- handler delegation -------------------------------------------------
     # Each handler module exports a `handle(...)` coroutine. We thin-wrap
@@ -90,3 +94,7 @@ class EveysChargePoint(Cpv16):
     @on(Action.stop_transaction)
     async def on_stop_transaction(self, **kwargs: Any) -> call_result.StopTransaction:
         return await stop_transaction.handle(self, **kwargs)
+
+    @on(Action.meter_values)
+    async def on_meter_values(self, **kwargs: Any) -> call_result.MeterValues:
+        return await meter_values.handle(self, **kwargs)
