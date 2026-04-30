@@ -68,10 +68,23 @@ types:
 tests:
   <<: *python-job
   stage: test
+  # Redis is the only data-plane dep the unit suite needs. Without it,
+  # `tests/unit/test_bus.py` skips its 6 tests and the bus module drops
+  # to ~18% coverage, which breaks the 80% gate (E2-10). Postgres /
+  # Kafka / ClickHouse stay over in `tests:e2e` — the unit suite mocks
+  # them at the boundary.
+  services:
+    - name: redis:7-alpine
+      alias: redis
+  variables:
+    DEBIAN_FRONTEND: noninteractive
+    UV_CACHE_DIR: $CI_PROJECT_DIR/.uv-cache
+    UV_PROJECT_ENVIRONMENT: $CI_PROJECT_DIR/.venv
+    E2E_REDIS_HOST: redis
   script:
     # Unit tests only. E2E tests skip themselves when the data plane
     # isn't reachable — they run in `tests:e2e` below, which provides
-    # the data plane via GitLab `services:` sidecars.
+    # the full data plane via GitLab `services:` sidecars.
     - .venv/bin/pytest tests/unit tests/test_package.py --cov-report=xml --cov-report=term
   coverage: '/Total coverage: (\d+\.\d+)%/'
   artifacts:
