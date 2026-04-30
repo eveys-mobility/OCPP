@@ -134,7 +134,7 @@ The rollout ramp (Phase 7) is **gate-driven** — moving from W1 → W5 only hap
 | E2-8: wire each handler to publish its event ✅ | SB2 | E2-7 |
 | E2-10: cross-pod command bus (Redis pub/sub) ✅ | SB1 | E2-9 |
 | E2-11: idempotency cache (`BootNotification`, `StopTransaction`) ✅ [P] | SB2 | E2-9 |
-| E2-12: gRPC backward-compat tests (CI fails on field rename) [P] | QA | E2-6 |
+| E2-12: gRPC backward-compat tests (CI fails on field rename) ✅ [P] | QA | E2-6 |
 | E2-13: ClickHouse table schemas for `MeterValues` / `Heartbeats` / `StatusNotifications` [P] | SRE + SB2 | E2-3 |
 | E2-14: Kafka → ClickHouse ingestion (Kafka engine or sidecar consumer) | SRE + SB2 | E2-13, E2-8 |
 | C-3a: wire OCTT Smart Charging subset into CI (after Smart Charging handlers exist) [P] | QA | E2-1 (Smart Charging slice), C-3 |
