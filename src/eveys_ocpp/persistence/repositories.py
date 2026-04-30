@@ -78,6 +78,24 @@ async def get_charge_point_pk(session: AsyncSession, *, cp_id: str) -> int | Non
     return result.scalar_one_or_none()
 
 
+async def get_charge_point_status(
+    session: AsyncSession, *, cp_id: str
+) -> tuple[str | None, datetime | None] | None:
+    """Return `(last_status, last_heartbeat_at)` for a charger, or None if unknown.
+
+    Used by the gRPC `GetChargerStatus` RPC (E2-6) to answer cached
+    state queries without an OCPP round-trip. None means the cp_id
+    has never sent a BootNotification.
+    """
+    result = await session.execute(
+        select(ChargePoint.last_status, ChargePoint.last_heartbeat_at).where(
+            ChargePoint.cp_id == cp_id
+        )
+    )
+    row = result.one_or_none()
+    return None if row is None else (row[0], row[1])
+
+
 async def insert_transaction(
     session: AsyncSession,
     *,
