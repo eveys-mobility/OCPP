@@ -53,7 +53,7 @@
 | E2-5 | Implement gRPC `RemoteStart` end-to-end | gRPC call → WS Call → charger response → gRPC reply |
 | E2-6 | Implement remaining gRPC commands | All 7 implemented + tested |
 | E2-7 | Kafka producer (`aiokafka`) | 🟡 partial — `KafkaEventProducer` (aiokafka) shipped with E2-1 MeterValues; `start()`/`stop()` lifecycle wired into `__main__`; reconnect-on-broker-drop tuning + batching defaults still TODO here |
-| E2-8 | Wire each handler to publish its event | E2E test: handler runs → message appears in `kcat` |
+| E2-8 | Wire each handler to publish its event | 🟡 partial — `MeterValues` → `cp.meter` shipped with E2-1; remaining wiring: `BootNotification` → `cp.boot`, `StatusNotification` → `cp.status`, `StartTransaction` → `tx.started`, `Heartbeat` (envelope only — no dedicated topic; goes on `cp.connected` if at all), `Authorize` (no event — internal RPC). E2E criterion: handler runs → message appears in `kcat` |
 | E2-9 | Redis online registry: `cp:online:{cp_id} → pod_id` with 120s TTL | ✅ done — `Registry` class wraps redis.asyncio; WS connect → `mark_online`, Heartbeat → `refresh` (re-claims if expired), WS disconnect → compare-and-delete via Lua to avoid clobbering a reconnected charger on another pod; `pod_id` from Settings (defaults to hostname; K8s downward API in prod); e2e test asserts key lifecycle |
 | E2-10 | Cross-pod command bus: pub/sub on `cp:cmd:{cp_id}` channel | Two-pod test passes |
 | E2-11 | Idempotency cache for `BootNotification` and `StopTransaction` | Replay test: same `message_id` twice = one downstream event |
