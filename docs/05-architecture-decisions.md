@@ -79,6 +79,7 @@ ADRs are **never deleted**. They are append-only history.
 | [0016](./adr/0016-cross-pod-command-bus.md) | Cross-pod command bus over Redis pub/sub | Accepted | 2026-04-30 |
 | [0017](./adr/0017-idempotency-cache.md) | Idempotency cache for inbound OCPP replays | Accepted | 2026-04-30 |
 | [0018](./adr/0018-grpc-backward-compat-enforcement.md) | gRPC + Kafka-event backward-compat enforced in CI | Accepted | 2026-05-01 |
+| [0019](./adr/0019-kafka-producer-hardening.md) | Kafka producer hardening: durability over throughput | Accepted | 2026-05-01 |
 
 ## Pending / planned
 
