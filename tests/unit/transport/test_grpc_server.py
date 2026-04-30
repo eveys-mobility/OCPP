@@ -126,10 +126,14 @@ async def test_remote_start_charger_offline_returns_not_found(
 
 
 @pytest.mark.asyncio
-async def test_remote_start_charger_on_other_pod_returns_unavailable(
+async def test_remote_start_charger_on_other_pod_no_bus_returns_unavailable(
     fake_session_factory: Any, settings: Settings
 ) -> None:
-    """Registry says another pod owns the WS — UNAVAILABLE pending E2-10."""
+    """No bus configured (test fixture) → UNAVAILABLE fallback (pre-E2-10 behaviour).
+
+    With a real bus this branch routes the request cross-pod (see
+    ``test_remote_start_charger_on_other_pod_via_bus``).
+    """
     fake_registry = AsyncMock()
     fake_registry.get_pod = AsyncMock(return_value="pod-other-007")
 
@@ -147,6 +151,124 @@ async def test_remote_start_charger_on_other_pod_returns_unavailable(
                 await stub.RemoteStart(gateway_pb2.RemoteStartRequest(cp_id="CP_001", id_tag="ABC"))
         assert exc.value.status == Status.UNAVAILABLE
         assert "pod-other-007" in (exc.value.message or "")
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_remote_start_charger_on_other_pod_via_bus(
+    fake_session_factory: Any, settings: Settings
+) -> None:
+    """Registry says another pod owns the WS, bus is configured — round-trip via bus."""
+    from eveys_ocpp.bus import BusReply
+
+    fake_registry = AsyncMock()
+    fake_registry.get_pod = AsyncMock(return_value="pod-other-007")
+
+    fake_bus = MagicMock()
+    fake_bus.set_local_dispatcher = MagicMock()
+    fake_bus.request = AsyncMock(return_value=BusReply(ok=True, ocpp_status="Accepted"))
+
+    service = OcppGatewayService(
+        session_factory=fake_session_factory,
+        settings=settings,
+        connections=ConnectionMap(),
+        registry=fake_registry,
+        bus=fake_bus,
+    )
+    server, port = await _spawn_server(service)
+    try:
+        async with Channel("127.0.0.1", port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            response = await stub.RemoteStart(
+                gateway_pb2.RemoteStartRequest(cp_id="CP_001", id_tag="TAG", connector_id=2)
+            )
+        assert response.status == gateway_pb2.REMOTE_START_STATUS_ACCEPTED
+        fake_bus.request.assert_awaited_once()
+        # Inspect the kwargs sent to the bus.
+        kwargs = fake_bus.request.await_args.kwargs
+        assert kwargs["cp_id"] == "CP_001"
+        assert kwargs["owning_pod"] == "pod-other-007"
+        assert kwargs["rpc"] == "RemoteStart"
+        # The dataclass-derived payload reaches the bus verbatim.
+        assert kwargs["payload"]["id_tag"] == "TAG"
+        assert kwargs["payload"]["connector_id"] == 2
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_remote_start_bus_returns_not_found_propagates(
+    fake_session_factory: Any, settings: Settings
+) -> None:
+    """If the owning pod replies NOT_FOUND (charger went offline mid-flight),
+    the gRPC caller sees NOT_FOUND too."""
+    from eveys_ocpp.bus import BusReply
+
+    fake_registry = AsyncMock()
+    fake_registry.get_pod = AsyncMock(return_value="pod-other-007")
+
+    fake_bus = MagicMock()
+    fake_bus.set_local_dispatcher = MagicMock()
+    fake_bus.request = AsyncMock(
+        return_value=BusReply(
+            ok=False, error_code="NOT_FOUND", error_message="charger went offline"
+        )
+    )
+
+    service = OcppGatewayService(
+        session_factory=fake_session_factory,
+        settings=settings,
+        connections=ConnectionMap(),
+        registry=fake_registry,
+        bus=fake_bus,
+    )
+    server, port = await _spawn_server(service)
+    try:
+        async with Channel("127.0.0.1", port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            with pytest.raises(GRPCError) as exc:
+                await stub.RemoteStart(gateway_pb2.RemoteStartRequest(cp_id="CP_001", id_tag="X"))
+        assert exc.value.status == Status.NOT_FOUND
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_remote_start_bus_deadline_exceeded_propagates(
+    fake_session_factory: Any, settings: Settings
+) -> None:
+    """Bus says DEADLINE_EXCEEDED → gRPC DEADLINE_EXCEEDED."""
+    from eveys_ocpp.bus import BusReply
+
+    fake_registry = AsyncMock()
+    fake_registry.get_pod = AsyncMock(return_value="pod-other-007")
+
+    fake_bus = MagicMock()
+    fake_bus.set_local_dispatcher = MagicMock()
+    fake_bus.request = AsyncMock(
+        return_value=BusReply(
+            ok=False, error_code="DEADLINE_EXCEEDED", error_message="no reply within 30s"
+        )
+    )
+
+    service = OcppGatewayService(
+        session_factory=fake_session_factory,
+        settings=settings,
+        connections=ConnectionMap(),
+        registry=fake_registry,
+        bus=fake_bus,
+    )
+    server, port = await _spawn_server(service)
+    try:
+        async with Channel("127.0.0.1", port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            with pytest.raises(GRPCError) as exc:
+                await stub.RemoteStart(gateway_pb2.RemoteStartRequest(cp_id="CP_001", id_tag="X"))
+        assert exc.value.status == Status.DEADLINE_EXCEEDED
     finally:
         server.close()
         await server.wait_closed()

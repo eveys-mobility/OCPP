@@ -27,6 +27,7 @@ from operator dashboards without back-pressuring chargers.
 from __future__ import annotations
 
 import asyncio
+from dataclasses import asdict
 from typing import TYPE_CHECKING, Any
 
 from grpclib.const import Status
@@ -36,6 +37,7 @@ from ocpp.v16 import call as ocpp_call
 from ocpp.v16 import enums as ocpp_enums
 
 from eveys_ocpp._generated.ocpp_gw.v1 import gateway_grpc, gateway_pb2
+from eveys_ocpp.bus import BusReply, CommandBus
 from eveys_ocpp.observability import bind_contextvars, clear_contextvars, get_logger
 from eveys_ocpp.persistence.db import session_scope
 from eveys_ocpp.persistence.repositories import get_charge_point_status
@@ -57,6 +59,22 @@ log = get_logger(__name__)
 _OCPP_REQUEST_TIMEOUT_SECONDS = 30.0
 
 
+# Owning-side dispatch table: rpc name -> ocpp.v16.call dataclass.
+# The owning pod uses this to reconstruct the OCPP request from a bus
+# payload dict. The dataclass field names are the wire schema: anything
+# the requesting side puts in `payload` must match a constructor kwarg.
+# Adding a new gRPC command means adding one row here AND a translator
+# below — same pattern as before, just centralized.
+_OCPP_CALL_DISPATCH: dict[str, type[Any]] = {
+    "RemoteStart": ocpp_call.RemoteStartTransaction,
+    "RemoteStop": ocpp_call.RemoteStopTransaction,
+    "Reset": ocpp_call.Reset,
+    "ChangeConfiguration": ocpp_call.ChangeConfiguration,
+    "TriggerMessage": ocpp_call.TriggerMessage,
+    "UnlockConnector": ocpp_call.UnlockConnector,
+}
+
+
 class OcppGatewayService(gateway_grpc.OcppGatewayBase):
     """Implementation of `OcppGateway`. All seven RPCs live here."""
 
@@ -67,11 +85,18 @@ class OcppGatewayService(gateway_grpc.OcppGatewayBase):
         settings: Settings,
         connections: ConnectionMap | None = None,
         registry: Registry | None = None,
+        bus: CommandBus | None = None,
     ) -> None:
         self.session_factory = session_factory
         self.settings = settings
         self.connections = connections
         self.registry = registry
+        self.bus = bus
+        # Wire owning-side dispatch into the bus so cross-pod requests
+        # for chargers connected here actually run. Done here (not in
+        # bus.__init__) to avoid a circular import: bus -> grpc_server.
+        if bus is not None:
+            bus.set_local_dispatcher(self._dispatch_local_for_bus)
 
     # ---- E2-5 RemoteStart ---------------------------------------------------
 
@@ -240,73 +265,165 @@ class OcppGatewayService(gateway_grpc.OcppGatewayBase):
         *,
         rpc: str,
         cp_id: str,
-        ocpp_request: object,
+        ocpp_request: Any,
     ) -> Any:
-        """Resolve cp on this pod, send the OCPP request, return the reply.
+        """Send the OCPP request, return the reply.
 
-        Raises `GRPCError` for the four non-happy paths:
-        - INVALID_ARGUMENT: empty cp_id
-        - NOT_FOUND: charger offline (no registry key)
-        - UNAVAILABLE: charger online but on a different pod (E2-10)
-        - DEADLINE_EXCEEDED: charger on this pod but didn't reply in 30s
-        """
-        bind_contextvars(rpc=rpc, cp_id=cp_id, direction="rx")
-        try:
-            cp = await self._resolve_local_cp(cp_id)
-            log.info("grpc.dispatch", rpc=rpc)
-            try:
-                ocpp_response = await asyncio.wait_for(
-                    cp.call(ocpp_request),
-                    timeout=_OCPP_REQUEST_TIMEOUT_SECONDS,
-                )
-            except TimeoutError as exc:
-                log.warning("grpc.timeout", rpc=rpc)
-                raise GRPCError(
-                    Status.DEADLINE_EXCEEDED,
-                    f"charger did not reply within {_OCPP_REQUEST_TIMEOUT_SECONDS}s",
-                ) from exc
-            log.info("grpc.replied", rpc=rpc, ocpp_status=getattr(ocpp_response, "status", None))
-            return ocpp_response
-        finally:
-            clear_contextvars()
+        Routing:
+        - cp on this pod → call directly (existing same-pod path)
+        - cp on a different pod, bus configured → forward via CommandBus
+        - cp on a different pod, no bus → UNAVAILABLE (test fallback)
+        - cp offline → NOT_FOUND
+        - empty cp_id → INVALID_ARGUMENT
 
-    async def _resolve_local_cp(self, cp_id: str) -> EveysChargePoint:
-        """Find the live WS for `cp_id` on this pod, or raise the right gRPC error.
-
-        Three outcomes:
-        - On this pod's `ConnectionMap` → returns the EveysChargePoint.
-        - On a different pod (Registry says so) → UNAVAILABLE with pod_id
-          in the message. Cross-pod routing is E2-10.
-        - Nowhere → NOT_FOUND ("charger is offline").
+        Returns either an ocpp.v16 call_result dataclass (same-pod) or a
+        lightweight stand-in object exposing ``.status`` (cross-pod). The
+        existing translators only read ``.status`` so both shapes work.
         """
         if not cp_id:
             raise GRPCError(Status.INVALID_ARGUMENT, "cp_id is required")
 
-        if self.connections is not None:
-            cp = self.connections.get(cp_id)
+        bind_contextvars(rpc=rpc, cp_id=cp_id, direction="rx")
+        try:
+            cp = self.connections.get(cp_id) if self.connections is not None else None
             if cp is not None:
-                return cp
+                return await self._call_local_cp(cp, rpc=rpc, ocpp_request=ocpp_request)
 
-        # Not on this pod — but Registry might still know where it is.
-        owning_pod: str | None = None
-        if self.registry is not None:
-            owning_pod = await self.registry.get_pod(cp_id)
+            owning_pod: str | None = None
+            if self.registry is not None:
+                owning_pod = await self.registry.get_pod(cp_id)
 
-        if owning_pod is None:
+            if owning_pod is None:
+                raise GRPCError(Status.NOT_FOUND, f"charger {cp_id} is offline")
+
+            if self.bus is None:
+                # Bus not wired (test fixture or single-pod deployment) —
+                # preserve the pre-E2-10 behaviour so callers see a stable
+                # error rather than a confusing TIMEOUT.
+                raise GRPCError(
+                    Status.UNAVAILABLE,
+                    (
+                        f"charger {cp_id} is on pod {owning_pod}; "
+                        "cross-pod bus not configured on this gateway"
+                    ),
+                )
+
+            return await self._call_via_bus(
+                rpc=rpc, cp_id=cp_id, owning_pod=owning_pod, ocpp_request=ocpp_request
+            )
+        finally:
+            clear_contextvars()
+
+    async def _call_local_cp(self, cp: EveysChargePoint, *, rpc: str, ocpp_request: Any) -> Any:
+        log.info("grpc.dispatch", rpc=rpc, route="local")
+        try:
+            ocpp_response = await asyncio.wait_for(
+                cp.call(ocpp_request),
+                timeout=_OCPP_REQUEST_TIMEOUT_SECONDS,
+            )
+        except TimeoutError as exc:
+            log.warning("grpc.timeout", rpc=rpc)
             raise GRPCError(
-                Status.NOT_FOUND,
-                f"charger {cp_id} is offline",
+                Status.DEADLINE_EXCEEDED,
+                f"charger did not reply within {_OCPP_REQUEST_TIMEOUT_SECONDS}s",
+            ) from exc
+        log.info("grpc.replied", rpc=rpc, ocpp_status=getattr(ocpp_response, "status", None))
+        return ocpp_response
+
+    async def _call_via_bus(
+        self, *, rpc: str, cp_id: str, owning_pod: str, ocpp_request: Any
+    ) -> Any:
+        """Round-trip the OCPP request through the cross-pod bus."""
+        assert self.bus is not None  # narrowed by caller
+        log.info("grpc.dispatch", rpc=rpc, route="bus", owning_pod=owning_pod)
+        reply = await self.bus.request(
+            cp_id=cp_id,
+            owning_pod=owning_pod,
+            rpc=rpc,
+            payload=asdict(ocpp_request),
+            timeout=_OCPP_REQUEST_TIMEOUT_SECONDS,
+        )
+        if reply.ok:
+            log.info("grpc.replied", rpc=rpc, ocpp_status=reply.ocpp_status, route="bus")
+            return _BusOcppResponse(status=reply.ocpp_status or "")
+
+        log.warning(
+            "grpc.bus_error",
+            rpc=rpc,
+            error_code=reply.error_code,
+            error_message=reply.error_message,
+        )
+        gstatus = _BUS_ERROR_TO_GRPC_STATUS.get(reply.error_code or "", Status.UNAVAILABLE)
+        raise GRPCError(gstatus, reply.error_message or "cross-pod dispatch failed")
+
+    async def _dispatch_local_for_bus(
+        self, rpc: str, cp_id: str, payload: dict[str, Any]
+    ) -> BusReply:
+        """Owning-side: handle a bus command for a charger connected here.
+
+        Reconstruct the OCPP dataclass from ``payload``, run the round-trip,
+        return a ``BusReply`` for the bus to publish back to the requester.
+        """
+        cp = self.connections.get(cp_id) if self.connections is not None else None
+        if cp is None:
+            # Charger disconnected between the requester's registry read
+            # and this dispatch — not an error, just a race.
+            return BusReply(ok=False, error_code="NOT_FOUND", error_message="charger went offline")
+
+        dataclass_type = _OCPP_CALL_DISPATCH.get(rpc)
+        if dataclass_type is None:
+            return BusReply(
+                ok=False,
+                error_code="INTERNAL",
+                error_message=f"unknown rpc on owning pod: {rpc}",
             )
 
-        # Charger is online but on a different pod.
-        raise GRPCError(
-            Status.UNAVAILABLE,
-            (
-                f"charger {cp_id} is on pod {owning_pod}; "
-                "cross-pod routing is task E2-10. Retry against that pod, "
-                "or send the request from a client that hashes on cp_id."
-            ),
-        )
+        try:
+            ocpp_request = dataclass_type(**payload)
+        except TypeError as exc:
+            return BusReply(
+                ok=False,
+                error_code="INTERNAL",
+                error_message=f"payload mismatch for {rpc}: {exc}",
+            )
+
+        try:
+            ocpp_response = await asyncio.wait_for(
+                cp.call(ocpp_request),
+                timeout=_OCPP_REQUEST_TIMEOUT_SECONDS,
+            )
+        except TimeoutError:
+            return BusReply(
+                ok=False,
+                error_code="DEADLINE_EXCEEDED",
+                error_message=f"charger did not reply within {_OCPP_REQUEST_TIMEOUT_SECONDS}s",
+            )
+        return BusReply(ok=True, ocpp_status=getattr(ocpp_response, "status", ""))
+
+
+# ---- bus-mode plumbing ------------------------------------------------------
+
+
+class _BusOcppResponse:
+    """Stand-in for an ocpp.v16 call_result with just `.status`.
+
+    Cross-pod replies don't carry a full OCPP dataclass — they carry the
+    status string, which is all the existing translators read. This lets
+    the per-RPC method bodies stay identical for local and bus paths.
+    """
+
+    __slots__ = ("status",)
+
+    def __init__(self, *, status: str) -> None:
+        self.status = status
+
+
+# Bus error_code -> gRPC Status. Mirror of the same set the local path raises.
+_BUS_ERROR_TO_GRPC_STATUS: dict[str, Status] = {
+    "NOT_FOUND": Status.NOT_FOUND,
+    "DEADLINE_EXCEEDED": Status.DEADLINE_EXCEEDED,
+    "INTERNAL": Status.INTERNAL,
+}
 
 
 # ---- proto-enum / OCPP-string translators -----------------------------------
@@ -426,6 +543,7 @@ async def serve_forever(
     settings: Settings,
     connections: ConnectionMap | None = None,
     registry: Registry | None = None,
+    bus: CommandBus | None = None,
 ) -> None:
     """Start the gRPC server and block until cancelled."""
     service = OcppGatewayService(
@@ -433,6 +551,7 @@ async def serve_forever(
         settings=settings,
         connections=connections,
         registry=registry,
+        bus=bus,
     )
     server = Server([service])
     await server.start(host=settings.grpc_host, port=settings.grpc_port)
