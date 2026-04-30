@@ -171,6 +171,14 @@ eveys/ocpp/
 - **Integration tests use real services** (testcontainers), not mocks. Mocks are for unit tests only.
 - **No test depends on the network.** No real OCA OCTT, no real charger vendors. Those go in nightly OCTT runs.
 - Test data is built with **factories**, not fixtures-frozen JSON.
+- **No silent skips in CI.** A test that silently skips when its dependency
+  (Redis, Postgres, schema, etc.) is missing produces a green-but-empty
+  pipeline — false-green is a P1 risk. Every reachability check that gates
+  test execution must honor the `E2E_REQUIRE=1` env var: skip on dev
+  laptops (unset), `pytest.fail()` at collection in CI (set). Both the
+  `tests` and `tests:e2e` jobs in `.gitlab-ci.yml` set `E2E_REQUIRE=1`.
+  Reference implementation: `tests/unit/test_bus.py` and
+  `tests/e2e/test_two_pod_dispatch.py`.
 
 ---
 
