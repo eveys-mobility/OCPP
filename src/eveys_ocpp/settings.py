@@ -52,6 +52,49 @@ class Settings(BaseSettings):
     kafka_topic_cp_status: str = Field(default="cp.status")
     kafka_topic_tx_started: str = Field(default="tx.started")
 
+    # ---- Kafka producer durability / latency knobs (E2-7) ---------------
+    # See ADR-0019 for the trade-off discussion. Defaults pick durability
+    # over throughput because `tx.started` is on the financial path —
+    # losing one event = losing one billable session record.
+    kafka_acks: str = Field(
+        default="all",
+        description=(
+            "Kafka producer ack mode: 'all' (full ISR ack, durable to "
+            "leader crash), '1' (leader-only), '0' (fire-and-forget). "
+            "Default 'all' for durability — see ADR-0019."
+        ),
+    )
+    kafka_enable_idempotence: bool = Field(
+        default=True,
+        description=(
+            "aiokafka producer-side dedup on retry. Eliminates duplicate "
+            "events when the producer retries a request whose ack was "
+            "lost. Pairs with E2-11's inbound-replay dedup."
+        ),
+    )
+    # Producer-wide linger. aiokafka does not support per-call linger
+    # override, so this is a single compromise value across all four
+    # topics. 5 ms gives `cp.meter` enough batching headroom at fleet
+    # scale without putting a real latency floor on the low-volume
+    # billing-relevant topics. ADR-0019 § "Per-topic linger".
+    kafka_linger_ms: int = Field(default=5, ge=0, le=1000)
+    kafka_request_timeout_ms: int = Field(
+        default=30_000,
+        ge=1_000,
+        le=120_000,
+        description=(
+            "How long a single produce request waits for the broker. "
+            "Tighter than aiokafka's 40s default so a stuck broker "
+            "trips the handler's publish-failed log path quickly."
+        ),
+    )
+    kafka_retry_backoff_ms: int = Field(
+        default=200,
+        ge=10,
+        le=10_000,
+        description="Wait between aiokafka retries on a recoverable error.",
+    )
+
     # ---- Redis online registry (E2-9) -----------------------------------
     redis_url: str = Field(
         default="redis://localhost:6379/0",

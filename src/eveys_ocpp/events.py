@@ -5,10 +5,11 @@ to the platform's event topics. Each record is keyed by `cp_id` so a
 single Kafka partition holds the full ordered stream for a given charger
 (per AGENTS rule "message ordering is preserved per charger").
 
-Scope of THIS module: a working producer good enough for MeterValues to
-flow end-to-end and be observable via `kcat`. Reconnect-on-broker-drop
-tuning, batching defaults, and idempotent-producer hardening live in
-task E2-7 (a separate, dedicated MR).
+Producer durability and latency knobs follow ADR-0019: `acks=all`,
+`enable_idempotence=True`, modest `linger_ms` for batching headroom on
+the high-volume `cp.meter` topic without putting a real latency floor on
+the low-volume billing-relevant topics. Every knob is exposed via
+`Settings` so an operator can re-tune without a code change.
 
 Two implementations:
 
@@ -53,26 +54,64 @@ class KafkaEventProducer:
     `publish()` returns once the broker has acknowledged the record.
     The handler `await`s publish — slow brokers will surface as slow
     handlers, which we'd rather know about than silently drop.
+
+    Durability config follows ADR-0019: `acks=all` + idempotent
+    producer + tightened request timeout. aiokafka enforces the
+    Kafka-protocol requirement that idempotent producers cap
+    in-flight requests at 5 — we don't pass that explicitly because
+    aiokafka doesn't expose the kwarg.
     """
 
-    def __init__(self, *, bootstrap_servers: str) -> None:
+    def __init__(
+        self,
+        *,
+        bootstrap_servers: str,
+        acks: str = "all",
+        enable_idempotence: bool = True,
+        linger_ms: int = 5,
+        request_timeout_ms: int = 30_000,
+        retry_backoff_ms: int = 200,
+    ) -> None:
         self._bootstrap_servers = bootstrap_servers
+        self._acks = acks
+        self._enable_idempotence = enable_idempotence
+        self._linger_ms = linger_ms
+        self._request_timeout_ms = request_timeout_ms
+        self._retry_backoff_ms = retry_backoff_ms
         self._producer: AIOKafkaProducer | None = None
 
     @classmethod
     def from_settings(cls, settings: Settings) -> KafkaEventProducer:
-        return cls(bootstrap_servers=settings.kafka_brokers)
+        return cls(
+            bootstrap_servers=settings.kafka_brokers,
+            acks=settings.kafka_acks,
+            enable_idempotence=settings.kafka_enable_idempotence,
+            linger_ms=settings.kafka_linger_ms,
+            request_timeout_ms=settings.kafka_request_timeout_ms,
+            retry_backoff_ms=settings.kafka_retry_backoff_ms,
+        )
 
     async def start(self) -> None:
         producer = AIOKafkaProducer(
             bootstrap_servers=self._bootstrap_servers,
-            # `acks=1` (leader only) is the aiokafka default. Phase-2
-            # default is fine; E2-7 may bump to `all` for durability.
             client_id="eveys-ocpp",
+            acks=self._acks,
+            enable_idempotence=self._enable_idempotence,
+            linger_ms=self._linger_ms,
+            request_timeout_ms=self._request_timeout_ms,
+            retry_backoff_ms=self._retry_backoff_ms,
         )
         await producer.start()
         self._producer = producer
-        log.info("kafka.producer.started", bootstrap_servers=self._bootstrap_servers)
+        log.info(
+            "kafka.producer.started",
+            bootstrap_servers=self._bootstrap_servers,
+            acks=self._acks,
+            enable_idempotence=self._enable_idempotence,
+            linger_ms=self._linger_ms,
+            request_timeout_ms=self._request_timeout_ms,
+            retry_backoff_ms=self._retry_backoff_ms,
+        )
 
     async def stop(self) -> None:
         if self._producer is not None:
