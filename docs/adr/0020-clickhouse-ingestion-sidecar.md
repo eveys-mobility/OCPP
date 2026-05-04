@@ -105,7 +105,7 @@ Reversible at moderate cost. Switching to Kafka Engine, Kafka Connect, or a diff
 - [ADR-0015](./0015-kafka-event-envelope-format.md) — the event-envelope contract this ADR's tables mirror.
 - [ADR-0018](./0018-grpc-backward-compat-enforcement.md) — the proto-side gate that pairs with the DDL discipline this ADR sets.
 - [`proto/events/v1/events.proto`](../../proto/events/v1/events.proto) — the source schema.
-- [`src/eveys_ocpp/clickhouse/`](../../src/eveys_ocpp/clickhouse/) — implementation lives here once this ADR's MR lands.
+- `src/eveys_ocpp/clickhouse/` — implementation directory (DDL files under `ddl/`, plus `migrate.py` and `ingestor.py`); merged in MR !18.
 - [`docs/02-tasks.md`](../02-tasks.md) — E2-13 (table schemas) + E2-14 (ingestion path).
 - [ClickHouse `Nested` columns](https://clickhouse.com/docs/sql-reference/data-types/nested-data-structures/nested) — the type used for `cp_meter.sampled_values`.
 - [`asynch` on GitHub](https://github.com/long2ice/asynch) — the async ClickHouse driver.
