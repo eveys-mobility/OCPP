@@ -42,6 +42,7 @@ import signal
 import sys
 from collections.abc import Iterable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from aiokafka import AIOKafkaConsumer
@@ -64,11 +65,27 @@ log = get_logger(__name__)
 # is a one-line edit (plus the proto + DDL + handler).
 
 
+def _parse_occurred_at(value: str) -> datetime:
+    """Parse the envelope's ISO-8601 ``occurred_at`` into a tz-aware
+    ``datetime``. asynch's ``DateTime64`` column writer expects a
+    Python ``datetime`` (it reads ``tzinfo``); a raw string trips an
+    ``AttributeError`` deep inside its block writer. Always return UTC
+    (the column's declared zone).
+    """
+    # ``datetime.fromisoformat`` handles the ``+00:00`` suffix from
+    # producers since 3.11. Fall back to UTC if the producer omitted
+    # the offset.
+    dt = datetime.fromisoformat(value)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return dt
+
+
 def _envelope_meta(env: events_pb2.EventEnvelope) -> dict[str, Any]:
     """Common envelope columns shared across every event-table."""
     return {
         "event_id": env.event_id,
-        "occurred_at": env.occurred_at,
+        "occurred_at": _parse_occurred_at(env.occurred_at),
         "cp_id": env.cp_id,
         "schema_version": env.schema_version,
         "trace_id": env.trace_id,
@@ -237,8 +254,14 @@ class ClickHouseIngestor:
             # Column list order must be stable across the batch — pull
             # from the first row, every other row's keys must match.
             cols = list(batch[0].keys())
-            placeholders = ", ".join(f"%({c})s" for c in cols)
-            sql = f"INSERT INTO {table} ({', '.join(cols)}) VALUES ({placeholders})"
+            # asynch (clickhouse-driver under the hood) uses ClickHouse's
+            # native binary protocol for INSERTs, not SQL placeholder
+            # substitution. The query is "INSERT INTO t (cols) VALUES"
+            # (no inline placeholders, no trailing parens) and the driver
+            # ships the rows as a column block over the wire. Adding
+            # ``%(name)s`` placeholders here would make CH try to parse
+            # them as SQL — see Code: 62 errors in early E2-14 testing.
+            sql = f"INSERT INTO {table} ({', '.join(cols)}) VALUES"
             async with self._conn.cursor() as cursor:
                 await cursor.executemany(sql, batch)
             log.info(

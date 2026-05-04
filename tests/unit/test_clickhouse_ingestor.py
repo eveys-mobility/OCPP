@@ -8,6 +8,7 @@ guards in `_process_record`.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -19,6 +20,7 @@ from eveys_ocpp.clickhouse.ingestor import (
     _DISPATCH,
     ClickHouseIngestor,
     _envelope_meta,
+    _parse_occurred_at,
     _row_cp_boot,
     _row_cp_meter,
     _row_cp_status,
@@ -45,13 +47,29 @@ def _envelope(**payload_kwargs: Any) -> events_pb2.EventEnvelope:
 def test_envelope_meta_returns_all_metadata_columns() -> None:
     env = _envelope(cp_boot=events_pb2.CpBoot(vendor="ACME"))
     meta = _envelope_meta(env)
+    # `occurred_at` is parsed into a tz-aware datetime — asynch's
+    # DateTime64 writer dereferences `.tzinfo`, so a raw string would
+    # blow up at INSERT time.
     assert meta == {
         "event_id": "evt-1",
-        "occurred_at": "2026-05-01T00:00:00.000+00:00",
+        "occurred_at": datetime(2026, 5, 1, 0, 0, 0, tzinfo=UTC),
         "cp_id": "CP_TEST",
         "schema_version": "v1",
         "trace_id": "trace-1",
     }
+
+
+def test_parse_occurred_at_handles_iso_with_offset() -> None:
+    dt = _parse_occurred_at("2026-05-01T00:00:00.000+00:00")
+    assert dt == datetime(2026, 5, 1, tzinfo=UTC)
+    assert dt.tzinfo is not None
+
+
+def test_parse_occurred_at_treats_naive_as_utc() -> None:
+    """A producer that emits a naive ISO timestamp (shouldn't happen,
+    but we guard) gets UTC stamped. asynch needs `tzinfo` set."""
+    dt = _parse_occurred_at("2026-05-01T00:00:00")
+    assert dt.tzinfo is UTC
 
 
 def test_row_cp_boot_serializes_enum_to_name() -> None:
@@ -367,7 +385,13 @@ async def test_flush_batch_groups_rows_by_table_and_executemany() -> None:
     # Column lists in the SQL match the keys in the row dicts.
     assert "event_id" in boot_sql
     assert "vendor" in boot_sql
-    assert "%(event_id)s" in boot_sql  # parameterized placeholders
+    # asynch (clickhouse-driver) uses CH's native binary protocol for
+    # INSERTs — the query is "INSERT INTO t (cols) VALUES" with NO
+    # inline placeholders. If we accidentally add `%(name)s` substrings
+    # CH parses them as SQL and the insert fails with `Code: 62` —
+    # see ingestor._flush_batch's comment.
+    assert "%(" not in boot_sql
+    assert boot_sql.rstrip().endswith("VALUES")
     # The two cp_boot rows arrive together; the cp_meter row stands alone.
     assert len(boot_batch) == 2
     assert len(meter_batch) == 1
