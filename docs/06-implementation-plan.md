@@ -110,6 +110,8 @@ The rollout ramp (Phase 7) is **gate-driven** — moving from W1 → W5 only hap
 
 **Goal**: full protocol coverage, multi-pod-aware, internal API contracts in place.
 
+> **Phase 2 exit gate met 2026-05-04** — E2-2..E2-14 all ✅; long-tail E2-1 (remaining ~20 1.6 Core handlers) continues alongside Phase 3 since the infrastructure (Kafka producer hardening, ClickHouse landing, gRPC backward-compat CI, idempotency cache, cross-pod bus) is in place. New handlers plug into the existing pipeline without further platform work.
+
 ### W2
 
 | Task | Owner | Depends on |
@@ -145,7 +147,7 @@ The rollout ramp (Phase 7) is **gate-driven** — moving from W1 → W5 only hap
 - ✅ All ~25 OCPP 1.6 Core actions handled with tests
 - ✅ Two-pod local cluster: command issued via gRPC reaches the right pod (cross-pod routing works)
 - ✅ Events visible via `kcat`
-- ✅ Telemetry events (`MeterValues`, `Heartbeats`, `StatusNotifications`) visible in ClickHouse within seconds of being published to Kafka
+- ✅ Telemetry events (`MeterValues`, `StatusNotifications`, `BootNotifications`, `StartTransactions`) visible in ClickHouse within seconds of being published to Kafka. Heartbeats are deliberately not in ClickHouse — they're absorbed by the Redis online registry (E2-9) per ADR-0020.
 - ✅ Conformance matrix in [`08-ocpp-conformance.md`](./08-ocpp-conformance.md): all six W1 handler rows promoted to ✅; OCTT 1.6 Core subset green in CI
 - ✅ Idempotency: replay test produces zero double-effects
 - ✅ Coverage ≥ 80% maintained

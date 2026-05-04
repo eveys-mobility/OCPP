@@ -4,7 +4,7 @@
 
 `eveys/ocpp` is a standalone, horizontally scalable Python service that owns every charger's WebSocket connection and exposes a stable internal API (gRPC + Kafka events) for the rest of the platform.
 
-This repository is in **Phase 2 — Full OCPP 1.6 Core** (closing). Phase 1 is closed: the WS server, the seven Phase-1 handlers, the Postgres schema, and the local docker-compose stack all run. Phase 2 has landed the v1 protos, the gRPC server, all seven RPC bodies — `RemoteStart`, `RemoteStop`, `Reset`, `ChangeConfiguration`, `TriggerMessage`, `UnlockConnector`, `GetChargerStatus` — with **cross-pod routing** via Redis pub/sub (E2-10, see ADR-0016), the Redis online registry, the four-topic Kafka event firehose `cp.boot`/`cp.status`/`cp.meter`/`tx.started` (E2-8), the **idempotency cache** for `BootNotification`/`StopTransaction` replays (E2-11, see ADR-0017), and the **ClickHouse landing path** for that firehose (E2-13/E2-14, see ADR-0020) via a sidecar Kafka→CH consumer. The Kafka producer runs `acks=all` + idempotent-producer for durability on the billing-relevant topics (E2-7, see ADR-0019), and gRPC + Kafka-event backward-compat is machine-checked in CI (E2-12, see ADR-0018). Still in flight: the rest of OCPP 1.6 Core actions (E2-1). See [`docs/02-tasks.md`](./docs/02-tasks.md).
+This repository has **closed Phase 2 — Full OCPP 1.6 Core** as of 2026-05-04. Phase 1 closed earlier: the WS server, the seven Phase-1 handlers, the Postgres schema, and the local docker-compose stack all run. Phase 2 landed the v1 protos, the gRPC server, all seven RPC bodies — `RemoteStart`, `RemoteStop`, `Reset`, `ChangeConfiguration`, `TriggerMessage`, `UnlockConnector`, `GetChargerStatus` — with **cross-pod routing** via Redis pub/sub (E2-10, see ADR-0016), the Redis online registry (E2-9), the four-topic Kafka event firehose `cp.boot`/`cp.status`/`cp.meter`/`tx.started` (E2-8), the **idempotency cache** for `BootNotification`/`StopTransaction` replays (E2-11, see ADR-0017), and the **ClickHouse landing path** for that firehose (E2-13/E2-14, see ADR-0020) via a sidecar Kafka→CH consumer. The Kafka producer runs `acks=all` + idempotent-producer for durability on the billing-relevant topics (E2-7, see ADR-0019), and gRPC + Kafka-event backward-compat is machine-checked in CI (E2-12, see ADR-0018). Long-tail: the rest of OCPP 1.6 Core actions (E2-1) continues alongside Phase 3 — Platform integration. See [`docs/02-tasks.md`](./docs/02-tasks.md).
 
 ## Quick start
 
@@ -76,7 +76,7 @@ For full details — CI behavior, build configuration, troubleshooting — see [
 - **`websockets`** for transport
 - **gRPC** (`grpclib` async) for internal API
 - **Postgres** (state) · **Redis** (registry, cache, pub/sub) · **Kafka** (event firehose)
-- **ClickHouse** (time-series store for `MeterValues`, `Heartbeats`, `StatusNotifications`)
+- **ClickHouse** (time-series store for `MeterValues`, `StatusNotifications`, `BootNotifications`, `StartTransactions`; Heartbeats are absorbed by the Redis online registry per ADR-0020)
 - **Kubernetes** for orchestration
 
 See [ADR-0001](./docs/adr/0001-python-asyncio-stack.md), [ADR-0002](./docs/adr/0002-mobilityhouse-ocpp-library.md), and [ADR-0003](./docs/adr/0003-monorepo-layout.md) for *why*.
@@ -85,6 +85,6 @@ See [ADR-0001](./docs/adr/0001-python-asyncio-stack.md), [ADR-0002](./docs/adr/0
 
 | Field | Value |
 |---|---|
-| Phase | **2 — Full OCPP 1.6 Core** (in progress; Phase 1 closed) |
+| Phase | **3 — Platform integration** (Phase 2 closed 2026-05-04; long-tail E2-1 continues) |
 | Tech lead | TBD |
 | License | Proprietary — Eveys |

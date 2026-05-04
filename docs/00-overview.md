@@ -21,7 +21,7 @@ Built on:
 - **`websockets`** for transport
 - **gRPC** (`grpclib` async) for internal API
 - **Postgres** (state), **Redis** (registry / cache / pub-sub), **Kafka** (event firehose)
-- **ClickHouse** (time-series store for `MeterValues`, `Heartbeats`, `StatusNotifications`)
+- **ClickHouse** (time-series store for `MeterValues`, `StatusNotifications`, `BootNotifications`, `StartTransactions`; Heartbeats are absorbed by the Redis online registry per ADR-0020 rather than persisted as time-series rows)
 - **Kubernetes** for orchestration
 
 ## Where it fits in the Eveys platform
@@ -65,7 +65,7 @@ OCPP at fleet scale has workload characteristics that justify a dedicated servic
 - **Long-lived stateful WebSocket connections** — one per charger, 24/7. Each pod holds thousands of sockets simultaneously.
 - **Strict per-charger message ordering** — out-of-order delivery silently breaks transaction state.
 - **Bursty reconnect traffic** — pod restarts must not cascade into fleet-wide reconnect storms.
-- **Time-series telemetry firehose** — `MeterValues` / `Heartbeats` / `StatusNotifications` belong in Kafka, not a relational store.
+- **Time-series telemetry firehose** — `MeterValues` / `StatusNotifications` / `BootNotifications` / `StartTransactions` belong in Kafka and ClickHouse, not a relational store. (Heartbeats are presence pings handled in-memory by the Redis online registry — no time-series row written; see ADR-0020.)
 - **Observable at per-charger granularity** — any incident must be localizable to a single `cp_id` in seconds.
 
 These constraints don't fit a typical request/response service. `eveys/ocpp` is built specifically for them.
