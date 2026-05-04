@@ -221,7 +221,7 @@ kubectl apply -f https://raw.githubusercontent.com/Altinity/clickhouse-operator/
 kubectl apply -f deploy/k8s/clickhouse-dev.yaml
 ```
 
-(`deploy/k8s/clickhouse-dev.yaml` lands with task E2-13.)
+(`deploy/k8s/clickhouse-dev.yaml` is **not** part of E2-13/E2-14 — that work was scoped to the compose stack and the in-cluster ingestion sidecar is per-pod independent. The K8s ClickHouse manifest lands in Phase 4 alongside the load test, when the single-node-vs-`ReplicatedMergeTree` decision is informed by real numbers; see ADR-0020 § "Project conventions implied".)
 
 Wait for everything to be `Ready`:
 
