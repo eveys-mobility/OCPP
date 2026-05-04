@@ -44,9 +44,11 @@
 
 ## Phase 2 — Full OCPP 1.6 Core
 
+> **Phase exit gate met 2026-05-04** — E2-2 through E2-14 are ✅; the long-tail E2-1 (remaining ~20 OCPP 1.6 Core handlers) continues alongside Phase 3 because the gateway is already publishing every billing-relevant event to Kafka and ClickHouse. New handlers slot into the existing pipeline without further infrastructure work.
+
 | ID | Task | Output |
 |---|---|---|
-| E2-1 | Implement remaining ~20 OCPP 1.6 Core actions (handlers + tests) | 🟡 in progress — `MeterValues` shipped (handler + sanity-range quarantine + Kafka publish via `EventProducer`; unit tests + e2e); rest of Core actions still TODO |
+| E2-1 | Implement remaining ~20 OCPP 1.6 Core actions (handlers + tests) | 🟡 in progress — `MeterValues` shipped (handler + sanity-range quarantine + Kafka publish via `EventProducer`; unit tests + e2e); rest of Core actions still TODO. Long-tail; tracked alongside Phase 3 work since Phase 2 infrastructure is complete. |
 | E2-2 | Define `proto/ocpp_gw/v1/gateway.proto` — gRPC commands | ✅ done — service `OcppGateway` with 7 RPCs; canonical gRPC status codes + per-RPC outcome enums; SmartCharging types stubbed |
 | E2-3 | Define `proto/events/v1/events.proto` — Kafka event envelopes | ✅ done — single `EventEnvelope` with `oneof payload`; 5 topics (`cp.connected` / `cp.boot` / `cp.status` / `cp.meter` / `tx.started`); `cp_id` as Kafka partition key per AGENTS rule |
 | E2-4 | gRPC server scaffolding (`grpclib`) | ✅ done — `OcppGatewayService` implements all 7 RPCs as `UNIMPLEMENTED` placeholders (real bodies land E2-5/E2-6); `__main__.py` runs WS + gRPC concurrently via `asyncio.TaskGroup`; `make protoc` regenerates from `proto/`; runtime image stays at 171 MB via two-stage Docker build |
