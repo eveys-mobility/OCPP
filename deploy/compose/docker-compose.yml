@@ -137,6 +137,24 @@ services:
       kafka: { condition: service_healthy }
       clickhouse: { condition: service_healthy }
 
+  # Sidecar consumer for the Kafka → ClickHouse pipeline (E2-14, ADR-0020).
+  # Reuses the same image as the gateway — entry point is overridden to run
+  # the ingestor module instead of the WS+gRPC server.
+  clickhouse-ingestor:
+    image: eveys-ocpp:dev
+    container_name: eveys-ocpp-clickhouse-ingestor
+    command: ["python", "-m", "eveys_ocpp.clickhouse.ingestor"]
+    environment:
+      EVEYS_OCPP_KAFKA_BROKERS: "kafka:9092"
+      EVEYS_OCPP_CLICKHOUSE_HOST: "clickhouse"
+      EVEYS_OCPP_CLICKHOUSE_PORT: "9000"
+      EVEYS_OCPP_CLICKHOUSE_DB: "eveys_ocpp"
+      EVEYS_OCPP_LOG_JSON: "true"
+      EVEYS_OCPP_LOG_LEVEL: "INFO"
+    depends_on:
+      kafka: { condition: service_healthy }
+      clickhouse: { condition: service_healthy }
+
 volumes:
   postgres_data:
   redis_data:
