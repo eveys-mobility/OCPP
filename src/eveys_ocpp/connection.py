@@ -17,6 +17,7 @@ from ocpp.v16.enums import Action
 from eveys_ocpp.handlers.v16 import (
     authorize,
     boot_notification,
+    data_transfer,
     heartbeat,
     meter_values,
     start_transaction,
@@ -111,3 +112,7 @@ class EveysChargePoint(Cpv16):
     @on(Action.meter_values)
     async def on_meter_values(self, **kwargs: Any) -> call_result.MeterValues:
         return await meter_values.handle(self, **kwargs)
+
+    @on(Action.data_transfer)
+    async def on_data_transfer(self, **kwargs: Any) -> call_result.DataTransfer:
+        return await data_transfer.handle(self, **kwargs)

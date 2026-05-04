@@ -72,6 +72,9 @@ _OCPP_CALL_DISPATCH: dict[str, type[Any]] = {
     "ChangeConfiguration": ocpp_call.ChangeConfiguration,
     "TriggerMessage": ocpp_call.TriggerMessage,
     "UnlockConnector": ocpp_call.UnlockConnector,
+    "GetConfiguration": ocpp_call.GetConfiguration,
+    "ClearCache": ocpp_call.ClearCache,
+    "DataTransfer": ocpp_call.DataTransfer,
 }
 
 
@@ -210,6 +213,86 @@ class OcppGatewayService(gateway_grpc.OcppGatewayBase):
         await stream.send_message(
             gateway_pb2.UnlockConnectorResponse(
                 status=_translate_unlock_connector_status(ocpp_response.status)
+            )
+        )
+
+    # ---- E2-1A — OCPP 1.6 Core completion -----------------------------------
+
+    async def GetConfiguration(
+        self,
+        stream: Stream[gateway_pb2.GetConfigurationRequest, gateway_pb2.GetConfigurationResponse],
+    ) -> None:
+        """Read configuration keys from the charger.
+
+        Empty `keys` means "everything" per OCPP 1.6 spec — we forward
+        that semantic verbatim by passing `None` (the OCPP dataclass
+        default) when the caller didn't list any. A populated list
+        gets forwarded; the charger is responsible for echoing
+        unknown keys in `unknown_key`.
+        """
+        request = await self._recv(stream)
+        keys: list[str] | None = list(request.keys) if request.keys else None
+        ocpp_response = await self._dispatch_ocpp_call(
+            rpc="GetConfiguration",
+            cp_id=request.cp_id,
+            ocpp_request=ocpp_call.GetConfiguration(key=keys),
+        )
+        await stream.send_message(
+            gateway_pb2.GetConfigurationResponse(
+                configuration_key=[
+                    _translate_configuration_key(item)
+                    for item in (ocpp_response.configuration_key or [])
+                ],
+                unknown_key=list(ocpp_response.unknown_key or []),
+            )
+        )
+
+    async def ClearCache(
+        self,
+        stream: Stream[gateway_pb2.ClearCacheRequest, gateway_pb2.ClearCacheResponse],
+    ) -> None:
+        """Wipe the charger's local Authorize cache."""
+        request = await self._recv(stream)
+        ocpp_response = await self._dispatch_ocpp_call(
+            rpc="ClearCache",
+            cp_id=request.cp_id,
+            ocpp_request=ocpp_call.ClearCache(),
+        )
+        await stream.send_message(
+            gateway_pb2.ClearCacheResponse(
+                status=_translate_clear_cache_status(ocpp_response.status)
+            )
+        )
+
+    async def DataTransfer(
+        self,
+        stream: Stream[gateway_pb2.DataTransferRequest, gateway_pb2.DataTransferResponse],
+    ) -> None:
+        """Send a vendor-specific DataTransfer payload to the charger.
+
+        OCPP 1.6 spec requires `vendor_id`; the gateway enforces it at
+        the boundary so a malformed call is rejected before reaching
+        the charger (which would just respond `UnknownVendorId`).
+        """
+        request = await self._recv(stream)
+        if not request.vendor_id:
+            raise GRPCError(
+                Status.INVALID_ARGUMENT,
+                "vendor_id is required (OCPP DataTransfer namespaces all vendor traffic)",
+            )
+        ocpp_response = await self._dispatch_ocpp_call(
+            rpc="DataTransfer",
+            cp_id=request.cp_id,
+            ocpp_request=ocpp_call.DataTransfer(
+                vendor_id=request.vendor_id,
+                message_id=request.message_id or None,
+                data=request.data or None,
+            ),
+        )
+        await stream.send_message(
+            gateway_pb2.DataTransferResponse(
+                status=_translate_data_transfer_status(ocpp_response.status),
+                data=ocpp_response.data or "",
             )
         )
 
@@ -532,6 +615,43 @@ def _translate_unlock_connector_status(ocpp_status: str) -> int:
         return gateway_pb2.UNLOCK_CONNECTOR_STATUS_NOT_SUPPORTED
     log.warning("grpc.unknown_ocpp_status", rpc="UnlockConnector", ocpp_status=ocpp_status)
     return gateway_pb2.UNLOCK_CONNECTOR_STATUS_UNSPECIFIED
+
+
+def _translate_configuration_key(item: dict[str, Any]) -> gateway_pb2.ConfigurationKey:
+    """OCPP returns each configuration key as a dict per the JSON
+    schema. Translate to the typed proto message.
+
+    `value` is required by the OCPP schema but the dataclass marks it
+    optional; coerce a missing value to empty string at the gateway
+    boundary (callers don't want a `null` here).
+    """
+    return gateway_pb2.ConfigurationKey(
+        key=item.get("key", ""),
+        readonly=bool(item.get("readonly", False)),
+        value=item.get("value") or "",
+    )
+
+
+def _translate_clear_cache_status(ocpp_status: str) -> int:
+    if ocpp_status == "Accepted":
+        return gateway_pb2.CLEAR_CACHE_STATUS_ACCEPTED
+    if ocpp_status == "Rejected":
+        return gateway_pb2.CLEAR_CACHE_STATUS_REJECTED
+    log.warning("grpc.unknown_ocpp_status", rpc="ClearCache", ocpp_status=ocpp_status)
+    return gateway_pb2.CLEAR_CACHE_STATUS_UNSPECIFIED
+
+
+def _translate_data_transfer_status(ocpp_status: str) -> int:
+    if ocpp_status == "Accepted":
+        return gateway_pb2.DATA_TRANSFER_STATUS_ACCEPTED
+    if ocpp_status == "Rejected":
+        return gateway_pb2.DATA_TRANSFER_STATUS_REJECTED
+    if ocpp_status == "UnknownMessageId":
+        return gateway_pb2.DATA_TRANSFER_STATUS_UNKNOWN_MESSAGE_ID
+    if ocpp_status == "UnknownVendorId":
+        return gateway_pb2.DATA_TRANSFER_STATUS_UNKNOWN_VENDOR_ID
+    log.warning("grpc.unknown_ocpp_status", rpc="DataTransfer", ocpp_status=ocpp_status)
+    return gateway_pb2.DATA_TRANSFER_STATUS_UNSPECIFIED
 
 
 # -----------------------------------------------------------------------------

@@ -67,6 +67,9 @@ def test_service_class_implements_every_rpc(fake_session_factory: Any, settings:
         "TriggerMessage",
         "UnlockConnector",
         "GetChargerStatus",
+        "GetConfiguration",
+        "ClearCache",
+        "DataTransfer",
     }
     for rpc in expected:
         method = getattr(service, rpc, None)
@@ -788,6 +791,248 @@ async def test_get_charger_status_empty_cp_id_returns_invalid_argument(
             stub = gateway_grpc.OcppGatewayStub(ch)
             with pytest.raises(GRPCError) as exc:
                 await stub.GetChargerStatus(gateway_pb2.GetChargerStatusRequest(cp_id=""))
+        assert exc.value.status == Status.INVALID_ARGUMENT
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+# ---- E2-1A GetConfiguration -------------------------------------------------
+
+
+def _connected_cp_with_config(
+    cp_id: str,
+    *,
+    keys: list[dict[str, Any]],
+    unknown: list[str],
+) -> tuple[Any, ConnectionMap]:
+    """`GetConfiguration` returns lists, not a single status. This
+    helper mirrors `_connected_cp` but lets us configure the lists
+    directly."""
+    cp = MagicMock()
+    cp.id = cp_id
+    response = MagicMock()
+    response.configuration_key = keys
+    response.unknown_key = unknown
+    cp.call = AsyncMock(return_value=response)
+    cm = ConnectionMap()
+    cm.add(cp)
+    return cp, cm
+
+
+@pytest.mark.asyncio
+async def test_get_configuration_returns_keys_and_unknown(
+    fake_session_factory: Any, settings: Settings
+) -> None:
+    """Charger returns two known keys (one readonly) plus one unknown.
+    The gateway translates the dict shape to typed proto messages."""
+    _, cm = _connected_cp_with_config(
+        "CP_001",
+        keys=[
+            {"key": "HeartbeatInterval", "readonly": False, "value": "60"},
+            {"key": "NumberOfConnectors", "readonly": True, "value": "2"},
+        ],
+        unknown=["NoSuchKey"],
+    )
+    service = OcppGatewayService(
+        session_factory=fake_session_factory, settings=settings, connections=cm
+    )
+    server, port = await _spawn_server(service)
+    try:
+        async with Channel("127.0.0.1", port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            response = await stub.GetConfiguration(
+                gateway_pb2.GetConfigurationRequest(
+                    cp_id="CP_001", keys=["HeartbeatInterval", "NumberOfConnectors", "NoSuchKey"]
+                )
+            )
+        assert len(response.configuration_key) == 2
+        assert response.configuration_key[0].key == "HeartbeatInterval"
+        assert response.configuration_key[0].readonly is False
+        assert response.configuration_key[0].value == "60"
+        assert response.configuration_key[1].key == "NumberOfConnectors"
+        assert response.configuration_key[1].readonly is True
+        assert list(response.unknown_key) == ["NoSuchKey"]
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_get_configuration_empty_keys_means_all(
+    fake_session_factory: Any, settings: Settings
+) -> None:
+    """Empty `keys` in the proto request → forwarded as `None` to the
+    OCPP dataclass, which the spec interprets as 'return everything'."""
+    cp, cm = _connected_cp_with_config("CP_001", keys=[], unknown=[])
+    service = OcppGatewayService(
+        session_factory=fake_session_factory, settings=settings, connections=cm
+    )
+    server, port = await _spawn_server(service)
+    try:
+        async with Channel("127.0.0.1", port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            await stub.GetConfiguration(gateway_pb2.GetConfigurationRequest(cp_id="CP_001"))
+        # The OCPP request the charger received had key=None (per spec
+        # — empty list != "all"; dataclass default is None).
+        cp.call.assert_awaited_once()
+        sent = cp.call.await_args.args[0]
+        assert sent.key is None
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_get_configuration_handles_missing_value_field(
+    fake_session_factory: Any, settings: Settings
+) -> None:
+    """OCPP dataclass marks `value` optional; if a charger omits it
+    the gateway must still return a valid proto (empty string, not
+    a translation crash)."""
+    _, cm = _connected_cp_with_config(
+        "CP_001",
+        keys=[{"key": "WriteOnlyKey", "readonly": False}],
+        unknown=[],
+    )
+    service = OcppGatewayService(
+        session_factory=fake_session_factory, settings=settings, connections=cm
+    )
+    server, port = await _spawn_server(service)
+    try:
+        async with Channel("127.0.0.1", port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            response = await stub.GetConfiguration(
+                gateway_pb2.GetConfigurationRequest(cp_id="CP_001", keys=["WriteOnlyKey"])
+            )
+        assert response.configuration_key[0].value == ""
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+# ---- E2-1A ClearCache -------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_clear_cache_accepted(fake_session_factory: Any, settings: Settings) -> None:
+    _, cm = _connected_cp("CP_001", "Accepted")
+    service = OcppGatewayService(
+        session_factory=fake_session_factory, settings=settings, connections=cm
+    )
+    server, port = await _spawn_server(service)
+    try:
+        async with Channel("127.0.0.1", port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            response = await stub.ClearCache(gateway_pb2.ClearCacheRequest(cp_id="CP_001"))
+        assert response.status == gateway_pb2.CLEAR_CACHE_STATUS_ACCEPTED
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_clear_cache_rejected(fake_session_factory: Any, settings: Settings) -> None:
+    _, cm = _connected_cp("CP_001", "Rejected")
+    service = OcppGatewayService(
+        session_factory=fake_session_factory, settings=settings, connections=cm
+    )
+    server, port = await _spawn_server(service)
+    try:
+        async with Channel("127.0.0.1", port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            response = await stub.ClearCache(gateway_pb2.ClearCacheRequest(cp_id="CP_001"))
+        assert response.status == gateway_pb2.CLEAR_CACHE_STATUS_REJECTED
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+# ---- E2-1A DataTransfer (CSMS → charger) ------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_data_transfer_accepted_with_reply(
+    fake_session_factory: Any, settings: Settings
+) -> None:
+    """Happy path: charger accepts and returns a vendor payload."""
+    cp = MagicMock()
+    cp.id = "CP_001"
+    response = MagicMock()
+    response.status = "Accepted"
+    response.data = '{"reply":"ok"}'
+    cp.call = AsyncMock(return_value=response)
+    cm = ConnectionMap()
+    cm.add(cp)
+    service = OcppGatewayService(
+        session_factory=fake_session_factory, settings=settings, connections=cm
+    )
+    server, port = await _spawn_server(service)
+    try:
+        async with Channel("127.0.0.1", port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            grpc_response = await stub.DataTransfer(
+                gateway_pb2.DataTransferRequest(
+                    cp_id="CP_001",
+                    vendor_id="acme.fastcharge",
+                    message_id="ping",
+                    data='{"hi":1}',
+                )
+            )
+        assert grpc_response.status == gateway_pb2.DATA_TRANSFER_STATUS_ACCEPTED
+        assert grpc_response.data == '{"reply":"ok"}'
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_data_transfer_unknown_vendor_id_status(
+    fake_session_factory: Any, settings: Settings
+) -> None:
+    cp = MagicMock()
+    cp.id = "CP_001"
+    response = MagicMock()
+    response.status = "UnknownVendorId"
+    response.data = None
+    cp.call = AsyncMock(return_value=response)
+    cm = ConnectionMap()
+    cm.add(cp)
+    service = OcppGatewayService(
+        session_factory=fake_session_factory, settings=settings, connections=cm
+    )
+    server, port = await _spawn_server(service)
+    try:
+        async with Channel("127.0.0.1", port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            grpc_response = await stub.DataTransfer(
+                gateway_pb2.DataTransferRequest(cp_id="CP_001", vendor_id="unknown.vendor")
+            )
+        assert grpc_response.status == gateway_pb2.DATA_TRANSFER_STATUS_UNKNOWN_VENDOR_ID
+        assert grpc_response.data == ""
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_data_transfer_empty_vendor_id_returns_invalid_argument(
+    fake_session_factory: Any, settings: Settings
+) -> None:
+    """`vendor_id` is required by OCPP — gateway boundary rejects
+    empty before sending to the charger."""
+    _, cm = _connected_cp("CP_001", "Accepted")
+    service = OcppGatewayService(
+        session_factory=fake_session_factory, settings=settings, connections=cm
+    )
+    server, port = await _spawn_server(service)
+    try:
+        async with Channel("127.0.0.1", port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            with pytest.raises(GRPCError) as exc:
+                await stub.DataTransfer(
+                    gateway_pb2.DataTransferRequest(cp_id="CP_001", vendor_id="")
+                )
         assert exc.value.status == Status.INVALID_ARGUMENT
     finally:
         server.close()
