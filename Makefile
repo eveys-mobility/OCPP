@@ -13,7 +13,7 @@ COMPOSE    := docker compose -f deploy/compose/docker-compose.yml
 
 .PHONY: help doctor install format lint types tests e2e smoke precommit clean distclean \
         compose-up compose-down compose-status compose-down-volumes compose-wait \
-        build-image protoc docs docs-clean
+        build-image protoc ch-migrate docs docs-clean
 
 # ---- meta -------------------------------------------------------------------
 
@@ -36,7 +36,8 @@ help:
 	@echo "  make compose-down-volumes  stop AND wipe data (DESTRUCTIVE)"
 	@echo "  make compose-status     show container health"
 	@echo "  make build-image        build the eveys-ocpp:dev container image"
-	@echo "  make e2e                full e2e: compose-up + alembic + e2e tests + compose-down"
+	@echo "  make ch-migrate         apply ClickHouse migrations (E2-13, ADR-0020)"
+	@echo "  make e2e                full e2e: compose-up + alembic + ch-migrate + e2e tests + compose-down"
 	@echo ""
 	@echo "Docs:"
 	@echo "  make docs               build the docs site (Sphinx + MyST)"
@@ -154,12 +155,24 @@ print(' '.join(names))" 2>/dev/null); \
 # Local equivalent of the GitLab `tests:e2e` job. Brings up the data
 # plane, applies schema, runs the e2e tests, tears down. Idempotent —
 # safe to re-run.
+# ClickHouse schema migrator. Idempotent; reads SQL files from
+# src/eveys_ocpp/clickhouse/ddl/ and applies any not yet recorded in
+# the schema_migrations table. Uses the HTTP port (8123) so this works
+# whether ClickHouse is local or in compose. See ADR-0020.
+ch-migrate: install
+	@echo ">> applying ClickHouse migrations..."
+	@$(VENV)/bin/python -m eveys_ocpp.clickhouse.migrate \
+	    --host $${E2E_CH_HOST:-localhost} \
+	    --port $${E2E_CH_HTTP_PORT:-8123} \
+	    --db $${EVEYS_OCPP_CLICKHOUSE_DB:-eveys_ocpp}
+
 e2e: install
 	@echo ">> bringing up local data plane..."
 	@$(MAKE) compose-up
 	@$(MAKE) compose-wait
 	@echo ">> applying schema..."
 	@$(VENV)/bin/alembic upgrade head
+	@$(MAKE) ch-migrate
 	@echo ">> running e2e tests..."
 	@$(VENV)/bin/pytest tests/e2e -v --no-cov; \
 	rc=$$?; \

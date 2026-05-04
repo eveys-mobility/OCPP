@@ -80,6 +80,7 @@ ADRs are **never deleted**. They are append-only history.
 | [0017](./adr/0017-idempotency-cache.md) | Idempotency cache for inbound OCPP replays | Accepted | 2026-04-30 |
 | [0018](./adr/0018-grpc-backward-compat-enforcement.md) | gRPC + Kafka-event backward-compat enforced in CI | Accepted | 2026-05-01 |
 | [0019](./adr/0019-kafka-producer-hardening.md) | Kafka producer hardening: durability over throughput | Accepted | 2026-05-01 |
+| [0020](./adr/0020-clickhouse-ingestion-sidecar.md) | ClickHouse ingestion: sidecar over Kafka Engine | Accepted | 2026-05-01 |
 
 ## Pending / planned
 

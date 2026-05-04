@@ -100,7 +100,7 @@ These are charger-initiated actions the CSMS must respond to. Appendix C tests t
 |---|---|---|---|
 | Heartbeat | [test_heartbeat.py](../tests/unit/handlers/v16/test_heartbeat.py) | 🟡 | Refresh `last_heartbeat_at`; return server UTC; refresh Redis online TTL. |
 | StatusNotification | [test_status_notification.py](../tests/unit/handlers/v16/test_status_notification.py) | 🟡 | `last_status` row in Postgres + `cp.status` event published to Kafka per state transition (E2-8). Per-state history reaches ClickHouse via E2-14. |
-| MeterValues (TC_070 sampled / TC_071 clock-aligned) | [test_meter_values.py](../tests/unit/handlers/v16/test_meter_values.py) | 🟡 | Forwards to Kafka topic `cp.meter` (CpMeter envelope). Per-sample sanity check at 100 MWh (AGENTS rule 6). Postgres never sees MeterValues (AGENTS rule 4 + ADR-0004). Reconnect-on-broker-drop tuning + batching defaults pending E2-7. |
+| MeterValues (TC_070 sampled / TC_071 clock-aligned) | [test_meter_values.py](../tests/unit/handlers/v16/test_meter_values.py), [test_kafka_to_clickhouse.py](../tests/e2e/test_kafka_to_clickhouse.py) | 🟡 | Forwards to Kafka topic `cp.meter` (CpMeter envelope). Per-sample sanity check at 100 MWh (AGENTS rule 6). Postgres never sees MeterValues (AGENTS rule 4 + ADR-0004); ClickHouse `cp_meter` table consumes the topic via the sidecar ingestor (E2-14, ADR-0020). Reconnect-on-broker-drop tuning + batching defaults pending E2-7. |
 
 ---
 
