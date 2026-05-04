@@ -140,9 +140,14 @@ def apply_pending(*, host: str, port: int, db: str) -> list[int]:
     newly_applied: list[int] = []
 
     for version, name, sql in pending:
+        # `extra` keys must not collide with `LogRecord`'s reserved
+        # attribute names — `name` is the logger name, so we prefix
+        # the migration's identifying fields. Without the prefix
+        # stdlib `logging` raises `KeyError: "Attempt to overwrite
+        # 'name' in LogRecord"`.
         logger.info(
             "clickhouse.migrate.applying",
-            extra={"version": version, "name": name},
+            extra={"migration_version": version, "migration_name": name},
         )
         # Apply the DDL first; only then record it as applied. If the
         # DDL fails, the record step is skipped and the next run

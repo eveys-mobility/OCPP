@@ -354,3 +354,49 @@ def test_main_exits_nonzero_when_clickhouse_unreachable(
     err = capsys.readouterr().err
     assert "could not reach ClickHouse" in err
     assert "nope:8123" in err
+
+
+# ---- logging: reserved LogRecord attribute regression ---------------------
+
+
+def test_apply_pending_does_not_collide_with_reserved_logrecord_keys(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`logger.info("msg", extra={...})` raises KeyError if any extra
+    key collides with a `LogRecord` reserved attribute (`name`, `msg`,
+    `args`, `levelname`, etc). Pytest's default config has no handler
+    attached so the bug is silently bypassed; CI's `make ch-migrate`
+    calls `logging.basicConfig(...)` first, attaches a handler, and
+    crashes on the next migration log line.
+
+    Reproduce that path: attach a real handler before calling
+    `apply_pending`, ensure it walks through at least one pending
+    migration, and assert no exception escapes.
+    """
+    import logging
+
+    sqls_executed: list[tuple[str | None, str]] = []
+
+    def fake_urlopen(req: object, timeout: int = 0) -> _FakeResponse:
+        url = req.full_url  # type: ignore[attr-defined]
+        data = req.data  # type: ignore[attr-defined]
+        db = url.split("?database=", 1)[1] if "?database=" in url else None
+        sqls_executed.append((db, data.decode()))
+        return _FakeResponse(b"")  # nothing applied yet — every migration is pending
+
+    monkeypatch.setattr(migrate.urllib.request, "urlopen", fake_urlopen)
+
+    # Attach a handler to migrate's logger — this is what triggers the
+    # `LogRecord` reserved-key check at log time.
+    handler = logging.StreamHandler(io.StringIO())
+    handler.setLevel(logging.INFO)
+    migrate.logger.addHandler(handler)
+    migrate.logger.setLevel(logging.INFO)
+    try:
+        # If the `extra={"name": ...}` regression returns, this raises
+        # `KeyError: "Attempt to overwrite 'name' in LogRecord"`.
+        applied = migrate.apply_pending(host="ch", port=8123, db="eveys_ocpp")
+    finally:
+        migrate.logger.removeHandler(handler)
+
+    assert applied  # at least one migration ran → the log path was exercised
