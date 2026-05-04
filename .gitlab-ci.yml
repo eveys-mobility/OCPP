@@ -218,6 +218,21 @@ tests:e2e:
     E2E_REDIS_HOST: redis
     E2E_KAFKA_HOST: kafka
     E2E_CH_HOST: clickhouse
+    # ClickHouse listens on 8123 (HTTP) and 9000 (native protocol)
+    # inside its container. GitLab `services:` expose the container
+    # ports directly on the shared network — no host-side remap, so
+    # the in-job hostname:port pair is `clickhouse:8123` and
+    # `clickhouse:9000`. Local-dev compose remaps 9000→9001 on the
+    # host to dodge IDE conflicts (see deploy/compose/docker-compose.yml);
+    # CI doesn't have that issue. Set both explicitly so a future
+    # change to compose's host-port mapping can't silently break CI.
+    E2E_CH_HTTP_PORT: "8123"
+    E2E_CH_NATIVE_PORT: "9000"
+    # The Kafka→ClickHouse e2e test reads this directly to point its
+    # in-process ingestor at the right ClickHouse.
+    EVEYS_OCPP_CLICKHOUSE_HOST: clickhouse
+    EVEYS_OCPP_CLICKHOUSE_PORT: "9000"
+    EVEYS_OCPP_CLICKHOUSE_DB: eveys_ocpp
     # In CI, refuse to silently skip the e2e tests if a service isn't
     # reachable — a green-but-skipped pipeline is worse than a red one.
     E2E_REQUIRE: "1"
@@ -244,8 +259,15 @@ tests:e2e:
       wait_tcp postgres 5432 60
       wait_tcp redis 6379 60
       wait_tcp clickhouse 8123 60
+      wait_tcp clickhouse 9000 60
       wait_tcp kafka 9092 90
     - .venv/bin/alembic upgrade head
+    # Apply the ClickHouse schema before pytest so the e2e schema
+    # checks find the tables they expect. Idempotent.
+    - .venv/bin/python -m eveys_ocpp.clickhouse.migrate
+        --host "${E2E_CH_HOST}"
+        --port "${E2E_CH_HTTP_PORT}"
+        --db "${EVEYS_OCPP_CLICKHOUSE_DB}"
     - .venv/bin/pytest tests/e2e -v --no-cov
 
 # ---- docs (tagged-release artifact, unchanged) -----------------------------
