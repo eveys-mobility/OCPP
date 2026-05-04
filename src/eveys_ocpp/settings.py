@@ -156,6 +156,26 @@ class Settings(BaseSettings):
     # OCPP message_ids are UUIDs and never reused across power cycles.
     idempotency_ttl_seconds: int = Field(default=300, ge=30, le=3600)
 
+    # ---- ClickHouse ingestion sidecar (E2-13, E2-14, ADR-0020) ----------
+    # The ingestor is a separate process (`python -m
+    # eveys_ocpp.clickhouse.ingestor`); these settings configure it
+    # but the gateway itself does not connect to ClickHouse.
+    clickhouse_host: str = Field(default="localhost")
+    # Native ClickHouse protocol port (8123 is HTTP, 9000 is native).
+    # asynch uses native; the migrator (`migrate.py`) uses HTTP.
+    clickhouse_port: int = Field(default=9000, ge=1, le=65535)
+    clickhouse_db: str = Field(default="eveys_ocpp")
+    # Kafka consumer group ID for the ingestor. Multiple replicas of
+    # the ingestor share this group ID and Kafka rebalances partitions
+    # across them; today we run one but the design doesn't preclude
+    # scaling out.
+    clickhouse_ingestor_group: str = Field(default="eveys-ocpp-clickhouse-ingestor")
+    # Batch knobs (ADR-0020 § "Batch size vs latency"). 500 rows or
+    # 5 seconds, whichever first. Lower the seconds threshold to cut
+    # tail latency at the cost of smaller batches.
+    clickhouse_ingestor_batch_size: int = Field(default=500, ge=1, le=10_000)
+    clickhouse_ingestor_batch_max_seconds: float = Field(default=5.0, ge=0.1, le=60.0)
+
 
 def get_settings() -> Settings:
     """Build a fresh `Settings` from the current environment.
