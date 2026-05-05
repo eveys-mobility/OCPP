@@ -112,15 +112,15 @@ These are charger-initiated actions the CSMS must respond to. Appendix C tests t
 
 | TC ID | Scenario | Status | Implementation |
 |---|---|---|---|
-| TC_056 | Central Smart Charging — TxDefaultProfile | ⏳ Phase 2/3 | New: gRPC `SetChargingProfile` |
-| TC_057 | Central Smart Charging — TxProfile | ⏳ Phase 2/3 | New: per-tx profiles |
-| TC_058_1 | No ongoing transaction | ⏳ Phase 2/3 | Validation path |
-| TC_058_2 | Wrong transactionId | ⏳ Phase 2/3 | Validation path |
-| TC_059 | Remote Start Transaction with Charging Profile | ⏳ Phase 2/3 | Extends RemoteStart payload |
-| TC_060 | Remote Start with Charging Profile — Rejected | ⏳ Phase 2/3 | |
-| TC_066 | Get Composite Schedule | ⏳ Phase 2/3 | New gRPC command |
-| TC_067 | Clear Charging Profile | ⏳ Phase 2/3 | |
-| TC_082 | TxDefaultProfile with ongoing transaction | ⏳ Phase 2/3 | |
+| TC_056 | Central Smart Charging — TxDefaultProfile | 🟡 E2-1E | gRPC `SetChargingProfile` with `purpose=TxDefaultProfile`. Mirror in `charging_profiles` (Alembic `0005`); charger-side resolver per ADR-0022. e2e: `test_set_charging_profile_persists_mirror`. |
+| TC_057 | Central Smart Charging — TxProfile | 🟡 E2-1E | gRPC `SetChargingProfile` with `purpose=TxProfile` and `transaction_id` populated. |
+| TC_058_1 | No ongoing transaction | 🟡 E2-1E | Charger validates and reports `Rejected`; gateway translates and skips persistence. |
+| TC_058_2 | Wrong transactionId | 🟡 E2-1E | Same `Rejected` path. |
+| TC_059 | Remote Start Transaction with Charging Profile | 🟡 E2-5 + E2-1E | `RemoteStartRequest.charging_profile` carries the embedded `ChargingProfile` message; the proto was extended in E2-1E with the full field set. |
+| TC_060 | Remote Start with Charging Profile — Rejected | 🟡 E2-5 + E2-1E | Same code path; charger Rejects → proto `REMOTE_START_STATUS_REJECTED`. |
+| TC_066 | Get Composite Schedule | 🟡 E2-1E | gRPC `GetCompositeSchedule` round-trips to charger; charger-side resolver per ADR-0022. Translator handles per-period list, optional `start_schedule`, charging-rate-unit translation both directions. |
+| TC_067 | Clear Charging Profile | 🟡 E2-1E | gRPC `ClearChargingProfile` with optional filters; on charger Accepted, mirror flips matching rows to `Cleared` (status flip, not deletion — audit trail preserved). e2e: `test_clear_charging_profile_marks_cleared`. |
+| TC_082 | TxDefaultProfile with ongoing transaction | 🟡 E2-1E | Same `SetChargingProfile` code path; charger validates the ongoing-transaction interaction per spec. |
 
 ---
 

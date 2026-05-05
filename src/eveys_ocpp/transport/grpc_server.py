@@ -46,10 +46,12 @@ from eveys_ocpp.persistence.repositories import (
     activate_reservation,
     apply_local_auth_list_differential,
     cancel_reservation,
+    clear_charging_profiles,
     delete_reservation,
     get_charge_point_status,
     insert_pending_reservation,
     replace_local_auth_list,
+    upsert_charging_profile,
 )
 
 if TYPE_CHECKING:
@@ -91,14 +93,18 @@ _OCPP_CALL_DISPATCH: dict[str, type[Any]] = {
     "CancelReservation": ocpp_call.CancelReservation,
     "GetDiagnostics": ocpp_call.GetDiagnostics,
     "UpdateFirmware": ocpp_call.UpdateFirmware,
+    "SetChargingProfile": ocpp_call.SetChargingProfile,
+    "ClearChargingProfile": ocpp_call.ClearChargingProfile,
+    "GetCompositeSchedule": ocpp_call.GetCompositeSchedule,
 }
 
 
 class OcppGatewayService(gateway_grpc.OcppGatewayBase):
-    """Implementation of `OcppGateway`. All 16 RPCs live here (7 Phase-2
-    Core + 9 long-tail across E2-1A/B/C/F: DataTransfer, GetConfiguration,
-    ClearCache, GetLocalListVersion, SendLocalList, ReserveNow,
-    CancelReservation, GetDiagnostics, UpdateFirmware)."""
+    """Implementation of `OcppGateway`. All 19 RPCs live here (7 Phase-2
+    Core + 12 long-tail across E2-1A/B/C/E/F: DataTransfer,
+    GetConfiguration, ClearCache, GetLocalListVersion, SendLocalList,
+    ReserveNow, CancelReservation, GetDiagnostics, UpdateFirmware,
+    SetChargingProfile, ClearChargingProfile, GetCompositeSchedule)."""
 
     def __init__(
         self,
@@ -624,6 +630,168 @@ class OcppGatewayService(gateway_grpc.OcppGatewayBase):
         )
         await stream.send_message(gateway_pb2.UpdateFirmwareResponse())
 
+    # ---- E2-1E — Smart Charging profile (ADR-0022) -------------------------
+
+    async def SetChargingProfile(
+        self,
+        stream: Stream[
+            gateway_pb2.SetChargingProfileRequest, gateway_pb2.SetChargingProfileResponse
+        ],
+    ) -> None:
+        """Push a charging profile to the charger.
+
+        Order of operations (ADR-0022): charger first, mirror second.
+        On charger Accepted, upsert the profile in `charging_profiles`
+        keyed on `(charge_point_id, charging_profile_id)` — replacing
+        an existing profile with the same operator-assigned ID
+        wholesale-replaces the schedule.
+        """
+        request = await self._recv(stream)
+        if not request.cp_id:
+            raise GRPCError(Status.INVALID_ARGUMENT, "cp_id is required")
+        if not request.HasField("cs_charging_profiles"):
+            raise GRPCError(Status.INVALID_ARGUMENT, "cs_charging_profiles is required")
+
+        profile_dict, period_dicts = _translate_charging_profile_to_ocpp(
+            request.cs_charging_profiles
+        )
+        if not profile_dict.get("charging_profile_id"):
+            raise GRPCError(
+                Status.INVALID_ARGUMENT, "cs_charging_profiles.charging_profile_id is required"
+            )
+
+        ocpp_response = await self._dispatch_ocpp_call(
+            rpc="SetChargingProfile",
+            cp_id=request.cp_id,
+            ocpp_request=ocpp_call.SetChargingProfile(
+                connector_id=request.connector_id,
+                cs_charging_profiles=_build_ocpp_charging_profile(profile_dict, period_dicts),
+            ),
+        )
+
+        proto_status = _translate_set_charging_profile_status(ocpp_response.status)
+
+        if proto_status == gateway_pb2.CHARGING_PROFILE_STATUS_ACCEPTED:
+            try:
+                async with session_scope(self.session_factory) as session:
+                    await upsert_charging_profile(
+                        session,
+                        cp_id=request.cp_id,
+                        connector_id=request.connector_id,
+                        profile=profile_dict,
+                        schedule_periods=period_dicts,
+                    )
+            except Exception as exc:
+                # Charger has the profile; mirror write failed. Same
+                # rationale as SendLocalList: caller's OCPP-level
+                # success is real; surfacing as gRPC error would
+                # mislead. Phase-5 reconciliation surfaces drift.
+                log.exception(
+                    "grpc.set_charging_profile.persist_failed",
+                    cp_id=request.cp_id,
+                    error=str(exc),
+                )
+
+        await stream.send_message(gateway_pb2.SetChargingProfileResponse(status=proto_status))
+
+    async def ClearChargingProfile(
+        self,
+        stream: Stream[
+            gateway_pb2.ClearChargingProfileRequest, gateway_pb2.ClearChargingProfileResponse
+        ],
+    ) -> None:
+        """Remove charging profiles matching a filter set.
+
+        All four filters are optional (proto3 zero default = "any").
+        OCPP semantics: charger removes every profile matching every
+        *set* filter. On charger Accepted, the gateway flips the same
+        set in its mirror to `Cleared`. On `Unknown` (no match), do
+        nothing.
+
+        Filter convention: an unset value on the wire (proto3 zero)
+        means "don't filter on this field". This is symmetrical with
+        the OCPP dataclass default of None.
+        """
+        request = await self._recv(stream)
+        if not request.cp_id:
+            raise GRPCError(Status.INVALID_ARGUMENT, "cp_id is required")
+
+        purpose_enum: ocpp_enums.ChargingProfilePurposeType | None = (
+            _translate_charging_profile_purpose_to_ocpp(request.charging_profile_purpose)
+            if request.charging_profile_purpose != gateway_pb2.CHARGING_PROFILE_PURPOSE_UNSPECIFIED
+            else None
+        )
+
+        ocpp_response = await self._dispatch_ocpp_call(
+            rpc="ClearChargingProfile",
+            cp_id=request.cp_id,
+            ocpp_request=ocpp_call.ClearChargingProfile(
+                id=request.charging_profile_id or None,
+                connector_id=request.connector_id or None,
+                charging_profile_purpose=purpose_enum,
+                stack_level=request.stack_level or None,
+            ),
+        )
+
+        proto_status = _translate_clear_charging_profile_status(ocpp_response.status)
+
+        if proto_status == gateway_pb2.CLEAR_CHARGING_PROFILE_STATUS_ACCEPTED:
+            try:
+                async with session_scope(self.session_factory) as session:
+                    await clear_charging_profiles(
+                        session,
+                        cp_id=request.cp_id,
+                        profile_id=request.charging_profile_id or None,
+                        connector_id=request.connector_id or None,
+                        # Repo column stores the string name, not the enum.
+                        purpose=purpose_enum.value if purpose_enum is not None else None,
+                        stack_level=request.stack_level or None,
+                    )
+            except Exception as exc:
+                log.exception(
+                    "grpc.clear_charging_profile.persist_failed",
+                    cp_id=request.cp_id,
+                    error=str(exc),
+                )
+
+        await stream.send_message(gateway_pb2.ClearChargingProfileResponse(status=proto_status))
+
+    async def GetCompositeSchedule(
+        self,
+        stream: Stream[
+            gateway_pb2.GetCompositeScheduleRequest, gateway_pb2.GetCompositeScheduleResponse
+        ],
+    ) -> None:
+        """Ask the charger for its computed composite schedule.
+
+        Charger-side resolver is the source of truth (ADR-0022) — the
+        gateway forwards verbatim and translates the reply. No
+        gateway-side resolution; no `charging_profiles` table read.
+        """
+        request = await self._recv(stream)
+        if not request.cp_id:
+            raise GRPCError(Status.INVALID_ARGUMENT, "cp_id is required")
+        if request.duration <= 0:
+            raise GRPCError(Status.INVALID_ARGUMENT, "duration must be > 0")
+
+        rate_unit_arg: ocpp_enums.ChargingRateUnitType | None = None
+        if request.charging_rate_unit != gateway_pb2.CHARGING_RATE_UNIT_UNSPECIFIED:
+            rate_unit_arg = _translate_charging_rate_unit_to_ocpp(request.charging_rate_unit)
+
+        ocpp_response = await self._dispatch_ocpp_call(
+            rpc="GetCompositeSchedule",
+            cp_id=request.cp_id,
+            ocpp_request=ocpp_call.GetCompositeSchedule(
+                connector_id=request.connector_id,
+                duration=request.duration,
+                charging_rate_unit=rate_unit_arg,
+            ),
+        )
+
+        await stream.send_message(
+            _build_get_composite_schedule_response(ocpp_response, request.connector_id)
+        )
+
     async def GetChargerStatus(
         self,
         stream: Stream[gateway_pb2.GetChargerStatusRequest, gateway_pb2.GetChargerStatusResponse],
@@ -1096,6 +1264,215 @@ def _translate_cancel_reservation_status(ocpp_status: str) -> int:
         return gateway_pb2.CANCEL_RESERVATION_STATUS_REJECTED
     log.warning("grpc.unknown_ocpp_status", rpc="CancelReservation", ocpp_status=ocpp_status)
     return gateway_pb2.CANCEL_RESERVATION_STATUS_UNSPECIFIED
+
+
+# ---- Smart Charging (E2-1E) translators ------------------------------------
+
+
+def _translate_charging_profile_purpose_to_ocpp(
+    proto_purpose: int,
+) -> ocpp_enums.ChargingProfilePurposeType:
+    """Proto ``ChargingProfilePurpose`` → OCPP enum value."""
+    mapping: dict[int, ocpp_enums.ChargingProfilePurposeType] = {
+        gateway_pb2.CHARGING_PROFILE_PURPOSE_CHARGE_POINT_MAX_PROFILE: (
+            ocpp_enums.ChargingProfilePurposeType.charge_point_max_profile
+        ),
+        gateway_pb2.CHARGING_PROFILE_PURPOSE_TX_DEFAULT_PROFILE: (
+            ocpp_enums.ChargingProfilePurposeType.tx_default_profile
+        ),
+        gateway_pb2.CHARGING_PROFILE_PURPOSE_TX_PROFILE: (
+            ocpp_enums.ChargingProfilePurposeType.tx_profile
+        ),
+    }
+    if proto_purpose not in mapping:
+        raise GRPCError(
+            Status.INVALID_ARGUMENT,
+            "charging_profile_purpose must be a defined enum (not UNSPECIFIED)",
+        )
+    return mapping[proto_purpose]
+
+
+def _translate_charging_profile_kind_to_ocpp(proto_kind: int) -> str:
+    mapping: dict[int, str] = {
+        gateway_pb2.CHARGING_PROFILE_KIND_ABSOLUTE: "Absolute",
+        gateway_pb2.CHARGING_PROFILE_KIND_RECURRING: "Recurring",
+        gateway_pb2.CHARGING_PROFILE_KIND_RELATIVE: "Relative",
+    }
+    if proto_kind not in mapping:
+        raise GRPCError(
+            Status.INVALID_ARGUMENT,
+            "charging_profile_kind must be a defined enum (not UNSPECIFIED)",
+        )
+    return mapping[proto_kind]
+
+
+def _translate_recurrency_kind_to_ocpp(proto_kind: int) -> str | None:
+    """Optional. Returns None when unset on the wire (proto3 zero)."""
+    if proto_kind == gateway_pb2.RECURRENCY_KIND_UNSPECIFIED:
+        return None
+    if proto_kind == gateway_pb2.RECURRENCY_KIND_DAILY:
+        return "Daily"
+    if proto_kind == gateway_pb2.RECURRENCY_KIND_WEEKLY:
+        return "Weekly"
+    return None
+
+
+def _translate_charging_rate_unit_to_ocpp(proto_unit: int) -> ocpp_enums.ChargingRateUnitType:
+    if proto_unit == gateway_pb2.CHARGING_RATE_UNIT_W:
+        return ocpp_enums.ChargingRateUnitType.watts
+    if proto_unit == gateway_pb2.CHARGING_RATE_UNIT_A:
+        return ocpp_enums.ChargingRateUnitType.amps
+    raise GRPCError(Status.INVALID_ARGUMENT, "charging_rate_unit must be W or A (not UNSPECIFIED)")
+
+
+def _translate_charging_profile_to_ocpp(
+    profile: gateway_pb2.ChargingProfile,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Proto ChargingProfile → (profile_dict, period_dicts) wire shape.
+
+    The profile dict carries the OCPP field names verbatim plus a
+    nested ``charging_schedule`` sub-dict. Periods are returned
+    separately so the repository can persist them in the child table.
+    """
+    schedule = profile.charging_schedule
+    period_dicts: list[dict[str, Any]] = [
+        {
+            "start_period": int(p.start_period),
+            "limit": float(p.limit),
+            "number_phases": int(p.number_phases) if p.number_phases else None,
+        }
+        for p in schedule.charging_schedule_period
+    ]
+    profile_dict: dict[str, Any] = {
+        "charging_profile_id": int(profile.charging_profile_id),
+        "stack_level": int(profile.stack_level),
+        # The repository column stores the string name, and the OCPP
+        # library happily accepts the string name on the
+        # `cs_charging_profiles` dict — use the enum's `.value` here
+        # to keep both sites consistent.
+        "charging_profile_purpose": _translate_charging_profile_purpose_to_ocpp(
+            profile.charging_profile_purpose
+        ).value,
+        "charging_profile_kind": _translate_charging_profile_kind_to_ocpp(
+            profile.charging_profile_kind
+        ),
+        "transaction_id": int(profile.transaction_id) if profile.transaction_id else None,
+        "recurrency_kind": _translate_recurrency_kind_to_ocpp(profile.recurrency_kind),
+        "valid_from": profile.valid_from or None,
+        "valid_to": profile.valid_to or None,
+        "charging_schedule": {
+            "duration": int(schedule.duration) if schedule.duration else None,
+            "charging_rate_unit": (
+                _translate_charging_rate_unit_to_ocpp(schedule.charging_rate_unit).value
+                if schedule.charging_rate_unit != gateway_pb2.CHARGING_RATE_UNIT_UNSPECIFIED
+                else "W"
+            ),
+            "min_charging_rate": (
+                float(schedule.min_charging_rate) if schedule.min_charging_rate else None
+            ),
+            "start_schedule": schedule.start_schedule or None,
+        },
+    }
+    return profile_dict, period_dicts
+
+
+def _build_ocpp_charging_profile(
+    profile_dict: dict[str, Any], period_dicts: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """Compose the wire-shape dict the OCPP library expects for the
+    ``cs_charging_profiles`` field of ``SetChargingProfile.req``.
+
+    The library accepts dicts here; field names must match the
+    JSON-Schema (camelCase). The dataclass route would also work but
+    needs careful type juggling for the ``Optional[List]`` fields.
+    """
+    schedule_dict = dict(profile_dict["charging_schedule"])
+    schedule_dict["charging_schedule_period"] = period_dicts
+    return {
+        "charging_profile_id": profile_dict["charging_profile_id"],
+        "stack_level": profile_dict["stack_level"],
+        "charging_profile_purpose": profile_dict["charging_profile_purpose"],
+        "charging_profile_kind": profile_dict["charging_profile_kind"],
+        "charging_schedule": schedule_dict,
+        "transaction_id": profile_dict["transaction_id"],
+        "recurrency_kind": profile_dict["recurrency_kind"],
+        "valid_from": profile_dict["valid_from"],
+        "valid_to": profile_dict["valid_to"],
+    }
+
+
+def _translate_set_charging_profile_status(ocpp_status: str) -> int:
+    if ocpp_status == "Accepted":
+        return gateway_pb2.CHARGING_PROFILE_STATUS_ACCEPTED
+    if ocpp_status == "Rejected":
+        return gateway_pb2.CHARGING_PROFILE_STATUS_REJECTED
+    if ocpp_status == "NotSupported":
+        return gateway_pb2.CHARGING_PROFILE_STATUS_NOT_SUPPORTED
+    log.warning("grpc.unknown_ocpp_status", rpc="SetChargingProfile", ocpp_status=ocpp_status)
+    return gateway_pb2.CHARGING_PROFILE_STATUS_UNSPECIFIED
+
+
+def _translate_clear_charging_profile_status(ocpp_status: str) -> int:
+    if ocpp_status == "Accepted":
+        return gateway_pb2.CLEAR_CHARGING_PROFILE_STATUS_ACCEPTED
+    if ocpp_status == "Unknown":
+        return gateway_pb2.CLEAR_CHARGING_PROFILE_STATUS_UNKNOWN
+    log.warning("grpc.unknown_ocpp_status", rpc="ClearChargingProfile", ocpp_status=ocpp_status)
+    return gateway_pb2.CLEAR_CHARGING_PROFILE_STATUS_UNSPECIFIED
+
+
+def _translate_get_composite_schedule_status(ocpp_status: str) -> int:
+    if ocpp_status == "Accepted":
+        return gateway_pb2.GET_COMPOSITE_SCHEDULE_STATUS_ACCEPTED
+    if ocpp_status == "Rejected":
+        return gateway_pb2.GET_COMPOSITE_SCHEDULE_STATUS_REJECTED
+    log.warning("grpc.unknown_ocpp_status", rpc="GetCompositeSchedule", ocpp_status=ocpp_status)
+    return gateway_pb2.GET_COMPOSITE_SCHEDULE_STATUS_UNSPECIFIED
+
+
+def _translate_charging_rate_unit_to_proto(ocpp_unit: str | None) -> int:
+    if ocpp_unit == "W":
+        return gateway_pb2.CHARGING_RATE_UNIT_W
+    if ocpp_unit == "A":
+        return gateway_pb2.CHARGING_RATE_UNIT_A
+    return gateway_pb2.CHARGING_RATE_UNIT_UNSPECIFIED
+
+
+def _build_get_composite_schedule_response(
+    ocpp_response: Any, requested_connector_id: int
+) -> gateway_pb2.GetCompositeScheduleResponse:
+    """Translate the charger's composite-schedule reply to the proto."""
+    proto_status = _translate_get_composite_schedule_status(ocpp_response.status)
+
+    schedule = getattr(ocpp_response, "charging_schedule", None)
+    if not isinstance(schedule, dict):
+        schedule = {}
+
+    periods = schedule.get("charging_schedule_period") or []
+    proto_periods = [
+        gateway_pb2.ChargingSchedulePeriod(
+            start_period=int(p.get("start_period", 0)),
+            limit=float(p.get("limit", 0.0)),
+            number_phases=int(p["number_phases"]) if p.get("number_phases") is not None else 0,
+        )
+        for p in periods
+        if isinstance(p, dict)
+    ]
+
+    return gateway_pb2.GetCompositeScheduleResponse(
+        status=proto_status,
+        connector_id=int(getattr(ocpp_response, "connector_id", requested_connector_id) or 0),
+        schedule_start=str(getattr(ocpp_response, "schedule_start", "") or ""),
+        charging_schedule=gateway_pb2.ChargingSchedule(
+            duration=int(schedule.get("duration") or 0),
+            charging_rate_unit=_translate_charging_rate_unit_to_proto(
+                schedule.get("charging_rate_unit")
+            ),
+            charging_schedule_period=proto_periods,
+            min_charging_rate=float(schedule.get("min_charging_rate") or 0.0),
+            start_schedule=str(schedule.get("start_schedule") or ""),
+        ),
+    )
 
 
 # -----------------------------------------------------------------------------
