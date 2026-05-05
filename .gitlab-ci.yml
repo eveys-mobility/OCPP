@@ -167,6 +167,38 @@ tests:
       - coverage.xml
     expire_in: 14 days
 
+# ---- E3-10 mock backend pipeline -------------------------------------------
+#
+# The mock implementing docs/integration/01-backend-rest-contract.md is
+# tested at two layers:
+#
+# 1. In-process ASGI tests in `tests/unit/mock_backend/` — already part
+#    of the `tests` job above (collected via `pytest tests/unit/`).
+#    Fast, no subprocess, no socket, ~14 cases.
+#
+# 2. Standalone-process smoke in `tests/smoke/test_mock_backend_standalone.py`
+#    — boots `python -m tests.mock_backend` as a real subprocess on a
+#    free local port and exercises every endpoint over real HTTP. Catches
+#    issues the in-process tests miss: uvicorn startup, CLI flag
+#    handling, port binding, header pass-through across the actual HTTP
+#    stack. ~9 cases.
+#
+# Smoke tests are split out so they don't slow down the main unit
+# pipeline (subprocess fork + uvicorn boot is ~1 s) and so a mock-backend
+# regression shows up as its own red job in the pipeline view rather
+# than buried in the unit-test output.
+#
+# No `services:` sidecars — the mock has no external deps. Pure Python
+# subprocess + httpx; the test runner just needs the dev venv.
+tests:mock-backend:
+  <<: *python-job
+  stage: test
+  # `--no-cov` disables the project's 80% coverage gate (which targets
+  # `src/eveys_ocpp/` — the smoke tests don't import the gateway, they
+  # exercise the mock).
+  script:
+    - .venv/bin/pytest tests/smoke/test_mock_backend_standalone.py --no-cov -v
+
 tests:e2e:
   <<: *python-job
   stage: test
