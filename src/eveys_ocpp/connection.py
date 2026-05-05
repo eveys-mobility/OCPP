@@ -18,6 +18,8 @@ from eveys_ocpp.handlers.v16 import (
     authorize,
     boot_notification,
     data_transfer,
+    diagnostics_status_notification,
+    firmware_status_notification,
     heartbeat,
     meter_values,
     start_transaction,
@@ -116,3 +118,15 @@ class EveysChargePoint(Cpv16):
     @on(Action.data_transfer)
     async def on_data_transfer(self, **kwargs: Any) -> call_result.DataTransfer:
         return await data_transfer.handle(self, **kwargs)
+
+    @on(Action.diagnostics_status_notification)
+    async def on_diagnostics_status_notification(
+        self, **kwargs: Any
+    ) -> call_result.DiagnosticsStatusNotification:
+        return await diagnostics_status_notification.handle(self, **kwargs)
+
+    @on(Action.firmware_status_notification)
+    async def on_firmware_status_notification(
+        self, **kwargs: Any
+    ) -> call_result.FirmwareStatusNotification:
+        return await firmware_status_notification.handle(self, **kwargs)

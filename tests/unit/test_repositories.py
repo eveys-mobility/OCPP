@@ -48,6 +48,28 @@ async def test_update_heartbeat_executes_update() -> None:
     session.execute.assert_awaited_once()
 
 
+@pytest.mark.asyncio
+async def test_update_diagnostics_status_executes_update() -> None:
+    """E2-1F — `last_diagnostics_status` latest-wins update."""
+    session = AsyncMock()
+    session.execute = AsyncMock()
+
+    await repositories.update_diagnostics_status(session, cp_id="CP1", status="Uploading")
+
+    session.execute.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_update_firmware_status_executes_update() -> None:
+    """E2-1F — `last_firmware_status` latest-wins update."""
+    session = AsyncMock()
+    session.execute = AsyncMock()
+
+    await repositories.update_firmware_status(session, cp_id="CP1", status="Installed")
+
+    session.execute.assert_awaited_once()
+
+
 # ---- LocalAuthList (E2-1B) ------------------------------------------------
 
 

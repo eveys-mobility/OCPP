@@ -161,7 +161,18 @@ These are charger-initiated actions the CSMS must respond to. Appendix C tests t
 
 | TC ID | Scenario | Status |
 |---|---|---|
-| TC_054 | Trigger Message | ⏳ E2-6 (Phase 2) |
+| TC_054 | Trigger Message | 🟡 E2-6 — six message kinds covered; promotion to ✅ blocked on OCTT (C-1a). |
+
+---
+
+## Conformance matrix — FirmwareManagement profile (CSMS, in scope)
+
+| Handler / RPC | Tests | Status | Notes |
+|---|---|---|---|
+| GetDiagnostics (CSMS-initiated, gRPC) | [test_grpc_server.py](../tests/unit/transport/test_grpc_server.py) `test_get_diagnostics_*`, [test_local_smoke.py](../tests/e2e/test_local_smoke.py) `test_diagnostics_get_then_status_notification` | 🟡 E2-1F | Forwards `location` (URL) + optional retries / time-window to charger; charger returns optional `file_name`. Inbound DiagnosticsStatusNotification populates `charge_points.last_diagnostics_status` for ops queries. |
+| UpdateFirmware (CSMS-initiated, gRPC) | [test_grpc_server.py](../tests/unit/transport/test_grpc_server.py) `test_update_firmware_*`, [test_local_smoke.py](../tests/e2e/test_local_smoke.py) `test_firmware_update_then_status_notifications` | 🟡 E2-1F | OCPP UpdateFirmware.conf is empty per spec; gateway response carries no fields. Status arrives via inbound FirmwareStatusNotification. |
+| DiagnosticsStatusNotification (charger-initiated) | [test_diagnostics_status_notification.py](../tests/unit/handlers/v16/test_diagnostics_status_notification.py) | 🟡 E2-1F | Latest-wins update of `charge_points.last_diagnostics_status` (Idle / Uploading / Uploaded / UploadFailed). Empty conf reply per spec. |
+| FirmwareStatusNotification (charger-initiated) | [test_firmware_status_notification.py](../tests/unit/handlers/v16/test_firmware_status_notification.py) | 🟡 E2-1F | Latest-wins update of `charge_points.last_firmware_status`. Persists whatever string the charger reports — column width tolerates Phase-5 Security-profile additions (e.g. `SignatureVerified`, `InvalidSignature`) without schema change. |
 
 ---
 
