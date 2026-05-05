@@ -208,6 +208,16 @@ class Settings(BaseSettings):
     #                      enable if the operator accepts the risk.
     backend_authorize_fallback: str = Field(default="reject", pattern="^(reject|accept_offline)$")
 
+    # ---- Authorize cache (E3-4) --------------------------------------------
+    # Redis-cached `IdTagInfo` keyed on `(cp_id, id_tag)`. A cache hit
+    # short-circuits the backend round-trip on the OCPP hot path.
+    # 30 s is short enough for `Blocked`/`Expired` decisions to
+    # propagate within ~30 s, long enough to absorb depot-shift
+    # bursts. Operator can disable entirely via the boolean below or
+    # drop the TTL toward 1 s for ops debugging.
+    backend_authorize_cache_enabled: bool = Field(default=True)
+    backend_authorize_cache_ttl_seconds: int = Field(default=30, ge=1, le=3600)
+
 
 def get_settings() -> Settings:
     """Build a fresh `Settings` from the current environment.

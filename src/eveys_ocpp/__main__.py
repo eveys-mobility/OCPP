@@ -19,7 +19,7 @@ from eveys_ocpp.events import KafkaEventProducer
 from eveys_ocpp.idempotency import IdempotencyCache
 from eveys_ocpp.observability import configure_logging, get_logger
 from eveys_ocpp.persistence.db import make_engine, make_session_factory
-from eveys_ocpp.platform import BackendHTTPClient
+from eveys_ocpp.platform import AuthorizeCache, BackendHTTPClient
 from eveys_ocpp.registry import Registry
 from eveys_ocpp.settings import Settings, get_settings
 from eveys_ocpp.transport.grpc_server import serve_forever as serve_grpc_forever
@@ -40,6 +40,7 @@ async def _serve_all(
     bus: CommandBus,
     idempotency: IdempotencyCache,
     backend_client: BackendHTTPClient | None,
+    authorize_cache: AuthorizeCache | None,
 ) -> None:
     """Run WS and gRPC servers concurrently; cancel both if either fails.
 
@@ -69,6 +70,7 @@ async def _serve_all(
                     event_producer=event_producer,
                     idempotency=idempotency,
                     backend_client=backend_client,
+                    authorize_cache=authorize_cache,
                 ),
                 name="ws_server",
             )
@@ -139,6 +141,7 @@ def main() -> None:
     # leaves it None — the OCPP handlers fall back to their stub
     # behaviour, which is what the W1 / dev-laptop stack wants.
     backend_client: BackendHTTPClient | None = None
+    authorize_cache: AuthorizeCache | None = None
     if settings.backend_base_url:
         backend_client = BackendHTTPClient.from_settings(settings)
         log.info(
@@ -146,6 +149,18 @@ def main() -> None:
             base_url=settings.backend_base_url,
             authorize_fallback=settings.backend_authorize_fallback,
         )
+        # Share the same Redis client used for registry / bus /
+        # idempotency. Cache is meaningful only when there's a
+        # backend to cache *for* — gating on `backend_client`
+        # avoids a stranded cache that nobody reads.
+        if settings.backend_authorize_cache_enabled:
+            authorize_cache = AuthorizeCache(redis_client, settings=settings)
+            log.info(
+                "authorize_cache.enabled",
+                ttl_seconds=settings.backend_authorize_cache_ttl_seconds,
+            )
+        else:
+            log.info("authorize_cache.disabled")
     else:
         log.info("backend_client.disabled")
 
@@ -160,6 +175,7 @@ def main() -> None:
             bus=bus,
             idempotency=idempotency,
             backend_client=backend_client,
+            authorize_cache=authorize_cache,
         )
     )
 

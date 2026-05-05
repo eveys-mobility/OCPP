@@ -21,6 +21,7 @@ this module in E3-3..E3-6.
 
 from __future__ import annotations
 
+from .cache import AuthorizeCache
 from .client import (
     AuthorizeResult,
     BackendHTTPClient,
@@ -40,6 +41,7 @@ from .errors import (
 )
 
 __all__ = [
+    "AuthorizeCache",
     "AuthorizeResult",
     "BackendAuthError",
     "BackendBusinessError",
