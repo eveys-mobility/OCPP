@@ -66,10 +66,18 @@ HOST_WS_PORT = 19000
 HOST_PG_PORT = 5432
 HOST_CH_HTTP_PORT = 8123
 
+# Where the published ports actually answer. On a laptop this is
+# `localhost`. Under GitLab Docker-in-Docker the test process and the
+# Docker daemon live in different network namespaces — the daemon
+# publishes ports on the dind sidecar, which the job container reaches
+# via the service alias (`docker` by default). CI sets this to
+# `docker`; defaults stay laptop-friendly.
+PUBLISHED_HOST = os.environ.get("COMPOSE_SMOKE_PUBLISHED_HOST", "localhost")
+
 # Host-side DSN for alembic to run against the compose Postgres. Inside
 # the docker network the gateway uses `postgres:5432`; from the test
 # process we go via the published port.
-_PG_DSN = f"postgresql+asyncpg://eveys:eveys@localhost:{HOST_PG_PORT}/eveys_ocpp"
+_PG_DSN = f"postgresql+asyncpg://eveys:eveys@{PUBLISHED_HOST}:{HOST_PG_PORT}/eveys_ocpp"
 
 
 def _docker_available() -> bool:
@@ -239,7 +247,7 @@ def _compose_stack() -> Iterator[None]:
 
     # Phase 3: published host ports answer. Catches the case where the
     # container is "Up" but the inner process never bound its socket.
-    if not _wait_for_tcp("localhost", HOST_WS_PORT, timeout_s=15):
+    if not _wait_for_tcp(PUBLISHED_HOST, HOST_WS_PORT, timeout_s=15):
         _compose("down", "--volumes", "--remove-orphans")
         pytest.fail(
             f"WS port {HOST_WS_PORT} not reachable after gateway 'Up'.\n"
@@ -272,7 +280,7 @@ def _compose_stack() -> Iterator[None]:
             "-m",
             "eveys_ocpp.clickhouse.migrate",
             "--host",
-            "localhost",
+            PUBLISHED_HOST,
             "--port",
             str(HOST_CH_HTTP_PORT),
             "--db",

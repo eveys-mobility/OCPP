@@ -29,6 +29,7 @@ from websockets.asyncio.client import connect
 
 from tests.compose_smoke.conftest import (
     HOST_WS_PORT,
+    PUBLISHED_HOST,
     _container_logs,
     _container_state,
 )
@@ -159,7 +160,7 @@ async def test_full_charger_flow_against_running_container() -> None:
     of those are observable in unit or e2e tiers.
     """
     cp_id = "COMPOSE_SMOKE_CP"
-    url = f"ws://localhost:{HOST_WS_PORT}/{cp_id}"
+    url = f"ws://{PUBLISHED_HOST}:{HOST_WS_PORT}/{cp_id}"
 
     async with connect(url, subprotocols=["ocpp1.6"]) as ws:
         sim = _SimChargePoint(cp_id, ws)

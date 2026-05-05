@@ -332,6 +332,11 @@ tests:compose-smoke:
     # the original class of bug this layer was added to prevent.
     COMPOSE_SMOKE: "1"
     COMPOSE_SMOKE_REQUIRE: "1"
+    # In dind, compose publishes ports on the dind sidecar's network
+    # (alias `docker`), NOT on the job container. The conftest reads
+    # this env var to know where to dial WS / Postgres / ClickHouse.
+    # On a laptop this defaults to `localhost`.
+    COMPOSE_SMOKE_PUBLISHED_HOST: docker
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
       changes:
