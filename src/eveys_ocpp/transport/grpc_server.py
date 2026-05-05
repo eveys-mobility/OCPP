@@ -27,7 +27,8 @@ from operator dashboards without back-pressuring chargers.
 from __future__ import annotations
 
 import asyncio
-from dataclasses import asdict
+from dataclasses import asdict, is_dataclass
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 from grpclib.const import Status
@@ -428,6 +429,13 @@ class OcppGatewayService(gateway_grpc.OcppGatewayBase):
         )
         if reply.ok:
             log.info("grpc.replied", rpc=rpc, ocpp_status=reply.ocpp_status, route="bus")
+            # If the owning side serialised the full response (E2-1A:
+            # GetConfiguration, DataTransfer), reconstruct a duck-typed
+            # object the per-RPC body's translator can read field by
+            # field. Otherwise keep the legacy status-only stand-in
+            # for the simple-status RPCs.
+            if reply.ocpp_response is not None:
+                return SimpleNamespace(**reply.ocpp_response)
             return _BusOcppResponse(status=reply.ocpp_status or "")
 
         log.warning(
@@ -481,7 +489,24 @@ class OcppGatewayService(gateway_grpc.OcppGatewayBase):
                 error_code="DEADLINE_EXCEEDED",
                 error_message=f"charger did not reply within {_OCPP_REQUEST_TIMEOUT_SECONDS}s",
             )
-        return BusReply(ok=True, ocpp_status=getattr(ocpp_response, "status", ""))
+        # Serialise the full response payload so RPCs whose reply has
+        # more than just a status (GetConfiguration's lists,
+        # DataTransfer's optional `data`) round-trip correctly across
+        # the bus. ``asdict`` handles every ocpp.v16.call_result
+        # variant (all dataclasses); the requester reconstructs a
+        # duck-typed object. The ``not isinstance(..., type)`` clause
+        # narrows mypy: ``is_dataclass`` is True for both instances
+        # and classes, but ``asdict`` only accepts instances.
+        ocpp_response_dict: dict[str, Any] | None = (
+            asdict(ocpp_response)
+            if is_dataclass(ocpp_response) and not isinstance(ocpp_response, type)
+            else None
+        )
+        return BusReply(
+            ok=True,
+            ocpp_status=getattr(ocpp_response, "status", ""),
+            ocpp_response=ocpp_response_dict,
+        )
 
 
 # ---- bus-mode plumbing ------------------------------------------------------

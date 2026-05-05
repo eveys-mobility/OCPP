@@ -158,6 +158,72 @@ async def test_round_trip_happy_path(redis_client: Redis) -> None:
 
 
 @pytest.mark.asyncio
+async def test_round_trip_carries_full_response_payload(redis_client: Redis) -> None:
+    """E2-1A: BusReply.ocpp_response ferries the full OCPP response
+    payload across the wire (not just the status string).
+
+    Required for ``GetConfiguration`` (returns lists of dicts) and
+    ``DataTransfer`` (returns an optional `data` reply alongside its
+    status). For status-only RPCs the field stays None and the legacy
+    ``ocpp_status`` carries the result.
+    """
+    owning_cm = ConnectionMap()
+    requesting_cm = ConnectionMap()
+
+    owning_bus = CommandBus(
+        redis_client, pod_id="pod-A", connections=owning_cm, request_timeout_seconds=2.0
+    )
+    requesting_bus = CommandBus(
+        redis_client, pod_id="pod-B", connections=requesting_cm, request_timeout_seconds=2.0
+    )
+
+    async def owning_dispatcher(rpc: str, cp_id: str, payload: dict[str, Any]) -> BusReply:
+        # Mimic what `_dispatch_local_for_bus` returns for a payload-
+        # bearing response (e.g. GetConfiguration).
+        return BusReply(
+            ok=True,
+            ocpp_status="",
+            ocpp_response={
+                "configuration_key": [
+                    {"key": "HeartbeatInterval", "readonly": False, "value": "60"},
+                ],
+                "unknown_key": ["NoSuchKey"],
+            },
+        )
+
+    owning_bus.set_local_dispatcher(owning_dispatcher)
+
+    await _await_psubscribe(owning_bus, redis_client, CMD_CHANNEL_PATTERN)
+    await _await_psubscribe(requesting_bus, redis_client, CMD_CHANNEL_PATTERN)
+
+    # The owning side only answers when it owns the cp; add a dummy
+    # cp to its connection map so the dispatcher actually fires.
+    dummy_cp = MagicMock()
+    dummy_cp.id = "CP_PAYLOAD"
+    owning_cm.add(dummy_cp)
+
+    try:
+        reply = await requesting_bus.request(
+            cp_id="CP_PAYLOAD",
+            owning_pod="pod-A",
+            rpc="GetConfiguration",
+            payload={"key": ["HeartbeatInterval"]},
+            timeout=2.0,
+        )
+        assert reply.ok is True
+        # The full response dict round-tripped JSON, including the
+        # nested list of dicts under `configuration_key`.
+        assert reply.ocpp_response is not None
+        assert reply.ocpp_response["configuration_key"] == [
+            {"key": "HeartbeatInterval", "readonly": False, "value": "60"},
+        ]
+        assert reply.ocpp_response["unknown_key"] == ["NoSuchKey"]
+    finally:
+        await owning_bus.stop()
+        await requesting_bus.stop()
+
+
+@pytest.mark.asyncio
 async def test_request_times_out_when_no_owner(redis_client: Redis) -> None:
     """No subscriber claims the cp_id → requester gets DEADLINE_EXCEEDED."""
     requesting_cm = ConnectionMap()
