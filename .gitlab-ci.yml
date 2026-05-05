@@ -57,7 +57,7 @@ lint:
   <<: *python-job
   stage: quality
   script:
-    - .venv/bin/ruff check src tests
+    - .venv/bin/ruff check src tests scripts
 
 types:
   <<: *python-job

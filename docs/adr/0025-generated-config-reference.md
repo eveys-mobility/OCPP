@@ -131,11 +131,14 @@ the answer immediately.
 Distinct from `stability`. A field is `secret: True` iff its value
 is sensitive (token, password, signing key). The generator:
 
-- Emits `*****` in `.env.example` for these fields.
+- Emits a blank value in `.env.example` for these fields, with a
+  `# secret — fill from your secrets manager` comment.
 - Tags them visibly in the reference doc.
-- Currently: `backend_token` is the only secret. Phase 5 vault work
-  (E5-7) will move it to `pydantic.SecretStr`; the metadata flag is
-  what tells the generator to treat it specially in the meantime.
+- Currently flagged secret: `backend_token` (bearer token) and
+  `db_url` (the SQLAlchemy DSN, because production DSNs always carry
+  a real password). Phase 5 vault work (E5-7) will move both to
+  `pydantic.SecretStr`; the metadata flag is what tells the generator
+  to treat them specially in the meantime.
 
 ## Consequences
 
