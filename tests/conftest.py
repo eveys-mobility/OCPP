@@ -17,6 +17,22 @@ def settings() -> Settings:
 
 
 @pytest.fixture
+def settings_factory() -> Any:
+    """Build a `Settings` with arbitrary keyword overrides.
+
+    Pydantic's `Settings(...)` constructor accepts field overrides
+    directly when `frozen=True` is set on `model_config`; this
+    factory wraps that for ergonomics in handler tests that want to
+    flip one knob (e.g. `backend_authorize_fallback`).
+    """
+
+    def _build(**overrides: Any) -> Settings:
+        return Settings(**overrides)
+
+    return _build
+
+
+@pytest.fixture
 def fake_session() -> AsyncMock:
     """An AsyncSession stand-in. Each repository function is patched per test."""
     session = AsyncMock()
@@ -47,8 +63,8 @@ def fake_session_factory(fake_session: AsyncMock) -> Any:
 def fake_cp(settings: Settings, fake_session_factory: Any) -> MagicMock:
     """A stand-in for EveysChargePoint with the fields handlers touch.
 
-    `registry` and `event_producer` default to None — tests that need
-    them set the attribute directly.
+    `registry`, `event_producer`, and `backend_client` default to None —
+    tests that need them set the attribute directly.
     """
     cp = MagicMock()
     cp.id = "TEST_CP_001"
@@ -56,4 +72,5 @@ def fake_cp(settings: Settings, fake_session_factory: Any) -> MagicMock:
     cp.session_factory = fake_session_factory
     cp.registry = None
     cp.event_producer = None
+    cp.backend_client = None
     return cp

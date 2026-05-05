@@ -33,6 +33,7 @@ if TYPE_CHECKING:
 
     from eveys_ocpp.events import EventProducer
     from eveys_ocpp.idempotency import IdempotencyCache
+    from eveys_ocpp.platform import BackendHTTPClient
     from eveys_ocpp.registry import Registry
     from eveys_ocpp.settings import Settings
 
@@ -45,6 +46,7 @@ class EveysChargePoint(Cpv16):
     - process-wide session factory + settings
     - Redis registry handle (None in unit tests + Kafka-less stacks)
     - Kafka event producer (None in unit tests + Kafka-less stacks)
+    - Backend HTTP client (None in unit tests / when backend_base_url is empty)
     - per-charger logging context
     """
 
@@ -58,6 +60,7 @@ class EveysChargePoint(Cpv16):
         registry: Registry | None = None,
         event_producer: EventProducer | None = None,
         idempotency: IdempotencyCache | None = None,
+        backend_client: BackendHTTPClient | None = None,
     ) -> None:
         super().__init__(cp_id, connection)
         self.session_factory = session_factory
@@ -65,6 +68,7 @@ class EveysChargePoint(Cpv16):
         self.registry = registry
         self.event_producer = event_producer
         self.idempotency = idempotency
+        self.backend_client = backend_client
 
     # ---- handler delegation -------------------------------------------------
     # Each handler module exports a `handle(...)` coroutine. We thin-wrap
@@ -98,8 +102,10 @@ class EveysChargePoint(Cpv16):
         return await status_notification.handle(self, **kwargs)
 
     @on(Action.authorize)
-    async def on_authorize(self, **kwargs: Any) -> call_result.Authorize:
-        return await authorize.handle(self, **kwargs)
+    async def on_authorize(
+        self, *, call_unique_id: str | None = None, **kwargs: Any
+    ) -> call_result.Authorize:
+        return await authorize.handle(self, message_id=call_unique_id, **kwargs)
 
     @on(Action.start_transaction)
     async def on_start_transaction(self, **kwargs: Any) -> call_result.StartTransaction:
