@@ -83,6 +83,7 @@ ADRs are **never deleted**. They are append-only history.
 | [0020](./adr/0020-clickhouse-ingestion-sidecar.md) | ClickHouse ingestion: sidecar over Kafka Engine | Accepted | 2026-05-01 |
 | [0021](./adr/0021-reservations-charger-authority.md) | Reservations: charger-side authority + gateway-side mirror | Accepted | 2026-05-05 |
 | [0022](./adr/0022-smart-charging-charger-side-resolver.md) | Smart Charging: charger-side resolver, gateway-side profile mirror | Accepted | 2026-05-05 |
+| [0023](./adr/0023-backend-rest-integration.md) | Backend REST integration: two surfaces, asymmetric envelope | Accepted | 2026-05-05 |
 
 ## Pending / planned
 
