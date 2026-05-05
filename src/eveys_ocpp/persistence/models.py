@@ -39,6 +39,14 @@ class ChargePoint(Base):
     last_heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_status: Mapped[str | None] = mapped_column(String(32))
 
+    # Latest DiagnosticsStatusNotification / FirmwareStatusNotification
+    # status string (E2-1F). Latest-wins; the inbound handlers update
+    # whichever cell is in scope. Operator dashboards read these for an
+    # at-a-glance "is firmware updating right now" without polling the
+    # charger.
+    last_diagnostics_status: Mapped[str | None] = mapped_column(String(32))
+    last_firmware_status: Mapped[str | None] = mapped_column(String(32))
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

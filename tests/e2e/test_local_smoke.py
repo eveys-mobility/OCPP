@@ -1029,3 +1029,144 @@ async def test_reserve_now_charger_occupied_drops_pending_row(
         assert count == 0
 
         loop_task.cancel()
+
+
+# --------------------------------------------------------------------------
+# E2-1F — Diagnostics + Firmware
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_diagnostics_get_then_status_notification(
+    running_service: None, db_engine: sa.ext.asyncio.AsyncEngine
+) -> None:
+    """E2-1F — gRPC GetDiagnostics → charger replies with file_name →
+    charger pushes DiagnosticsStatusNotification(Uploaded) → gateway
+    persists into `charge_points.last_diagnostics_status`."""
+    from grpclib.client import Channel as _Channel
+    from ocpp.routing import on as _on
+    from ocpp.v16 import call_result as _call_result
+    from ocpp.v16.enums import Action as _Action
+
+    from eveys_ocpp._generated.ocpp_gw.v1 import gateway_grpc as _gateway_grpc
+    from eveys_ocpp._generated.ocpp_gw.v1 import gateway_pb2 as _gateway_pb2
+
+    captured: dict[str, object] = {}
+
+    class _Sim(_SimChargePoint):
+        @_on(_Action.get_diagnostics)
+        async def _on_get_diag(self, location: str, **_kw: object) -> _call_result.GetDiagnostics:
+            captured["location"] = location
+            return _call_result.GetDiagnostics(file_name="diag-2026-05-05.tar.gz")
+
+    cp_id = "SMOKE_E2_1F_DIAG_001"
+    async with connect(f"ws://localhost:{_TEST_WS_PORT}/{cp_id}", subprotocols=["ocpp1.6"]) as ws:
+        sim = _Sim(cp_id, ws)
+        loop_task = asyncio.create_task(sim.start())
+        await sim.call(call.BootNotification(charge_point_vendor="ACME", charge_point_model="X1"))
+
+        # Operator issues GetDiagnostics.
+        async with _Channel("127.0.0.1", _TEST_GRPC_PORT) as ch:
+            stub = _gateway_grpc.OcppGatewayStub(ch)
+            response = await stub.GetDiagnostics(
+                _gateway_pb2.GetDiagnosticsRequest(
+                    cp_id=cp_id,
+                    location="https://logs.eveys.example/incoming",
+                )
+            )
+
+        assert response.file_name == "diag-2026-05-05.tar.gz"
+        assert captured["location"] == "https://logs.eveys.example/incoming"
+
+        # Charger now reports the upload-state machine progressing.
+        await sim.call(call.DiagnosticsStatusNotification(status="Uploading"))
+        await asyncio.sleep(0.1)
+        async with db_engine.connect() as conn:
+            row = (
+                await conn.execute(
+                    sa.text(
+                        "SELECT last_diagnostics_status FROM charge_points WHERE cp_id = :cp_id"
+                    ),
+                    {"cp_id": cp_id},
+                )
+            ).one()
+        assert row.last_diagnostics_status == "Uploading"
+
+        await sim.call(call.DiagnosticsStatusNotification(status="Uploaded"))
+        await asyncio.sleep(0.1)
+        async with db_engine.connect() as conn:
+            row = (
+                await conn.execute(
+                    sa.text(
+                        "SELECT last_diagnostics_status FROM charge_points WHERE cp_id = :cp_id"
+                    ),
+                    {"cp_id": cp_id},
+                )
+            ).one()
+        assert row.last_diagnostics_status == "Uploaded"
+
+        loop_task.cancel()
+
+
+@pytest.mark.asyncio
+async def test_firmware_update_then_status_notifications(
+    running_service: None, db_engine: sa.ext.asyncio.AsyncEngine
+) -> None:
+    """E2-1F — gRPC UpdateFirmware → charger Acks → charger walks the
+    Downloading → Downloaded → Installing → Installed lifecycle, and
+    `charge_points.last_firmware_status` mirrors the latest at each step."""
+    from grpclib.client import Channel as _Channel
+    from ocpp.routing import on as _on
+    from ocpp.v16 import call_result as _call_result
+    from ocpp.v16.enums import Action as _Action
+
+    from eveys_ocpp._generated.ocpp_gw.v1 import gateway_grpc as _gateway_grpc
+    from eveys_ocpp._generated.ocpp_gw.v1 import gateway_pb2 as _gateway_pb2
+
+    captured: dict[str, object] = {}
+
+    class _Sim(_SimChargePoint):
+        @_on(_Action.update_firmware)
+        async def _on_update_fw(
+            self, location: str, retrieve_date: str, **_kw: object
+        ) -> _call_result.UpdateFirmware:
+            captured["location"] = location
+            captured["retrieve_date"] = retrieve_date
+            return _call_result.UpdateFirmware()
+
+    cp_id = "SMOKE_E2_1F_FW_001"
+    async with connect(f"ws://localhost:{_TEST_WS_PORT}/{cp_id}", subprotocols=["ocpp1.6"]) as ws:
+        sim = _Sim(cp_id, ws)
+        loop_task = asyncio.create_task(sim.start())
+        await sim.call(call.BootNotification(charge_point_vendor="ACME", charge_point_model="X1"))
+
+        async with _Channel("127.0.0.1", _TEST_GRPC_PORT) as ch:
+            stub = _gateway_grpc.OcppGatewayStub(ch)
+            await stub.UpdateFirmware(
+                _gateway_pb2.UpdateFirmwareRequest(
+                    cp_id=cp_id,
+                    location="https://firmware.eveys.example/2026.05.bin",
+                    retrieve_date="2026-05-05T03:00:00+00:00",
+                )
+            )
+
+        assert captured["location"] == "https://firmware.eveys.example/2026.05.bin"
+        assert captured["retrieve_date"] == "2026-05-05T03:00:00+00:00"
+
+        # Charger walks the lifecycle. We verify the last column updates
+        # at each step — the column is latest-wins.
+        for status in ("Downloading", "Downloaded", "Installing", "Installed"):
+            await sim.call(call.FirmwareStatusNotification(status=status))
+            await asyncio.sleep(0.1)
+            async with db_engine.connect() as conn:
+                row = (
+                    await conn.execute(
+                        sa.text(
+                            "SELECT last_firmware_status FROM charge_points WHERE cp_id = :cp_id"
+                        ),
+                        {"cp_id": cp_id},
+                    )
+                ).one()
+            assert row.last_firmware_status == status
+
+        loop_task.cancel()
