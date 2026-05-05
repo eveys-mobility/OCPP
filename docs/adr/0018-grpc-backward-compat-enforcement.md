@@ -100,7 +100,7 @@ Reversible. Removing the gate is a 5-line revert: drop the CI job, drop `buf.yam
 
 ## References
 
-- [`proto/README.md`](../../proto/README.md) — declares the v1 freeze and anticipates this gate (line 38).
+- `proto/README.md` (in repo root, outside the docs tree) — declares the v1 freeze and anticipates this gate (line 38).
 - [`buf` documentation — breaking-change detection](https://buf.build/docs/breaking-overview).
 - [E2-2, E2-3, E2-12](../02-tasks.md) — the proto contracts and this gate.
 - [ADR-0015](./0015-kafka-event-envelope-format.md) — schema-evolution rules this gate enforces.
