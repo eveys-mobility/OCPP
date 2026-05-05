@@ -70,6 +70,8 @@ def test_service_class_implements_every_rpc(fake_session_factory: Any, settings:
         "GetConfiguration",
         "ClearCache",
         "DataTransfer",
+        "GetLocalListVersion",
+        "SendLocalList",
     }
     for rpc in expected:
         method = getattr(service, rpc, None)
@@ -1032,6 +1034,333 @@ async def test_data_transfer_empty_vendor_id_returns_invalid_argument(
             with pytest.raises(GRPCError) as exc:
                 await stub.DataTransfer(
                     gateway_pb2.DataTransferRequest(cp_id="CP_001", vendor_id="")
+                )
+        assert exc.value.status == Status.INVALID_ARGUMENT
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+# ---- E2-1B GetLocalListVersion ----------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_local_list_version_returns_charger_value(
+    fake_session_factory: Any, settings: Settings
+) -> None:
+    """Round-trips through the OCPP layer; charger is the source of
+    truth (gateway-side mirror is for operator queries, not this
+    RPC)."""
+    cp = MagicMock()
+    cp.id = "CP_001"
+    response = MagicMock()
+    response.list_version = 42
+    cp.call = AsyncMock(return_value=response)
+    cm = ConnectionMap()
+    cm.add(cp)
+    service = OcppGatewayService(
+        session_factory=fake_session_factory, settings=settings, connections=cm
+    )
+    server, port = await _spawn_server(service)
+    try:
+        async with Channel("127.0.0.1", port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            grpc_response = await stub.GetLocalListVersion(
+                gateway_pb2.GetLocalListVersionRequest(cp_id="CP_001")
+            )
+        assert grpc_response.list_version == 42
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_get_local_list_version_negative_one_when_charger_has_no_list(
+    fake_session_factory: Any, settings: Settings
+) -> None:
+    """OCPP spec: charger returns `-1` when it has no list. The
+    gateway forwards that integer verbatim."""
+    cp = MagicMock()
+    cp.id = "CP_001"
+    response = MagicMock()
+    response.list_version = -1
+    cp.call = AsyncMock(return_value=response)
+    cm = ConnectionMap()
+    cm.add(cp)
+    service = OcppGatewayService(
+        session_factory=fake_session_factory, settings=settings, connections=cm
+    )
+    server, port = await _spawn_server(service)
+    try:
+        async with Channel("127.0.0.1", port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            grpc_response = await stub.GetLocalListVersion(
+                gateway_pb2.GetLocalListVersionRequest(cp_id="CP_001")
+            )
+        assert grpc_response.list_version == -1
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+# ---- E2-1B SendLocalList ----------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_send_local_list_full_accepted_persists_mirror(
+    fake_session_factory: Any, settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Full update + charger Accepted → gateway-side mirror is replaced
+    via `replace_local_auth_list`. Differential path is NOT taken."""
+    _, cm = _connected_cp("CP_001", "Accepted")
+    service = OcppGatewayService(
+        session_factory=fake_session_factory, settings=settings, connections=cm
+    )
+
+    replace_calls: list[dict[str, Any]] = []
+    differential_calls: list[dict[str, Any]] = []
+
+    async def fake_replace(_session: Any, **kwargs: Any) -> None:
+        replace_calls.append(kwargs)
+
+    async def fake_differential(_session: Any, **kwargs: Any) -> None:
+        differential_calls.append(kwargs)
+
+    monkeypatch.setattr("eveys_ocpp.transport.grpc_server.replace_local_auth_list", fake_replace)
+    monkeypatch.setattr(
+        "eveys_ocpp.transport.grpc_server.apply_local_auth_list_differential",
+        fake_differential,
+    )
+
+    server, port = await _spawn_server(service)
+    try:
+        async with Channel("127.0.0.1", port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            response = await stub.SendLocalList(
+                gateway_pb2.SendLocalListRequest(
+                    cp_id="CP_001",
+                    list_version=5,
+                    update_type=gateway_pb2.LOCAL_AUTH_LIST_UPDATE_TYPE_FULL,
+                    local_authorization_list=[
+                        gateway_pb2.AuthorizationData(
+                            id_tag="TAG_A",
+                            id_tag_info=gateway_pb2.IdTagInfo(
+                                status=gateway_pb2.AUTHORIZATION_STATUS_ACCEPTED,
+                                parent_id_tag="PARENT",
+                            ),
+                        )
+                    ],
+                )
+            )
+        assert response.status == gateway_pb2.SEND_LOCAL_LIST_STATUS_ACCEPTED
+        # Full replace path was taken with the right list version.
+        assert len(replace_calls) == 1
+        assert replace_calls[0]["cp_id"] == "CP_001"
+        assert replace_calls[0]["list_version"] == 5
+        assert replace_calls[0]["entries"][0]["id_tag"] == "TAG_A"
+        assert replace_calls[0]["entries"][0]["id_tag_info"]["status"] == "Accepted"
+        # Differential was NOT touched.
+        assert differential_calls == []
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_send_local_list_differential_accepted_routes_to_differential(
+    fake_session_factory: Any, settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Differential update + charger Accepted → gateway-side mirror
+    is updated via `apply_local_auth_list_differential`."""
+    _, cm = _connected_cp("CP_001", "Accepted")
+    service = OcppGatewayService(
+        session_factory=fake_session_factory, settings=settings, connections=cm
+    )
+
+    differential_calls: list[dict[str, Any]] = []
+
+    async def fake_differential(_session: Any, **kwargs: Any) -> None:
+        differential_calls.append(kwargs)
+
+    async def fake_replace(_session: Any, **kwargs: Any) -> None:
+        raise AssertionError("Full replace must not run on Differential update")
+
+    monkeypatch.setattr(
+        "eveys_ocpp.transport.grpc_server.apply_local_auth_list_differential",
+        fake_differential,
+    )
+    monkeypatch.setattr("eveys_ocpp.transport.grpc_server.replace_local_auth_list", fake_replace)
+
+    server, port = await _spawn_server(service)
+    try:
+        async with Channel("127.0.0.1", port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            # Differential with one delete (no id_tag_info) and one upsert.
+            response = await stub.SendLocalList(
+                gateway_pb2.SendLocalListRequest(
+                    cp_id="CP_001",
+                    list_version=6,
+                    update_type=gateway_pb2.LOCAL_AUTH_LIST_UPDATE_TYPE_DIFFERENTIAL,
+                    local_authorization_list=[
+                        gateway_pb2.AuthorizationData(id_tag="TAG_DEL"),
+                        gateway_pb2.AuthorizationData(
+                            id_tag="TAG_UPSERT",
+                            id_tag_info=gateway_pb2.IdTagInfo(
+                                status=gateway_pb2.AUTHORIZATION_STATUS_ACCEPTED
+                            ),
+                        ),
+                    ],
+                )
+            )
+        assert response.status == gateway_pb2.SEND_LOCAL_LIST_STATUS_ACCEPTED
+        assert len(differential_calls) == 1
+        entries = differential_calls[0]["entries"]
+        # Delete entry: id_tag_info must be None on the wire shape.
+        del_entry = next(e for e in entries if e["id_tag"] == "TAG_DEL")
+        assert del_entry["id_tag_info"] is None
+        # Upsert entry: id_tag_info populated.
+        ups_entry = next(e for e in entries if e["id_tag"] == "TAG_UPSERT")
+        assert ups_entry["id_tag_info"]["status"] == "Accepted"
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_send_local_list_version_mismatch_does_not_persist(
+    fake_session_factory: Any, settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If the charger replies VersionMismatch, the gateway-side mirror
+    is NOT updated — the charger is the source of truth and we'd
+    create drift if we mirrored a rejected update.
+    """
+    _, cm = _connected_cp("CP_001", "VersionMismatch")
+    service = OcppGatewayService(
+        session_factory=fake_session_factory, settings=settings, connections=cm
+    )
+
+    persist_calls: list[Any] = []
+
+    async def boom(*args: Any, **kwargs: Any) -> None:
+        persist_calls.append((args, kwargs))
+
+    monkeypatch.setattr("eveys_ocpp.transport.grpc_server.replace_local_auth_list", boom)
+    monkeypatch.setattr("eveys_ocpp.transport.grpc_server.apply_local_auth_list_differential", boom)
+
+    server, port = await _spawn_server(service)
+    try:
+        async with Channel("127.0.0.1", port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            response = await stub.SendLocalList(
+                gateway_pb2.SendLocalListRequest(
+                    cp_id="CP_001",
+                    list_version=5,
+                    update_type=gateway_pb2.LOCAL_AUTH_LIST_UPDATE_TYPE_FULL,
+                )
+            )
+        assert response.status == gateway_pb2.SEND_LOCAL_LIST_STATUS_VERSION_MISMATCH
+        assert persist_calls == []  # nothing got mirrored
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_send_local_list_persist_failure_still_returns_accepted(
+    fake_session_factory: Any, settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Persist failure after a successful charger update is logged
+    but does not promote to a gRPC error. The caller's OCPP-level
+    SUCCESS is real; misleading them into thinking the list isn't on
+    the charger would be worse than divergence (which a subsequent
+    GetLocalListVersion surfaces)."""
+    _, cm = _connected_cp("CP_001", "Accepted")
+    service = OcppGatewayService(
+        session_factory=fake_session_factory, settings=settings, connections=cm
+    )
+
+    async def fake_replace_raises(*args: Any, **kwargs: Any) -> None:
+        raise RuntimeError("DB blew up")
+
+    monkeypatch.setattr(
+        "eveys_ocpp.transport.grpc_server.replace_local_auth_list", fake_replace_raises
+    )
+
+    server, port = await _spawn_server(service)
+    try:
+        async with Channel("127.0.0.1", port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            response = await stub.SendLocalList(
+                gateway_pb2.SendLocalListRequest(
+                    cp_id="CP_001",
+                    list_version=5,
+                    update_type=gateway_pb2.LOCAL_AUTH_LIST_UPDATE_TYPE_FULL,
+                )
+            )
+        assert response.status == gateway_pb2.SEND_LOCAL_LIST_STATUS_ACCEPTED
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_send_local_list_unspecified_update_type_invalid(
+    fake_session_factory: Any, settings: Settings
+) -> None:
+    """Boundary validation: the proto's zero-value
+    `LOCAL_AUTH_LIST_UPDATE_TYPE_UNSPECIFIED` is rejected so a
+    misconfigured caller doesn't reach the OCPP layer."""
+    _, cm = _connected_cp("CP_001", "Accepted")
+    service = OcppGatewayService(
+        session_factory=fake_session_factory, settings=settings, connections=cm
+    )
+    server, port = await _spawn_server(service)
+    try:
+        async with Channel("127.0.0.1", port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            with pytest.raises(GRPCError) as exc:
+                await stub.SendLocalList(
+                    gateway_pb2.SendLocalListRequest(
+                        cp_id="CP_001",
+                        list_version=1,
+                        # update_type defaults to UNSPECIFIED (= 0).
+                    )
+                )
+        assert exc.value.status == Status.INVALID_ARGUMENT
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_send_local_list_unspecified_authorization_status_invalid(
+    fake_session_factory: Any, settings: Settings
+) -> None:
+    """Each entry's `id_tag_info.status` must be a defined enum.
+    The translator raises INVALID_ARGUMENT before the charger sees
+    a malformed call."""
+    _, cm = _connected_cp("CP_001", "Accepted")
+    service = OcppGatewayService(
+        session_factory=fake_session_factory, settings=settings, connections=cm
+    )
+    server, port = await _spawn_server(service)
+    try:
+        async with Channel("127.0.0.1", port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            with pytest.raises(GRPCError) as exc:
+                await stub.SendLocalList(
+                    gateway_pb2.SendLocalListRequest(
+                        cp_id="CP_001",
+                        list_version=1,
+                        update_type=gateway_pb2.LOCAL_AUTH_LIST_UPDATE_TYPE_FULL,
+                        local_authorization_list=[
+                            gateway_pb2.AuthorizationData(
+                                id_tag="X",
+                                # status defaults to UNSPECIFIED.
+                                id_tag_info=gateway_pb2.IdTagInfo(),
+                            )
+                        ],
+                    )
                 )
         assert exc.value.status == Status.INVALID_ARGUMENT
     finally:
