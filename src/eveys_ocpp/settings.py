@@ -176,6 +176,38 @@ class Settings(BaseSettings):
     clickhouse_ingestor_batch_size: int = Field(default=500, ge=1, le=10_000)
     clickhouse_ingestor_batch_max_seconds: float = Field(default=5.0, ge=0.1, le=60.0)
 
+    # ---- Backend integration (E3-2, ADR-0023) ------------------------------
+    # Base URL the gateway calls into. Empty string disables the
+    # backend client — handlers fall back to their offline policies.
+    backend_base_url: str = Field(default="")
+    # Bearer token. Stored as plain str for now; Phase 5 vault work
+    # (E5-7) will move it to a SecretStr fetched at boot.
+    backend_token: str = Field(default="")
+    # Per-endpoint timeouts (seconds). Tuned to fit inside the 30 s
+    # OCPP outer timeout the charger imposes (ADR-0023).
+    backend_timeout_authorize_seconds: float = Field(default=5.0, ge=0.1, le=30.0)
+    backend_timeout_sessions_open_seconds: float = Field(default=8.0, ge=0.1, le=30.0)
+    backend_timeout_sessions_close_seconds: float = Field(default=10.0, ge=0.1, le=30.0)
+    backend_timeout_default_seconds: float = Field(default=5.0, ge=0.1, le=30.0)
+    # Per-endpoint retry attempts (excluding the first try). 0 = no
+    # retry. The 30 s OCPP timeout absorbs the budget; staying
+    # conservative on the hot path avoids piling latency on a flaky
+    # backend.
+    backend_retry_attempts_authorize: int = Field(default=1, ge=0, le=5)
+    backend_retry_attempts_sessions_open: int = Field(default=2, ge=0, le=5)
+    backend_retry_attempts_sessions_close: int = Field(default=3, ge=0, le=5)
+    # Circuit-breaker knobs. Trip after `threshold` consecutive
+    # failures; open for `cooldown_seconds`; then half-open and let
+    # one probe through.
+    backend_circuit_breaker_threshold: int = Field(default=5, ge=1, le=100)
+    backend_circuit_breaker_cooldown_seconds: float = Field(default=30.0, ge=1.0, le=600.0)
+    # Authorize fallback when the backend is unreachable past the
+    # retry budget. ADR-0023 §"Fallback policy".
+    # - "reject"         — return Invalid to the charger; safe default.
+    # - "accept_offline" — return Accepted with a 5-min expiry; only
+    #                      enable if the operator accepts the risk.
+    backend_authorize_fallback: str = Field(default="reject", pattern="^(reject|accept_offline)$")
+
 
 def get_settings() -> Settings:
     """Build a fresh `Settings` from the current environment.
