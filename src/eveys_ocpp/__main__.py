@@ -19,6 +19,7 @@ from eveys_ocpp.events import KafkaEventProducer
 from eveys_ocpp.idempotency import IdempotencyCache
 from eveys_ocpp.observability import configure_logging, get_logger
 from eveys_ocpp.persistence.db import make_engine, make_session_factory
+from eveys_ocpp.platform import BackendHTTPClient
 from eveys_ocpp.registry import Registry
 from eveys_ocpp.settings import Settings, get_settings
 from eveys_ocpp.transport.grpc_server import serve_forever as serve_grpc_forever
@@ -38,6 +39,7 @@ async def _serve_all(
     event_producer: KafkaEventProducer,
     bus: CommandBus,
     idempotency: IdempotencyCache,
+    backend_client: BackendHTTPClient | None,
 ) -> None:
     """Run WS and gRPC servers concurrently; cancel both if either fails.
 
@@ -66,6 +68,7 @@ async def _serve_all(
                     connections=connections,
                     event_producer=event_producer,
                     idempotency=idempotency,
+                    backend_client=backend_client,
                 ),
                 name="ws_server",
             )
@@ -82,6 +85,8 @@ async def _serve_all(
     finally:
         await bus.stop()
         await event_producer.stop()
+        if backend_client is not None:
+            await backend_client.aclose()
         # Single close on the shared client; `registry.close()` would
         # close the same connection twice.
         await redis.aclose()
@@ -130,6 +135,20 @@ def main() -> None:
     )
     idempotency = IdempotencyCache(redis_client, settings=settings)
 
+    # Backend HTTP client (E3-2, ADR-0023). Empty `backend_base_url`
+    # leaves it None — the OCPP handlers fall back to their stub
+    # behaviour, which is what the W1 / dev-laptop stack wants.
+    backend_client: BackendHTTPClient | None = None
+    if settings.backend_base_url:
+        backend_client = BackendHTTPClient.from_settings(settings)
+        log.info(
+            "backend_client.configured",
+            base_url=settings.backend_base_url,
+            authorize_fallback=settings.backend_authorize_fallback,
+        )
+    else:
+        log.info("backend_client.disabled")
+
     asyncio.run(
         _serve_all(
             session_factory=session_factory,
@@ -140,6 +159,7 @@ def main() -> None:
             event_producer=event_producer,
             bus=bus,
             idempotency=idempotency,
+            backend_client=backend_client,
         )
     )
 
