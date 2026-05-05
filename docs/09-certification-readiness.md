@@ -45,7 +45,7 @@ Cert readiness has four parallel streams. Each has an owner and gates the cert r
 | Step | Owner | Status | Notes |
 |---|---|---|---|
 | Implement Core profile actions | SB1, SB2 | 🟡 done (E2-1A) | All Core handlers shipped: 7 from W1 + `DataTransfer`/`GetConfiguration`/`ClearCache` from E2-1A. Promotion to ✅ blocked on OCTT (C-1a, deferred). |
-| Implement Smart Charging profile actions | SB1, SB2 | ⏳ E2-1E | TC_056..TC_072 in Appendix C. Charging profiles, schedules, stacking. Own ADR pending. |
+| Implement Smart Charging profile actions | SB1, SB2 | 🟡 done (E2-1E) | TC_056..TC_072 in Appendix C. `SetChargingProfile`, `ClearChargingProfile`, `GetCompositeSchedule` shipped; `charging_profiles` + `charging_schedule_periods` tables via Alembic `0005`. Charger-side resolver per **ADR-0022** — gateway stores input profiles, GetCompositeSchedule round-trips to the charger. Promotion to ✅ blocked on OCTT. |
 | Implement Advanced Security profile actions | SRE, SB1 | ⏳ Phase 5 | TLS 1.2+ with client-side certs. Already on hardening roadmap (E5-5, E5-6). |
 | Implement Reservations profile actions | SB1, SB2 | 🟡 done (E2-1C) | TC_046..TC_053 in Appendix C. `reservations` table via Alembic `0003`; charger-side authority + gateway-side mirror per ADR-0021. Promotion to ✅ blocked on OCTT. |
 | Implement Local Authorization List profile actions | SB1, SB2 | 🟡 done (E2-1B) | TC_042, TC_043, TC_008 in Appendix C. `local_auth_lists` + `local_auth_list_entries` tables via Alembic `0002`. Promotion to ✅ blocked on OCTT. |

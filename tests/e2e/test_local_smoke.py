@@ -1170,3 +1170,237 @@ async def test_firmware_update_then_status_notifications(
             assert row.last_firmware_status == status
 
         loop_task.cancel()
+
+
+# --------------------------------------------------------------------------
+# E2-1E — Smart Charging round-trip (ADR-0022)
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_set_charging_profile_persists_mirror(
+    running_service: None, db_engine: sa.ext.asyncio.AsyncEngine
+) -> None:
+    """E2-1E — gRPC SetChargingProfile(Accepted) → charger receives the
+    profile → `charging_profiles` row + `charging_schedule_periods`
+    rows reflect the new state."""
+    from grpclib.client import Channel as _Channel
+    from ocpp.routing import on as _on
+    from ocpp.v16 import call_result as _call_result
+    from ocpp.v16.enums import Action as _Action
+
+    from eveys_ocpp._generated.ocpp_gw.v1 import gateway_grpc as _gateway_grpc
+    from eveys_ocpp._generated.ocpp_gw.v1 import gateway_pb2 as _gateway_pb2
+
+    captured: dict[str, object] = {}
+
+    class _Sim(_SimChargePoint):
+        @_on(_Action.set_charging_profile)
+        async def _on_set(
+            self,
+            connector_id: int,
+            cs_charging_profiles: dict[str, object],
+            **_kw: object,
+        ) -> _call_result.SetChargingProfile:
+            captured["connector_id"] = connector_id
+            captured["profile"] = cs_charging_profiles
+            return _call_result.SetChargingProfile(status="Accepted")
+
+    cp_id = "SMOKE_E2_1E_SET_001"
+    async with connect(f"ws://localhost:{_TEST_WS_PORT}/{cp_id}", subprotocols=["ocpp1.6"]) as ws:
+        sim = _Sim(cp_id, ws)
+        loop_task = asyncio.create_task(sim.start())
+        await sim.call(call.BootNotification(charge_point_vendor="ACME", charge_point_model="X1"))
+
+        async with _Channel("127.0.0.1", _TEST_GRPC_PORT) as ch:
+            stub = _gateway_grpc.OcppGatewayStub(ch)
+            response = await stub.SetChargingProfile(
+                _gateway_pb2.SetChargingProfileRequest(
+                    cp_id=cp_id,
+                    connector_id=1,
+                    cs_charging_profiles=_gateway_pb2.ChargingProfile(
+                        charging_profile_id=42,
+                        stack_level=1,
+                        charging_profile_purpose=(
+                            _gateway_pb2.CHARGING_PROFILE_PURPOSE_TX_DEFAULT_PROFILE
+                        ),
+                        charging_profile_kind=_gateway_pb2.CHARGING_PROFILE_KIND_ABSOLUTE,
+                        charging_schedule=_gateway_pb2.ChargingSchedule(
+                            duration=3600,
+                            charging_rate_unit=_gateway_pb2.CHARGING_RATE_UNIT_W,
+                            charging_schedule_period=[
+                                _gateway_pb2.ChargingSchedulePeriod(
+                                    start_period=0, limit=11000.0, number_phases=3
+                                ),
+                                _gateway_pb2.ChargingSchedulePeriod(
+                                    start_period=1800, limit=7400.0, number_phases=3
+                                ),
+                            ],
+                        ),
+                    ),
+                )
+            )
+
+        assert response.status == _gateway_pb2.CHARGING_PROFILE_STATUS_ACCEPTED
+        assert captured["connector_id"] == 1
+        assert isinstance(captured["profile"], dict)
+
+        await asyncio.sleep(0.1)
+
+        async with db_engine.connect() as conn:
+            profile_row = (
+                await conn.execute(
+                    sa.text(
+                        "SELECT cp.id AS cp_pk, p.id AS profile_pk, "
+                        "p.charging_profile_id, p.connector_id, "
+                        "p.charging_profile_purpose, p.status "
+                        "FROM charging_profiles p "
+                        "JOIN charge_points cp ON cp.id = p.charge_point_id "
+                        "WHERE cp.cp_id = :cp_id AND p.charging_profile_id = 42"
+                    ),
+                    {"cp_id": cp_id},
+                )
+            ).one()
+            period_rows = (
+                await conn.execute(
+                    sa.text(
+                        'SELECT start_period, "limit", number_phases '
+                        "FROM charging_schedule_periods "
+                        "WHERE charging_profile_id = :pid "
+                        "ORDER BY start_period"
+                    ),
+                    {"pid": profile_row.profile_pk},
+                )
+            ).all()
+
+        assert profile_row.connector_id == 1
+        assert profile_row.charging_profile_purpose == "TxDefaultProfile"
+        assert profile_row.status == "Active"
+        assert len(period_rows) == 2
+        assert period_rows[0].start_period == 0
+        assert period_rows[1].start_period == 1800
+        assert int(period_rows[0].number_phases) == 3
+
+        # Replace the same profile id with a different schedule —
+        # wholesale schedule replace.
+        async with _Channel("127.0.0.1", _TEST_GRPC_PORT) as ch:
+            stub = _gateway_grpc.OcppGatewayStub(ch)
+            await stub.SetChargingProfile(
+                _gateway_pb2.SetChargingProfileRequest(
+                    cp_id=cp_id,
+                    connector_id=1,
+                    cs_charging_profiles=_gateway_pb2.ChargingProfile(
+                        charging_profile_id=42,
+                        stack_level=1,
+                        charging_profile_purpose=(
+                            _gateway_pb2.CHARGING_PROFILE_PURPOSE_TX_DEFAULT_PROFILE
+                        ),
+                        charging_profile_kind=_gateway_pb2.CHARGING_PROFILE_KIND_ABSOLUTE,
+                        charging_schedule=_gateway_pb2.ChargingSchedule(
+                            duration=1800,
+                            charging_rate_unit=_gateway_pb2.CHARGING_RATE_UNIT_W,
+                            charging_schedule_period=[
+                                _gateway_pb2.ChargingSchedulePeriod(start_period=0, limit=22000.0),
+                            ],
+                        ),
+                    ),
+                )
+            )
+
+        await asyncio.sleep(0.1)
+        async with db_engine.connect() as conn:
+            new_periods = (
+                await conn.execute(
+                    sa.text(
+                        "SELECT count(*) AS n FROM charging_schedule_periods "
+                        "WHERE charging_profile_id = :pid"
+                    ),
+                    {"pid": profile_row.profile_pk},
+                )
+            ).scalar()
+        assert new_periods == 1  # old 2 periods wiped, new 1 inserted
+
+        loop_task.cancel()
+
+
+@pytest.mark.asyncio
+async def test_clear_charging_profile_marks_cleared(
+    running_service: None, db_engine: sa.ext.asyncio.AsyncEngine
+) -> None:
+    """E2-1E — gRPC ClearChargingProfile(Accepted) → matching mirror
+    rows flip Active → Cleared (not deleted)."""
+    from grpclib.client import Channel as _Channel
+    from ocpp.routing import on as _on
+    from ocpp.v16 import call_result as _call_result
+    from ocpp.v16.enums import Action as _Action
+
+    from eveys_ocpp._generated.ocpp_gw.v1 import gateway_grpc as _gateway_grpc
+    from eveys_ocpp._generated.ocpp_gw.v1 import gateway_pb2 as _gateway_pb2
+
+    class _Sim(_SimChargePoint):
+        @_on(_Action.set_charging_profile)
+        async def _on_set(self, **_kw: object) -> _call_result.SetChargingProfile:
+            return _call_result.SetChargingProfile(status="Accepted")
+
+        @_on(_Action.clear_charging_profile)
+        async def _on_clear(self, **_kw: object) -> _call_result.ClearChargingProfile:
+            return _call_result.ClearChargingProfile(status="Accepted")
+
+    cp_id = "SMOKE_E2_1E_CLEAR_001"
+    async with connect(f"ws://localhost:{_TEST_WS_PORT}/{cp_id}", subprotocols=["ocpp1.6"]) as ws:
+        sim = _Sim(cp_id, ws)
+        loop_task = asyncio.create_task(sim.start())
+        await sim.call(call.BootNotification(charge_point_vendor="ACME", charge_point_model="X1"))
+
+        # First, set a profile so there's something to clear.
+        async with _Channel("127.0.0.1", _TEST_GRPC_PORT) as ch:
+            stub = _gateway_grpc.OcppGatewayStub(ch)
+            await stub.SetChargingProfile(
+                _gateway_pb2.SetChargingProfileRequest(
+                    cp_id=cp_id,
+                    connector_id=1,
+                    cs_charging_profiles=_gateway_pb2.ChargingProfile(
+                        charging_profile_id=99,
+                        stack_level=0,
+                        charging_profile_purpose=(_gateway_pb2.CHARGING_PROFILE_PURPOSE_TX_PROFILE),
+                        charging_profile_kind=_gateway_pb2.CHARGING_PROFILE_KIND_RELATIVE,
+                        charging_schedule=_gateway_pb2.ChargingSchedule(
+                            duration=600,
+                            charging_rate_unit=_gateway_pb2.CHARGING_RATE_UNIT_A,
+                            charging_schedule_period=[
+                                _gateway_pb2.ChargingSchedulePeriod(start_period=0, limit=16.0),
+                            ],
+                        ),
+                    ),
+                )
+            )
+
+        await asyncio.sleep(0.1)
+
+        # Now clear by purpose.
+        async with _Channel("127.0.0.1", _TEST_GRPC_PORT) as ch:
+            stub = _gateway_grpc.OcppGatewayStub(ch)
+            response = await stub.ClearChargingProfile(
+                _gateway_pb2.ClearChargingProfileRequest(
+                    cp_id=cp_id,
+                    charging_profile_purpose=(_gateway_pb2.CHARGING_PROFILE_PURPOSE_TX_PROFILE),
+                )
+            )
+
+        assert response.status == _gateway_pb2.CLEAR_CHARGING_PROFILE_STATUS_ACCEPTED
+
+        await asyncio.sleep(0.1)
+        async with db_engine.connect() as conn:
+            row = (
+                await conn.execute(
+                    sa.text(
+                        "SELECT p.status FROM charging_profiles p "
+                        "JOIN charge_points cp ON cp.id = p.charge_point_id "
+                        "WHERE cp.cp_id = :cp_id AND p.charging_profile_id = 99"
+                    ),
+                    {"cp_id": cp_id},
+                )
+            ).one()
+        assert row.status == "Cleared"
+
+        loop_task.cancel()

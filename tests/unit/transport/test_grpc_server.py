@@ -76,6 +76,9 @@ def test_service_class_implements_every_rpc(fake_session_factory: Any, settings:
         "CancelReservation",
         "GetDiagnostics",
         "UpdateFirmware",
+        "SetChargingProfile",
+        "ClearChargingProfile",
+        "GetCompositeSchedule",
     }
     for rpc in expected:
         method = getattr(service, rpc, None)
@@ -1797,6 +1800,343 @@ async def test_update_firmware_empty_retrieve_date_returns_invalid_argument(
                     )
                 )
         assert exc.value.status == Status.INVALID_ARGUMENT
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+# ---- E2-1E SetChargingProfile / ClearChargingProfile / GetCompositeSchedule -
+
+
+def _make_proto_charging_profile(
+    profile_id: int = 1,
+) -> gateway_pb2.ChargingProfile:
+    """Build a minimal valid proto ChargingProfile for use in tests."""
+    return gateway_pb2.ChargingProfile(
+        charging_profile_id=profile_id,
+        stack_level=0,
+        charging_profile_purpose=gateway_pb2.CHARGING_PROFILE_PURPOSE_TX_DEFAULT_PROFILE,
+        charging_profile_kind=gateway_pb2.CHARGING_PROFILE_KIND_ABSOLUTE,
+        charging_schedule=gateway_pb2.ChargingSchedule(
+            duration=3600,
+            charging_rate_unit=gateway_pb2.CHARGING_RATE_UNIT_W,
+            charging_schedule_period=[
+                gateway_pb2.ChargingSchedulePeriod(start_period=0, limit=11000.0, number_phases=3),
+                gateway_pb2.ChargingSchedulePeriod(
+                    start_period=1800, limit=7400.0, number_phases=3
+                ),
+            ],
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_set_charging_profile_accepted_persists_mirror(
+    fake_session_factory: Any, settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Charger Accepts → upsert into mirror with the wire-shape dict."""
+    _, cm = _connected_cp("CP_001", "Accepted")
+    service = OcppGatewayService(
+        session_factory=fake_session_factory, settings=settings, connections=cm
+    )
+
+    upsert_calls: list[dict[str, Any]] = []
+
+    async def fake_upsert(_session: Any, **kwargs: Any) -> int:
+        upsert_calls.append(kwargs)
+        return 100
+
+    monkeypatch.setattr("eveys_ocpp.transport.grpc_server.upsert_charging_profile", fake_upsert)
+
+    server, port = await _spawn_server(service)
+    try:
+        async with Channel("127.0.0.1", port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            response = await stub.SetChargingProfile(
+                gateway_pb2.SetChargingProfileRequest(
+                    cp_id="CP_001",
+                    connector_id=1,
+                    cs_charging_profiles=_make_proto_charging_profile(profile_id=42),
+                )
+            )
+        assert response.status == gateway_pb2.CHARGING_PROFILE_STATUS_ACCEPTED
+        assert len(upsert_calls) == 1
+        assert upsert_calls[0]["cp_id"] == "CP_001"
+        assert upsert_calls[0]["connector_id"] == 1
+        assert upsert_calls[0]["profile"]["charging_profile_id"] == 42
+        # Purpose lands as the OCPP wire string ("TxDefaultProfile")
+        # — the repo column is String.
+        assert upsert_calls[0]["profile"]["charging_profile_purpose"] == "TxDefaultProfile"
+        assert len(upsert_calls[0]["schedule_periods"]) == 2
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_set_charging_profile_rejected_does_not_persist(
+    fake_session_factory: Any, settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Charger Rejects → no mirror write (gateway state stays
+    consistent with what the charger has)."""
+    _, cm = _connected_cp("CP_001", "Rejected")
+    service = OcppGatewayService(
+        session_factory=fake_session_factory, settings=settings, connections=cm
+    )
+
+    async def boom(*args: Any, **kwargs: Any) -> int:
+        raise AssertionError("must not call upsert on Rejected reply")
+
+    monkeypatch.setattr("eveys_ocpp.transport.grpc_server.upsert_charging_profile", boom)
+
+    server, port = await _spawn_server(service)
+    try:
+        async with Channel("127.0.0.1", port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            response = await stub.SetChargingProfile(
+                gateway_pb2.SetChargingProfileRequest(
+                    cp_id="CP_001",
+                    connector_id=1,
+                    cs_charging_profiles=_make_proto_charging_profile(),
+                )
+            )
+        assert response.status == gateway_pb2.CHARGING_PROFILE_STATUS_REJECTED
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_set_charging_profile_missing_profile_returns_invalid_argument(
+    fake_session_factory: Any, settings: Settings
+) -> None:
+    """`cs_charging_profiles` is required by spec; gateway boundary
+    rejects when the sub-message is unset."""
+    _, cm = _connected_cp("CP_001", "Accepted")
+    service = OcppGatewayService(
+        session_factory=fake_session_factory, settings=settings, connections=cm
+    )
+    server, port = await _spawn_server(service)
+    try:
+        async with Channel("127.0.0.1", port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            with pytest.raises(GRPCError) as exc:
+                await stub.SetChargingProfile(
+                    gateway_pb2.SetChargingProfileRequest(cp_id="CP_001", connector_id=1)
+                )
+        assert exc.value.status == Status.INVALID_ARGUMENT
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_set_charging_profile_unspecified_purpose_invalid(
+    fake_session_factory: Any, settings: Settings
+) -> None:
+    """A profile with `purpose=UNSPECIFIED` would build a malformed
+    OCPP call; reject at the boundary."""
+    _, cm = _connected_cp("CP_001", "Accepted")
+    service = OcppGatewayService(
+        session_factory=fake_session_factory, settings=settings, connections=cm
+    )
+    bad_profile = _make_proto_charging_profile()
+    bad_profile.charging_profile_purpose = gateway_pb2.CHARGING_PROFILE_PURPOSE_UNSPECIFIED
+    server, port = await _spawn_server(service)
+    try:
+        async with Channel("127.0.0.1", port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            with pytest.raises(GRPCError) as exc:
+                await stub.SetChargingProfile(
+                    gateway_pb2.SetChargingProfileRequest(
+                        cp_id="CP_001",
+                        connector_id=1,
+                        cs_charging_profiles=bad_profile,
+                    )
+                )
+        assert exc.value.status == Status.INVALID_ARGUMENT
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_clear_charging_profile_accepted_clears_mirror(
+    fake_session_factory: Any, settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Charger Accepts → mirror flips matching rows to Cleared. Filter
+    fields lower from proto-zero to None correctly."""
+    _, cm = _connected_cp("CP_001", "Accepted")
+    service = OcppGatewayService(
+        session_factory=fake_session_factory, settings=settings, connections=cm
+    )
+
+    clear_calls: list[dict[str, Any]] = []
+
+    async def fake_clear(_session: Any, **kwargs: Any) -> int:
+        clear_calls.append(kwargs)
+        return 2
+
+    monkeypatch.setattr("eveys_ocpp.transport.grpc_server.clear_charging_profiles", fake_clear)
+
+    server, port = await _spawn_server(service)
+    try:
+        async with Channel("127.0.0.1", port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            response = await stub.ClearChargingProfile(
+                gateway_pb2.ClearChargingProfileRequest(
+                    cp_id="CP_001",
+                    charging_profile_purpose=(gateway_pb2.CHARGING_PROFILE_PURPOSE_TX_PROFILE),
+                )
+            )
+        assert response.status == gateway_pb2.CLEAR_CHARGING_PROFILE_STATUS_ACCEPTED
+        # Repo got the string-name purpose; other filters None.
+        assert clear_calls[0]["purpose"] == "TxProfile"
+        assert clear_calls[0]["profile_id"] is None
+        assert clear_calls[0]["connector_id"] is None
+        assert clear_calls[0]["stack_level"] is None
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_clear_charging_profile_unknown_does_not_persist(
+    fake_session_factory: Any, settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Charger reports Unknown (no matching profile) → no mirror update."""
+    _, cm = _connected_cp("CP_001", "Unknown")
+    service = OcppGatewayService(
+        session_factory=fake_session_factory, settings=settings, connections=cm
+    )
+
+    async def boom(*args: Any, **kwargs: Any) -> int:
+        raise AssertionError("must not call clear on Unknown reply")
+
+    monkeypatch.setattr("eveys_ocpp.transport.grpc_server.clear_charging_profiles", boom)
+
+    server, port = await _spawn_server(service)
+    try:
+        async with Channel("127.0.0.1", port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            response = await stub.ClearChargingProfile(
+                gateway_pb2.ClearChargingProfileRequest(cp_id="CP_001")
+            )
+        assert response.status == gateway_pb2.CLEAR_CHARGING_PROFILE_STATUS_UNKNOWN
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_get_composite_schedule_translates_charger_reply(
+    fake_session_factory: Any, settings: Settings
+) -> None:
+    """Charger reply (status, connector_id, schedule_start, charging_schedule
+    as OCPP wire dict) → typed proto response."""
+    cp = MagicMock()
+    cp.id = "CP_001"
+    response = MagicMock()
+    response.status = "Accepted"
+    response.connector_id = 1
+    response.schedule_start = "2026-12-31T22:00:00+00:00"
+    response.charging_schedule = {
+        "duration": 7200,
+        "charging_rate_unit": "W",
+        "min_charging_rate": 1000.0,
+        "start_schedule": "2026-12-31T22:00:00+00:00",
+        "charging_schedule_period": [
+            {"start_period": 0, "limit": 11000.0, "number_phases": 3},
+            {"start_period": 3600, "limit": 7400.0},
+        ],
+    }
+    cp.call = AsyncMock(return_value=response)
+    cm = ConnectionMap()
+    cm.add(cp)
+    service = OcppGatewayService(
+        session_factory=fake_session_factory, settings=settings, connections=cm
+    )
+    server, port = await _spawn_server(service)
+    try:
+        async with Channel("127.0.0.1", port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            response_grpc = await stub.GetCompositeSchedule(
+                gateway_pb2.GetCompositeScheduleRequest(
+                    cp_id="CP_001",
+                    connector_id=1,
+                    duration=7200,
+                    charging_rate_unit=gateway_pb2.CHARGING_RATE_UNIT_W,
+                )
+            )
+        assert response_grpc.status == gateway_pb2.GET_COMPOSITE_SCHEDULE_STATUS_ACCEPTED
+        assert response_grpc.connector_id == 1
+        assert response_grpc.schedule_start == "2026-12-31T22:00:00+00:00"
+        assert response_grpc.charging_schedule.duration == 7200
+        assert (
+            response_grpc.charging_schedule.charging_rate_unit == gateway_pb2.CHARGING_RATE_UNIT_W
+        )
+        assert len(response_grpc.charging_schedule.charging_schedule_period) == 2
+        assert response_grpc.charging_schedule.charging_schedule_period[0].limit == 11000.0
+        assert response_grpc.charging_schedule.charging_schedule_period[1].start_period == 3600
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_get_composite_schedule_zero_duration_returns_invalid_argument(
+    fake_session_factory: Any, settings: Settings
+) -> None:
+    _, cm = _connected_cp("CP_001", "Accepted")
+    service = OcppGatewayService(
+        session_factory=fake_session_factory, settings=settings, connections=cm
+    )
+    server, port = await _spawn_server(service)
+    try:
+        async with Channel("127.0.0.1", port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            with pytest.raises(GRPCError) as exc:
+                await stub.GetCompositeSchedule(
+                    gateway_pb2.GetCompositeScheduleRequest(
+                        cp_id="CP_001", connector_id=1, duration=0
+                    )
+                )
+        assert exc.value.status == Status.INVALID_ARGUMENT
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_get_composite_schedule_rejected_passes_through(
+    fake_session_factory: Any, settings: Settings
+) -> None:
+    """Charger Rejects → status maps to proto enum; schedule fields
+    default-empty without crashing the translator."""
+    cp = MagicMock()
+    cp.id = "CP_001"
+    response = MagicMock()
+    response.status = "Rejected"
+    response.connector_id = 0
+    response.schedule_start = None
+    response.charging_schedule = None
+    cp.call = AsyncMock(return_value=response)
+    cm = ConnectionMap()
+    cm.add(cp)
+    service = OcppGatewayService(
+        session_factory=fake_session_factory, settings=settings, connections=cm
+    )
+    server, port = await _spawn_server(service)
+    try:
+        async with Channel("127.0.0.1", port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            response_grpc = await stub.GetCompositeSchedule(
+                gateway_pb2.GetCompositeScheduleRequest(
+                    cp_id="CP_001", connector_id=1, duration=3600
+                )
+            )
+        assert response_grpc.status == gateway_pb2.GET_COMPOSITE_SCHEDULE_STATUS_REJECTED
+        assert response_grpc.schedule_start == ""
     finally:
         server.close()
         await server.wait_closed()
