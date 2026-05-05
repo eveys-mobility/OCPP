@@ -23,7 +23,7 @@ if TYPE_CHECKING:
     from eveys_ocpp.connections import ConnectionMap
     from eveys_ocpp.events import EventProducer
     from eveys_ocpp.idempotency import IdempotencyCache
-    from eveys_ocpp.platform import BackendHTTPClient
+    from eveys_ocpp.platform import AuthorizeCache, BackendHTTPClient
     from eveys_ocpp.registry import Registry
     from eveys_ocpp.settings import Settings
 
@@ -42,6 +42,7 @@ async def _on_connect(
     event_producer: EventProducer | None = None,
     idempotency: IdempotencyCache | None = None,
     backend_client: BackendHTTPClient | None = None,
+    authorize_cache: AuthorizeCache | None = None,
 ) -> None:
     """Per-connection coroutine. Lives for the duration of the WS."""
     if connection.subprotocol != OCPP_SUBPROTOCOL:
@@ -72,6 +73,7 @@ async def _on_connect(
         event_producer=event_producer,
         idempotency=idempotency,
         backend_client=backend_client,
+        authorize_cache=authorize_cache,
     )
     if connections is not None:
         connections.add(cp)
@@ -98,6 +100,7 @@ async def serve_forever(
     event_producer: EventProducer | None = None,
     idempotency: IdempotencyCache | None = None,
     backend_client: BackendHTTPClient | None = None,
+    authorize_cache: AuthorizeCache | None = None,
 ) -> None:
     """Start the WS server and block until cancelled.
 
@@ -122,6 +125,7 @@ async def serve_forever(
             event_producer=event_producer,
             idempotency=idempotency,
             backend_client=backend_client,
+            authorize_cache=authorize_cache,
         )
 
     async with serve(
