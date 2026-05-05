@@ -148,12 +148,12 @@ These are charger-initiated actions the CSMS must respond to. Appendix C tests t
 
 ## Conformance matrix — Local Authorization List profile (CSMS, in scope)
 
-| TC ID | Scenario | Status |
-|---|---|---|
-| TC_042_2 | Get Local List Version (empty) | ⏳ Phase 3 |
-| TC_043_3 | Send Local Authorization List — Failed | ⏳ Phase 3 |
-| TC_043_4 | Send Local Authorization List — Full | ⏳ Phase 3 |
-| TC_043_5 | Send Local Authorization List — Differential | ⏳ Phase 3 |
+| TC ID | Scenario | Status | Implementation |
+|---|---|---|---|
+| TC_042_2 | Get Local List Version (empty) | 🟡 E2-1B | gRPC `GetLocalListVersion` round-trips through OCPP; charger is the source of truth (gateway-side mirror is for operator queries, not this RPC). e2e: `test_local_auth_list_get_version_reads_from_charger`. |
+| TC_043_3 | Send Local Authorization List — Failed | 🟡 E2-1B | gRPC `SendLocalList`; charger-reported `Failed`/`NotSupported`/`VersionMismatch` translate to the matching proto enum and the gateway-side mirror is **not** updated (charger is source of truth). |
+| TC_043_4 | Send Local Authorization List — Full | 🟡 E2-1B | `update_type=LOCAL_AUTH_LIST_UPDATE_TYPE_FULL` clears `local_auth_list_entries` and writes the new list on charger Accepted; bumps `local_auth_lists.list_version`. e2e: `test_local_auth_list_full_replace_persists_mirror`. |
+| TC_043_5 | Send Local Authorization List — Differential | 🟡 E2-1B | Per-tag upsert (entry has `id_tag_info`) or delete (entry omits it) on charger Accepted, no full rewrite. Unit-tested for routing + boundary validation; e2e for the Full path; Differential coverage at e2e level deferred to a follow-up if/when an operator workflow needs it. |
 
 ---
 

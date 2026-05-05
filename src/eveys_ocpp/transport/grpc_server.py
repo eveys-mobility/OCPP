@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import asdict, is_dataclass
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
@@ -41,7 +42,11 @@ from eveys_ocpp._generated.ocpp_gw.v1 import gateway_grpc, gateway_pb2
 from eveys_ocpp.bus import BusReply, CommandBus
 from eveys_ocpp.observability import bind_contextvars, clear_contextvars, get_logger
 from eveys_ocpp.persistence.db import session_scope
-from eveys_ocpp.persistence.repositories import get_charge_point_status
+from eveys_ocpp.persistence.repositories import (
+    apply_local_auth_list_differential,
+    get_charge_point_status,
+    replace_local_auth_list,
+)
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -76,6 +81,8 @@ _OCPP_CALL_DISPATCH: dict[str, type[Any]] = {
     "GetConfiguration": ocpp_call.GetConfiguration,
     "ClearCache": ocpp_call.ClearCache,
     "DataTransfer": ocpp_call.DataTransfer,
+    "GetLocalListVersion": ocpp_call.GetLocalListVersion,
+    "SendLocalList": ocpp_call.SendLocalList,
 }
 
 
@@ -296,6 +303,102 @@ class OcppGatewayService(gateway_grpc.OcppGatewayBase):
                 data=ocpp_response.data or "",
             )
         )
+
+    # ---- E2-1B — LocalAuthList profile --------------------------------------
+
+    async def GetLocalListVersion(
+        self,
+        stream: Stream[
+            gateway_pb2.GetLocalListVersionRequest, gateway_pb2.GetLocalListVersionResponse
+        ],
+    ) -> None:
+        """Read the current LocalAuthList version from the charger.
+
+        Round-trips through the OCPP layer (the charger is the source
+        of truth for what it considers the active list version). The
+        gateway-side mirror in Postgres is a *cache* used for operator
+        queries and Differential planning, not for serving this RPC.
+        """
+        request = await self._recv(stream)
+        ocpp_response = await self._dispatch_ocpp_call(
+            rpc="GetLocalListVersion",
+            cp_id=request.cp_id,
+            ocpp_request=ocpp_call.GetLocalListVersion(),
+        )
+        await stream.send_message(
+            gateway_pb2.GetLocalListVersionResponse(list_version=int(ocpp_response.list_version))
+        )
+
+    async def SendLocalList(
+        self,
+        stream: Stream[gateway_pb2.SendLocalListRequest, gateway_pb2.SendLocalListResponse],
+    ) -> None:
+        """Push a LocalAuthList (Full or Differential) to the charger.
+
+        Order of operations is deliberate: charger first, persistence
+        second.
+
+        1. Translate the proto request to an OCPP call.
+        2. Round-trip via ``_dispatch_ocpp_call`` (same-pod or via bus).
+        3. **Only on charger Accepted** persist the new state in the
+           gateway-side mirror. If the charger replies `VersionMismatch`
+           / `Failed` / `NotSupported`, the gateway state stays
+           consistent with what the charger has — operators can resend
+           a Full update without first reconciling.
+
+        The persistence step is best-effort: a failure logs but does
+        not turn a successful charger update into a gRPC error
+        (would mislead the caller into thinking the list isn't on the
+        charger). A subsequent `GetLocalListVersion` will surface any
+        drift; the next Full update fixes it.
+        """
+        request = await self._recv(stream)
+        update_type = _translate_local_auth_list_update_type_to_ocpp(request.update_type)
+        ocpp_entries = [
+            _translate_authorization_data_to_ocpp(e) for e in request.local_authorization_list
+        ]
+
+        ocpp_response = await self._dispatch_ocpp_call(
+            rpc="SendLocalList",
+            cp_id=request.cp_id,
+            ocpp_request=ocpp_call.SendLocalList(
+                list_version=int(request.list_version),
+                update_type=update_type,
+                local_authorization_list=ocpp_entries,
+            ),
+        )
+
+        proto_status = _translate_send_local_list_status(ocpp_response.status)
+
+        if proto_status == gateway_pb2.SEND_LOCAL_LIST_STATUS_ACCEPTED:
+            try:
+                async with session_scope(self.session_factory) as session:
+                    if request.update_type == gateway_pb2.LOCAL_AUTH_LIST_UPDATE_TYPE_FULL:
+                        await replace_local_auth_list(
+                            session,
+                            cp_id=request.cp_id,
+                            list_version=int(request.list_version),
+                            entries=ocpp_entries,
+                            full_replace_at=datetime.now(UTC),
+                        )
+                    else:
+                        await apply_local_auth_list_differential(
+                            session,
+                            cp_id=request.cp_id,
+                            list_version=int(request.list_version),
+                            entries=ocpp_entries,
+                        )
+            except Exception as exc:
+                # Charger has the new list; gateway mirror failed to
+                # persist. Don't promote to gRPC error — the caller
+                # genuinely succeeded at the OCPP level.
+                log.exception(
+                    "grpc.send_local_list.persist_failed",
+                    cp_id=request.cp_id,
+                    error=str(exc),
+                )
+
+        await stream.send_message(gateway_pb2.SendLocalListResponse(status=proto_status))
 
     async def GetChargerStatus(
         self,
@@ -677,6 +780,74 @@ def _translate_data_transfer_status(ocpp_status: str) -> int:
         return gateway_pb2.DATA_TRANSFER_STATUS_UNKNOWN_VENDOR_ID
     log.warning("grpc.unknown_ocpp_status", rpc="DataTransfer", ocpp_status=ocpp_status)
     return gateway_pb2.DATA_TRANSFER_STATUS_UNSPECIFIED
+
+
+def _translate_local_auth_list_update_type_to_ocpp(proto_kind: int) -> ocpp_enums.UpdateType:
+    if proto_kind == gateway_pb2.LOCAL_AUTH_LIST_UPDATE_TYPE_FULL:
+        return ocpp_enums.UpdateType.full
+    if proto_kind == gateway_pb2.LOCAL_AUTH_LIST_UPDATE_TYPE_DIFFERENTIAL:
+        return ocpp_enums.UpdateType.differential
+    raise GRPCError(
+        Status.INVALID_ARGUMENT,
+        "update_type must be LOCAL_AUTH_LIST_UPDATE_TYPE_FULL or _DIFFERENTIAL",
+    )
+
+
+def _translate_send_local_list_status(ocpp_status: str) -> int:
+    if ocpp_status == "Accepted":
+        return gateway_pb2.SEND_LOCAL_LIST_STATUS_ACCEPTED
+    if ocpp_status == "Failed":
+        return gateway_pb2.SEND_LOCAL_LIST_STATUS_FAILED
+    if ocpp_status == "NotSupported":
+        return gateway_pb2.SEND_LOCAL_LIST_STATUS_NOT_SUPPORTED
+    if ocpp_status == "VersionMismatch":
+        return gateway_pb2.SEND_LOCAL_LIST_STATUS_VERSION_MISMATCH
+    log.warning("grpc.unknown_ocpp_status", rpc="SendLocalList", ocpp_status=ocpp_status)
+    return gateway_pb2.SEND_LOCAL_LIST_STATUS_UNSPECIFIED
+
+
+def _translate_authorization_data_to_ocpp(entry: gateway_pb2.AuthorizationData) -> dict[str, Any]:
+    """Proto AuthorizationData → OCPP wire shape (dict of dicts).
+
+    The OCPP library accepts ``local_authorization_list`` as a list of
+    plain dicts; converting via ``MessageToDict`` would lower-case the
+    keys but lose typing. Hand-shape the dict so optional fields are
+    None when unset (``""`` from proto3 string defaults is not the
+    same semantically as "unset").
+    """
+    info: dict[str, object] | None
+    # proto3 has no concept of "unset" for a sub-message except via
+    # `HasField`. AuthorizationData.id_tag_info is a singular message;
+    # treat all-zero / unset status as "no info" (delete on
+    # Differential, dropped on Full).
+    if entry.HasField("id_tag_info"):
+        sub = entry.id_tag_info
+        info = {
+            "status": _translate_authorization_status_to_ocpp(sub.status),
+            "parent_id_tag": sub.parent_id_tag or None,
+            "expiry_date": sub.expiry_date or None,
+        }
+    else:
+        info = None
+    return {"id_tag": entry.id_tag, "id_tag_info": info}
+
+
+def _translate_authorization_status_to_ocpp(proto_status: int) -> str:
+    """Proto ``AuthorizationStatus`` → OCPP enum *name string* (the
+    library accepts the ``"Accepted"`` form on the wire)."""
+    mapping: dict[int, str] = {
+        gateway_pb2.AUTHORIZATION_STATUS_ACCEPTED: "Accepted",
+        gateway_pb2.AUTHORIZATION_STATUS_BLOCKED: "Blocked",
+        gateway_pb2.AUTHORIZATION_STATUS_EXPIRED: "Expired",
+        gateway_pb2.AUTHORIZATION_STATUS_INVALID: "Invalid",
+        gateway_pb2.AUTHORIZATION_STATUS_CONCURRENT_TX: "ConcurrentTx",
+    }
+    if proto_status not in mapping:
+        raise GRPCError(
+            Status.INVALID_ARGUMENT,
+            "id_tag_info.status must be a defined AuthorizationStatus (not UNSPECIFIED)",
+        )
+    return mapping[proto_status]
 
 
 # -----------------------------------------------------------------------------

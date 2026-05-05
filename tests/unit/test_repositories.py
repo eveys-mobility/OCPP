@@ -48,6 +48,79 @@ async def test_update_heartbeat_executes_update() -> None:
     session.execute.assert_awaited_once()
 
 
+# ---- LocalAuthList (E2-1B) ------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_local_auth_list_version_returns_value_when_present() -> None:
+    """Returns the integer list_version when the join finds a row."""
+    result_obj = MagicMock()
+    result_obj.scalar_one_or_none.return_value = 7
+
+    session = AsyncMock()
+    session.execute = AsyncMock(return_value=result_obj)
+
+    version = await repositories.get_local_auth_list_version(session, cp_id="CP1")
+    assert version == 7
+    session.execute.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_get_local_auth_list_version_returns_none_when_absent() -> None:
+    """Charger without a local_auth_lists row yields None — the
+    per-RPC translator turns that into the OCPP -1 sentinel."""
+    result_obj = MagicMock()
+    result_obj.scalar_one_or_none.return_value = None
+
+    session = AsyncMock()
+    session.execute = AsyncMock(return_value=result_obj)
+
+    assert await repositories.get_local_auth_list_version(session, cp_id="CP_NONE") is None
+
+
+@pytest.mark.asyncio
+async def test_replace_local_auth_list_raises_when_charger_missing() -> None:
+    """LocalAuthList writes always follow a successful charger reply,
+    so the charger row must exist. A missing charger here means a
+    pushed list to a charger we've never seen — we surface it loudly
+    rather than silently create state."""
+    session = AsyncMock()
+    session.scalar = AsyncMock(return_value=None)  # ChargePoint lookup misses
+
+    with pytest.raises(LookupError, match="unknown charger"):
+        await repositories.replace_local_auth_list(
+            session,
+            cp_id="GHOST",
+            list_version=1,
+            entries=[],
+            full_replace_at=datetime.now(UTC),
+        )
+
+
+@pytest.mark.asyncio
+async def test_id_tag_info_columns_handles_iso_string_expiry() -> None:
+    """The repo accepts both `datetime` and ISO-string `expiry_date`
+    so callers (proto translators in particular) don't have to parse."""
+    cols = repositories._id_tag_info_columns(
+        {
+            "status": "Accepted",
+            "parent_id_tag": "PARENT",
+            "expiry_date": "2026-12-31T23:59:59+00:00",
+        }
+    )
+    assert cols["status"] == "Accepted"
+    assert cols["parent_id_tag"] == "PARENT"
+    assert isinstance(cols["expiry_date"], datetime)
+
+
+@pytest.mark.asyncio
+async def test_id_tag_info_columns_falls_back_on_unexpected_input() -> None:
+    """A non-dict (e.g. None smuggled in by a caller's bug) gets a
+    safe default so a single bad entry doesn't poison a Differential."""
+    cols = repositories._id_tag_info_columns(None)
+    assert cols == {"status": "Invalid", "parent_id_tag": None, "expiry_date": None}
+
+
 @pytest.mark.asyncio
 async def test_update_status_executes_update() -> None:
     session = AsyncMock()
