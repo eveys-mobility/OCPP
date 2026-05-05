@@ -80,7 +80,7 @@ Integration shape locked in [ADR-0023](./adr/0023-backend-rest-integration.md) a
 | E3-7 | Implement gateway-side REST API at `/api/v1/...` — read endpoints (charge-points, meter-values, status-history, transactions, reservations, charging-profiles) per `docs/integration/02-gateway-rest-api.md` | Backend can read all gateway-known state over HTTP |
 | E3-8 | Implement gateway-side command endpoints — 19 HTTP wrappers around the existing gRPC RPCs | Backend can issue any OCPP CSMS command via HTTP |
 | E3-9 | Implement webhook delivery — HMAC-signed, retried, dedupable; per-event URL / enable toggles per `docs/integration/03-webhooks.md` | `cp.boot` / `cp.status` / `cp.firmware_status_changed` / `cp.diagnostics_status_changed` / `tx.started` / `tx.stopped` delivered reliably |
-| E3-10 | Publish a mock backend (FastAPI, in-repo) the gateway tests against | `make e2e` runs against the mock without a live backend |
+| E3-10 | Publish a mock backend (FastAPI, in-repo) the gateway tests against | ✅ done — `tests/mock_backend/` implements the five backend-side endpoints from `docs/integration/01-backend-rest-contract.md` with simulated responses, bearer-token auth, and an in-memory idempotency cache. Runnable two ways: in-process via `httpx.ASGITransport` (test fixtures) or as a standalone uvicorn process via `make mock-backend` / `python -m tests.mock_backend`. Behaviour controls (`MOCK_BACKEND_BLOCKED_ID_TAGS`, `MOCK_BACKEND_FAIL_AUTHORIZE`, etc.) exercise the gateway's circuit-breaker / fallback paths in E3-2..E3-6. 14 unit tests in `tests/unit/mock_backend/`. |
 
 ---
 
