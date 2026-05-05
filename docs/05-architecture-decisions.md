@@ -82,6 +82,7 @@ ADRs are **never deleted**. They are append-only history.
 | [0019](./adr/0019-kafka-producer-hardening.md) | Kafka producer hardening: durability over throughput | Accepted | 2026-05-01 |
 | [0020](./adr/0020-clickhouse-ingestion-sidecar.md) | ClickHouse ingestion: sidecar over Kafka Engine | Accepted | 2026-05-01 |
 | [0021](./adr/0021-reservations-charger-authority.md) | Reservations: charger-side authority + gateway-side mirror | Accepted | 2026-05-05 |
+| [0022](./adr/0022-smart-charging-charger-side-resolver.md) | Smart Charging: charger-side resolver, gateway-side profile mirror | Accepted | 2026-05-05 |
 
 ## Pending / planned
 

@@ -13,8 +13,18 @@ Conventions:
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 
-from sqlalchemy import BigInteger, DateTime, ForeignKey, String, Text, UniqueConstraint, func
+from sqlalchemy import (
+    BigInteger,
+    DateTime,
+    ForeignKey,
+    Numeric,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -68,6 +78,10 @@ class ChargePoint(Base):
     )
 
     reservations: Mapped[list[Reservation]] = relationship(
+        back_populates="charge_point", cascade="all, delete-orphan"
+    )
+
+    charging_profiles: Mapped[list[ChargingProfile]] = relationship(
         back_populates="charge_point", cascade="all, delete-orphan"
     )
 
@@ -249,3 +263,113 @@ class Reservation(Base):
         onupdate=func.now(),
         nullable=False,
     )
+
+
+class ChargingProfile(Base):
+    """OCPP 1.6 Smart Charging profile — gateway-side mirror of what the
+    charger Accepted (ADR-0022).
+
+    The charger is the source of truth for the *composite* schedule —
+    the resolver lives there per OCPP § 3.13.4. This row plus its
+    `schedule_periods` is the *input* the operator pushed; analytics
+    and operator dashboards query it for "show me all profiles on
+    charger X" without an OCPP round-trip. To get the resolved
+    effective schedule, callers must use `GetCompositeSchedule` (a
+    charger round-trip).
+
+    Lifecycle:
+    - Inserted on charger Accepted to `SetChargingProfile`. Upsert by
+      `(charge_point_id, charging_profile_id)`: replacing a profile
+      with the same operator-assigned id replaces this row's schedule
+      wholesale.
+    - Marked `Cleared` (status flip, not deletion) on charger
+      Accepted to `ClearChargingProfile`. Phase 5 may prune
+      `Cleared` rows older than N days.
+    """
+
+    __tablename__ = "charging_profiles"
+    __table_args__ = (
+        # Operator-supplied charging_profile_id must be unique within a charger.
+        UniqueConstraint(
+            "charge_point_id",
+            "charging_profile_id",
+            name="uq_charging_profiles_cp_profile_id",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+
+    charge_point_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("charge_points.id", ondelete="CASCADE"),
+        index=True,
+        nullable=False,
+    )
+    charge_point: Mapped[ChargePoint] = relationship(back_populates="charging_profiles")
+
+    # 0 = whole-charger profile (`ChargePointMaxProfile`); positive = specific connector.
+    connector_id: Mapped[int] = mapped_column(nullable=False)
+
+    # Wire identifier (the operator picks this; charger uses it as the
+    # ID to refer to the profile in subsequent operations).
+    charging_profile_id: Mapped[int] = mapped_column(nullable=False)
+
+    stack_level: Mapped[int] = mapped_column(nullable=False)
+    charging_profile_purpose: Mapped[str] = mapped_column(String(32), nullable=False)
+    charging_profile_kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    recurrency_kind: Mapped[str | None] = mapped_column(String(8))
+
+    valid_from: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    valid_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    # OCPP TxProfile binds to a transaction. Other purposes leave it null.
+    transaction_id: Mapped[int | None] = mapped_column(BigInteger)
+
+    # Top-level ChargingSchedule fields (the per-period rows live in
+    # the child table to keep per-period analytics queries cheap).
+    charging_rate_unit: Mapped[str] = mapped_column(String(2), nullable=False)
+    min_charging_rate: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
+    schedule_duration: Mapped[int | None] = mapped_column()
+    start_schedule: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    schedule_periods: Mapped[list[ChargingSchedulePeriod]] = relationship(
+        back_populates="charging_profile",
+        cascade="all, delete-orphan",
+        order_by="ChargingSchedulePeriod.start_period",
+    )
+
+
+class ChargingSchedulePeriod(Base):
+    """One period in a ChargingProfile's schedule (ADR-0022).
+
+    `start_period` is offset in seconds from the schedule's anchor
+    (charger-local clock per spec; we store the integer verbatim).
+    `limit` is in `charging_profile.charging_rate_unit` (W or A).
+    """
+
+    __tablename__ = "charging_schedule_periods"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    charging_profile_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("charging_profiles.id", ondelete="CASCADE"),
+        index=True,
+        nullable=False,
+    )
+    charging_profile: Mapped[ChargingProfile] = relationship(back_populates="schedule_periods")
+
+    start_period: Mapped[int] = mapped_column(nullable=False)
+    limit: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
+    number_phases: Mapped[int | None] = mapped_column()

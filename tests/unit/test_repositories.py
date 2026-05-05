@@ -8,6 +8,7 @@ is covered by E1-13 integration tests (run via `make smoke`).
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -340,3 +341,183 @@ async def test_cancel_reservation_returns_false_when_already_cancelled() -> None
     session.execute = AsyncMock(return_value=result_obj)
 
     assert await repositories.cancel_reservation(session, reservation_id=42) is False
+
+
+# ---- Smart Charging (E2-1E) -----------------------------------------------
+
+
+def _make_profile(
+    profile_id: int = 1, periods: int = 2
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Build a wire-shape profile dict + period dicts."""
+    profile = {
+        "charging_profile_id": profile_id,
+        "stack_level": 0,
+        "charging_profile_purpose": "TxDefaultProfile",
+        "charging_profile_kind": "Absolute",
+        "transaction_id": None,
+        "recurrency_kind": None,
+        "valid_from": None,
+        "valid_to": None,
+        "charging_schedule": {
+            "duration": 3600,
+            "charging_rate_unit": "W",
+            "min_charging_rate": None,
+            "start_schedule": None,
+        },
+    }
+    period_list = [
+        {"start_period": i * 600, "limit": 11000.0 + i * 100, "number_phases": 3}
+        for i in range(periods)
+    ]
+    return profile, period_list
+
+
+@pytest.mark.asyncio
+async def test_upsert_charging_profile_inserts_new_row_when_absent() -> None:
+    """Charger has no existing profile with this id → insert path."""
+    cp_row = MagicMock()
+    cp_row.id = 12
+
+    session = MagicMock()
+    session.scalar = AsyncMock(side_effect=[cp_row, None])  # ChargePoint, ChargingProfile (absent)
+    session.add = MagicMock()
+    session.add_all = MagicMock()
+    session.execute = AsyncMock()
+
+    flush_calls = {"n": 0}
+
+    async def fake_flush() -> None:
+        flush_calls["n"] += 1
+        # Populate the inserted profile's id on first flush.
+        added_obj = session.add.call_args.args[0]
+        if added_obj.id is None:
+            added_obj.id = 100
+
+    session.flush = AsyncMock(side_effect=fake_flush)
+
+    profile, periods = _make_profile(profile_id=42, periods=3)
+    rid = await repositories.upsert_charging_profile(
+        session, cp_id="CP1", connector_id=1, profile=profile, schedule_periods=periods
+    )
+    assert rid == 100
+    # session.add was called once for the parent; add_all once for the periods.
+    session.add.assert_called_once()
+    session.add_all.assert_called_once()
+    period_rows = session.add_all.call_args.args[0]
+    assert len(period_rows) == 3
+    assert period_rows[0].start_period == 0
+    assert period_rows[1].start_period == 600
+
+
+@pytest.mark.asyncio
+async def test_upsert_charging_profile_updates_when_existing() -> None:
+    """Same `(cp_id, charging_profile_id)` → update existing row +
+    delete existing periods + insert new ones (wholesale replace)."""
+    cp_row = MagicMock()
+    cp_row.id = 12
+    existing = MagicMock()
+    existing.id = 999
+    existing.connector_id = 0  # will get overwritten
+
+    session = MagicMock()
+    session.scalar = AsyncMock(side_effect=[cp_row, existing])
+    session.add = MagicMock()
+    session.add_all = MagicMock()
+    session.execute = AsyncMock()
+    session.flush = AsyncMock()
+
+    profile, periods = _make_profile(profile_id=42, periods=2)
+    rid = await repositories.upsert_charging_profile(
+        session, cp_id="CP1", connector_id=2, profile=profile, schedule_periods=periods
+    )
+    assert rid == 999
+    # Existing-row branch: no `session.add` for the parent (only for periods).
+    session.add.assert_not_called()
+    session.add_all.assert_called_once()
+    # Delete-old-periods statement was issued.
+    session.execute.assert_awaited()
+    # Connector and status reflected on the existing row.
+    assert existing.connector_id == 2
+    assert existing.status == "Active"
+
+
+@pytest.mark.asyncio
+async def test_clear_charging_profiles_returns_rowcount() -> None:
+    """`Cleared` flip on rows matching the filter set."""
+    cp_row = MagicMock()
+    cp_row.id = 12
+
+    result_obj = MagicMock()
+    result_obj.rowcount = 3
+
+    session = AsyncMock()
+    session.scalar = AsyncMock(return_value=cp_row)
+    session.execute = AsyncMock(return_value=result_obj)
+
+    n = await repositories.clear_charging_profiles(
+        session,
+        cp_id="CP1",
+        profile_id=None,
+        connector_id=1,
+        purpose="TxProfile",
+        stack_level=None,
+    )
+    assert n == 3
+
+
+@pytest.mark.asyncio
+async def test_clear_charging_profiles_unknown_charger_raises() -> None:
+    """Same lookup-error pattern as the rest of the family."""
+    session = AsyncMock()
+    session.scalar = AsyncMock(return_value=None)
+
+    with pytest.raises(LookupError, match="unknown charger"):
+        await repositories.clear_charging_profiles(
+            session,
+            cp_id="GHOST",
+            profile_id=None,
+            connector_id=None,
+            purpose=None,
+            stack_level=None,
+        )
+
+
+def test_charging_profile_fields_handles_optional_iso_dates() -> None:
+    cols = repositories._charging_profile_fields(
+        {
+            "stack_level": 1,
+            "charging_profile_purpose": "TxDefaultProfile",
+            "charging_profile_kind": "Recurring",
+            "recurrency_kind": "Daily",
+            "valid_from": "2026-12-31T23:59:59+00:00",
+            "valid_to": None,
+            "transaction_id": None,
+            "charging_schedule": {
+                "duration": 3600,
+                "charging_rate_unit": "W",
+                "min_charging_rate": "5.5",
+                "start_schedule": "2026-12-31T22:00:00+00:00",
+            },
+        }
+    )
+    assert cols["recurrency_kind"] == "Daily"
+    assert isinstance(cols["valid_from"], datetime)
+    assert cols["valid_to"] is None
+    assert cols["min_charging_rate"] is not None
+    assert cols["schedule_duration"] == 3600
+    assert isinstance(cols["start_schedule"], datetime)
+
+
+def test_charging_profile_fields_handles_missing_schedule() -> None:
+    """Schedule dict missing entirely → safe defaults."""
+    cols = repositories._charging_profile_fields(
+        {
+            "stack_level": 0,
+            "charging_profile_purpose": "TxProfile",
+            "charging_profile_kind": "Relative",
+        }
+    )
+    assert cols["recurrency_kind"] is None
+    assert cols["min_charging_rate"] is None
+    assert cols["schedule_duration"] is None
