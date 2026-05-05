@@ -18,6 +18,7 @@ Documentation for **eveys/ocpp**, the OCPP gateway service of the Eveys EV-charg
 | 07 | [Local development setup](./07-local-dev-setup.md) | Bring the full stack up on a laptop (docker-compose + k3d/kind) | Engineers (day 1) |
 | 08 | [OCPP conformance matrix](./08-ocpp-conformance.md) | Per-test-case (Appendix C TC ID) → handler → status; the cert-grade record | Engineers, QA, OCTT examiners, auditors |
 | 09 | [Certification readiness](./09-certification-readiness.md) | Cert-program playbook: streams, PICS prep, lab engagement, exit gate | TL, manager, QA |
+| 11 | [Configuration reference](./11-configuration-reference.md) | Every env var: category, default, range, stability, secret-flag, what it does, what changes if you change it (see ADR-0025) | Operators, SREs, anyone tuning the service |
 
 ## Related project files
 
@@ -150,6 +151,7 @@ The two hidden `{toctree}` directives below this section define the navigation. 
 07-local-dev-setup
 08-ocpp-conformance
 09-certification-readiness
+11-configuration-reference
 ```
 
 ```{toctree}

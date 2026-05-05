@@ -19,6 +19,11 @@
 | E0-7 | `.editorconfig`, `.gitignore`, `.gitattributes` | Standard project hygiene | ✅ done |
 | E0-8 | Implementation plan written and reviewed | `docs/06-implementation-plan.md` merged | 1d |
 | E0-9 | `make doctor` target — checks versions of Python, Docker, kubectl, helm, k3d/kind against `docs/07-local-dev-setup.md` and prints what's missing | New engineers run one command and learn what to install | ✅ done |
+| E0-11 | Spec the configuration-reference work: ADR-0025 + seed `docs/11-configuration-reference.md` + this row, no code | One docs-only MR with the spec; reviewers can sign off on the metadata schema before any field gets backfilled | ⏳ in this MR |
+| E0-12 | Backfill `Settings` field metadata per ADR-0025: every field gets `description=`, `json_schema_extra={category, impact, secret, stability}`, plus a closed enum (`Literal[...]` or `pattern=`) where the type is currently `str`. ~46 fields. | A Pydantic model that carries everything the generator needs. Mypy still passes. Unit test added: `tests/unit/test_settings_metadata.py` asserts every field has all four required keys. | 0.5–1d |
+| E0-13 | Implement `scripts/render_config_reference.py` — walks `Settings.model_fields`, groups by category, emits Markdown identical to today's `docs/11-configuration-reference.md` shape. Also emits `.env.example` (secrets blanked out). Idempotent: same model → byte-identical output. `make config-export` runs it. | Generator works; running it on the backfilled `Settings` produces a doc that supersedes the hand-written seed. | 0.5d |
+| E0-14 | CI staleness gate — a `config-reference-fresh` job that runs the generator and `git diff --exit-code` against the committed file. Fails MRs that change `Settings` without regenerating. Same shape as the proto-breaking gate (ADR-0018). | Drift between `Settings` and `docs/11-configuration-reference.md` is mechanically impossible. | 0.25d |
+| E0-15 | Per ADR-0025, surface the metadata via a future-friendly export: a `make config-schema` target that prints the JSON Schema (Pydantic's built-in `model_json_schema()`) so a Helm-values-validator or operator UI can consume it without re-parsing Markdown. Plumbing only — no consumer yet. | One additional artifact for downstream surfaces; zero runtime cost. | 0.25d |
 
 ---
 
