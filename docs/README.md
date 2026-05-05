@@ -19,6 +19,7 @@ Documentation for **eveys/ocpp**, the OCPP gateway service of the Eveys EV-charg
 | 08 | [OCPP conformance matrix](./08-ocpp-conformance.md) | Per-test-case (Appendix C TC ID) → handler → status; the cert-grade record | Engineers, QA, OCTT examiners, auditors |
 | 09 | [Certification readiness](./09-certification-readiness.md) | Cert-program playbook: streams, PICS prep, lab engagement, exit gate | TL, manager, QA |
 | 10 | [Testing strategy](./10-testing-strategy.md) | The four-tier test trust ladder — what each CI job guarantees and what bug class it catches (see ADR-0024) | Engineers, anyone debugging a CI failure |
+| 11 | [Configuration reference](./11-configuration-reference.md) | Every env var: category, default, range, stability, secret-flag, what it does, what changes if you change it (see ADR-0025) | Operators, SREs, anyone tuning the service |
 
 ## Related project files
 
@@ -152,6 +153,7 @@ The two hidden `{toctree}` directives below this section define the navigation. 
 08-ocpp-conformance
 09-certification-readiness
 10-testing-strategy
+11-configuration-reference
 ```
 
 ```{toctree}
