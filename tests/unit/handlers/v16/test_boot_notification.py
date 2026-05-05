@@ -187,9 +187,7 @@ async def test_first_sighting_runs_handler(fake_cp: Any, monkeypatch: pytest.Mon
 
 
 @pytest.mark.asyncio
-async def test_no_message_id_falls_through(
-    fake_cp: Any, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_no_message_id_falls_through(fake_cp: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     """Missing message_id → can't dedup; run the handler normally.
 
     Defensive — the OCPP library always supplies a message_id, but the
@@ -218,18 +216,14 @@ async def test_no_idempotency_cache_falls_through(
     monkeypatch.setattr(boot_notification, "upsert_charge_point_boot", upsert)
     fake_cp.idempotency = None
 
-    result = await boot_notification.handle(
-        fake_cp, message_id="MSG-X", charge_point_vendor="ACME"
-    )
+    result = await boot_notification.handle(fake_cp, message_id="MSG-X", charge_point_vendor="ACME")
 
     assert result.status == "Accepted"
     upsert.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_cache_outage_falls_through(
-    fake_cp: Any, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_cache_outage_falls_through(fake_cp: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     """If the cache raises (Redis down), don't wedge the handler.
 
     Better a rare double-write than a stuck charger when the cache
@@ -242,9 +236,7 @@ async def test_cache_outage_falls_through(
     fake_idem.check_and_record = AsyncMock(side_effect=RuntimeError("redis down"))
     fake_cp.idempotency = fake_idem
 
-    result = await boot_notification.handle(
-        fake_cp, message_id="MSG-Y", charge_point_vendor="ACME"
-    )
+    result = await boot_notification.handle(fake_cp, message_id="MSG-Y", charge_point_vendor="ACME")
 
     assert result.status == "Accepted"
     upsert.assert_awaited_once()
