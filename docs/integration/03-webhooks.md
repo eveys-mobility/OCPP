@@ -34,7 +34,7 @@ EVEYS_OCPP_WEBHOOK_ENABLE_TX_STARTED=1
 # ...
 ```
 
-`cp.meter` is **off by default** because per-charger MeterValues are 1 sample/30s × N chargers — at 10k chargers that's 333 webhooks/s. Either subscribe to Kafka, or query [`GET /api/v1/charge-points/{cp_id}/meter-values`](./02-gateway-rest-api.md#meter-values) on demand.
+`cp.meter` is **off by default** because per-charger MeterValues are 1 sample/30s × N chargers — at 10k chargers that's 333 webhooks/s. Either subscribe to Kafka, or query the gateway's [`GET /api/v1/charge-points/{cp_id}/meter-values`](./02-gateway-rest-api.md) endpoint on demand.
 
 ---
 

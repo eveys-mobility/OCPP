@@ -384,6 +384,6 @@ For implementers' sanity, the full happy-path sequence:
 1. Charger boots → gateway calls `POST /api/eveys/charge-points/register` → backend `Accepted`.
 2. User taps RFID → charger calls OCPP `Authorize.req` → gateway calls `POST /api/eveys/authorize` → backend `Accepted`.
 3. Charger calls OCPP `StartTransaction.req` → gateway assigns `transaction_id=12345` and calls `POST /api/eveys/sessions/open` → backend `Accepted`. Charger starts charging.
-4. (Async, throughout the session) Charger emits `MeterValues.req` every 30 s → gateway publishes to Kafka `cp.meter` → ClickHouse via the ingestor (E2-14). Backend reads the time-series via [`GET /api/v1/charge-points/{cp_id}/meter-values`](./02-gateway-rest-api.md#meter-values) when it needs a chart.
+4. (Async, throughout the session) Charger emits `MeterValues.req` every 30 s → gateway publishes to Kafka `cp.meter` → ClickHouse via the ingestor (E2-14). Backend reads the time-series via the gateway's [`GET /api/v1/charge-points/{cp_id}/meter-values`](./02-gateway-rest-api.md) endpoint when it needs a chart.
 5. User unplugs → charger calls OCPP `StopTransaction.req` → gateway calls `POST /api/eveys/sessions/close` → backend `Accepted` and closes the billing record.
 6. (Async) Webhook `tx.stopped` fires from gateway to backend, carrying the same data — the backend can use this to confirm or re-derive billing if `/sessions/close` ever timed out.
