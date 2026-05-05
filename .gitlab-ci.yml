@@ -343,12 +343,23 @@ tests:compose-smoke:
         - .gitlab-ci.yml
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
   before_script:
-    # Docker CLI + compose plugin from Debian's repos. We do NOT install
-    # the daemon — that's the dind service. `make` runs the
-    # `compose-smoke` target; ca-certificates / curl are for the uv
-    # installer.
+    # We need `docker compose` (subcommand form) which is shipped only by
+    # Docker Inc's `docker-compose-plugin`, not by Debian's standalone
+    # `docker-compose` package. Add Docker's apt repo so the plugin
+    # resolves. The dind sidecar already provides the daemon — we install
+    # the CLI + plugin only. `make` runs the `compose-smoke` target;
+    # `git` is needed by `make install` (pre-commit hook setup).
     - apt-get update -qq
-    - apt-get install -y --no-install-recommends ca-certificates curl docker.io docker-compose-plugin make git >/dev/null
+    - apt-get install -y --no-install-recommends ca-certificates curl gnupg make git >/dev/null
+    - install -m 0755 -d /etc/apt/keyrings
+    - curl -fsSL https://download.docker.com/linux/debian/gpg
+        | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+    - chmod a+r /etc/apt/keyrings/docker.gpg
+    - echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg]
+        https://download.docker.com/linux/debian $(. /etc/os-release && echo $VERSION_CODENAME) stable"
+        > /etc/apt/sources.list.d/docker.list
+    - apt-get update -qq
+    - apt-get install -y --no-install-recommends docker-ce-cli docker-compose-plugin >/dev/null
     # Install uv so we can build a venv for pytest itself (the tests
     # are Python; only the stack-under-test is in Docker).
     - curl -LsSf https://astral.sh/uv/install.sh | sh
