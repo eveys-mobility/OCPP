@@ -59,6 +59,10 @@ class ChargePoint(Base):
         uselist=False,
     )
 
+    reservations: Mapped[list[Reservation]] = relationship(
+        back_populates="charge_point", cascade="all, delete-orphan"
+    )
+
 
 class Transaction(Base):
     """One row per OCPP transaction (StartTransaction → StopTransaction)."""
@@ -177,6 +181,56 @@ class LocalAuthListEntry(Base):
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     parent_id_tag: Mapped[str | None] = mapped_column(String(64))
     expiry_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
+class Reservation(Base):
+    """OCPP 1.6 Reservation — gateway-side mirror of what the charger
+    has Accepted (ADR-0021).
+
+    The charger is the source of truth for "is this reservation still
+    honoured right now". This row exists for operator queries
+    (mobile-BFF / dashboards) without round-tripping the WebSocket.
+
+    Lifecycle:
+    - `Pending`: row inserted before the OCPP call, ID assigned via
+      `INSERT ... RETURNING id`. If the charger Accepts, flipped to
+      `Active`; on any other reply the row is deleted.
+    - `Active`: charger accepted; reservation is honoured until
+      `expiry_date` or until consumed by a matching StartTransaction.
+    - `Cancelled`: operator issued CancelReservation and the charger
+      Accepted.
+    - Effective expiry is `expiry_date < now()` (computed at query
+      time per ADR-0021 — no scheduler).
+    """
+
+    __tablename__ = "reservations"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+
+    charge_point_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("charge_points.id", ondelete="CASCADE"),
+        index=True,
+        nullable=False,
+    )
+    charge_point: Mapped[ChargePoint] = relationship(back_populates="reservations")
+
+    connector_id: Mapped[int] = mapped_column(nullable=False)
+    id_tag: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    parent_id_tag: Mapped[str | None] = mapped_column(String(64))
+
+    expiry_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False

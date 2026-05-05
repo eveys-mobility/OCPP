@@ -43,8 +43,12 @@ from eveys_ocpp.bus import BusReply, CommandBus
 from eveys_ocpp.observability import bind_contextvars, clear_contextvars, get_logger
 from eveys_ocpp.persistence.db import session_scope
 from eveys_ocpp.persistence.repositories import (
+    activate_reservation,
     apply_local_auth_list_differential,
+    cancel_reservation,
+    delete_reservation,
     get_charge_point_status,
+    insert_pending_reservation,
     replace_local_auth_list,
 )
 
@@ -83,6 +87,8 @@ _OCPP_CALL_DISPATCH: dict[str, type[Any]] = {
     "DataTransfer": ocpp_call.DataTransfer,
     "GetLocalListVersion": ocpp_call.GetLocalListVersion,
     "SendLocalList": ocpp_call.SendLocalList,
+    "ReserveNow": ocpp_call.ReserveNow,
+    "CancelReservation": ocpp_call.CancelReservation,
 }
 
 
@@ -399,6 +405,156 @@ class OcppGatewayService(gateway_grpc.OcppGatewayBase):
                 )
 
         await stream.send_message(gateway_pb2.SendLocalListResponse(status=proto_status))
+
+    # ---- E2-1C — Reservations profile (ADR-0021) ----------------------------
+
+    async def ReserveNow(
+        self,
+        stream: Stream[gateway_pb2.ReserveNowRequest, gateway_pb2.ReserveNowResponse],
+    ) -> None:
+        """Reserve a connector for an `id_tag` until ``expiry_date``.
+
+        Order of operations (ADR-0021): the gateway assigns
+        ``reservation_id`` by inserting a Pending row, forwards the
+        OCPP call with that ID, and then either flips the row to
+        Active (charger Accepted) or deletes it (charger refused —
+        Occupied / Faulted / Unavailable / Rejected).
+
+        The Pending insert is what hands us a stable, gateway-unique
+        integer to send to the charger. Without it we'd have to query
+        a sequence first and round-trip a second statement.
+        """
+        request = await self._recv(stream)
+        if not request.cp_id:
+            raise GRPCError(Status.INVALID_ARGUMENT, "cp_id is required")
+        if not request.id_tag:
+            raise GRPCError(Status.INVALID_ARGUMENT, "id_tag is required")
+        if not request.expiry_date:
+            raise GRPCError(Status.INVALID_ARGUMENT, "expiry_date is required")
+        try:
+            expiry_dt = datetime.fromisoformat(request.expiry_date)
+        except ValueError as exc:
+            raise GRPCError(
+                Status.INVALID_ARGUMENT, f"expiry_date must be ISO-8601: {exc}"
+            ) from exc
+        if expiry_dt.tzinfo is None:
+            expiry_dt = expiry_dt.replace(tzinfo=UTC)
+
+        # Allocate the reservation_id by inserting a Pending row.
+        async with session_scope(self.session_factory) as session:
+            reservation_id = await insert_pending_reservation(
+                session,
+                cp_id=request.cp_id,
+                connector_id=request.connector_id,
+                id_tag=request.id_tag,
+                parent_id_tag=request.parent_id_tag or None,
+                expiry_date=expiry_dt,
+            )
+
+        try:
+            ocpp_response = await self._dispatch_ocpp_call(
+                rpc="ReserveNow",
+                cp_id=request.cp_id,
+                ocpp_request=ocpp_call.ReserveNow(
+                    connector_id=request.connector_id,
+                    expiry_date=request.expiry_date,
+                    id_tag=request.id_tag,
+                    reservation_id=reservation_id,
+                    parent_id_tag=request.parent_id_tag or None,
+                ),
+            )
+        except BaseException:
+            # Charger never replied (timeout / disconnect mid-call).
+            # Roll back the Pending row so it doesn't pollute the
+            # operator's view.
+            try:
+                async with session_scope(self.session_factory) as session:
+                    await delete_reservation(session, reservation_id=reservation_id)
+            except Exception as exc:
+                log.exception(
+                    "grpc.reserve_now.rollback_failed",
+                    reservation_id=reservation_id,
+                    error=str(exc),
+                )
+            raise
+
+        proto_status = _translate_reserve_now_status(ocpp_response.status)
+
+        if proto_status == gateway_pb2.RESERVE_NOW_STATUS_ACCEPTED:
+            try:
+                async with session_scope(self.session_factory) as session:
+                    await activate_reservation(session, reservation_id=reservation_id)
+            except Exception as exc:
+                # Charger Accepted but the activation flip failed.
+                # Same rationale as SendLocalList: the OCPP-level
+                # success is real; surfacing this as a gRPC error
+                # would mislead the caller. Operator queries against
+                # the row will read Pending until a follow-up cleanup
+                # — flagged for the operator via the next operator
+                # action against this reservation_id.
+                log.exception(
+                    "grpc.reserve_now.activate_failed",
+                    reservation_id=reservation_id,
+                    error=str(exc),
+                )
+        else:
+            # Charger refused. Drop the Pending row — it never came
+            # alive on the charger side.
+            try:
+                async with session_scope(self.session_factory) as session:
+                    await delete_reservation(session, reservation_id=reservation_id)
+            except Exception as exc:
+                log.exception(
+                    "grpc.reserve_now.cleanup_failed",
+                    reservation_id=reservation_id,
+                    error=str(exc),
+                )
+
+        await stream.send_message(
+            gateway_pb2.ReserveNowResponse(
+                status=proto_status,
+                reservation_id=reservation_id,
+            )
+        )
+
+    async def CancelReservation(
+        self,
+        stream: Stream[gateway_pb2.CancelReservationRequest, gateway_pb2.CancelReservationResponse],
+    ) -> None:
+        """Cancel a previously-issued reservation.
+
+        Order of operations: charger first, mirror second. On charger
+        Accepted, flip the row to Cancelled. On Rejected (charger
+        doesn't recognise the reservation_id — already expired,
+        consumed, or never issued to this charger), leave the row
+        alone; the charger's view wins per ADR-0021.
+        """
+        request = await self._recv(stream)
+        if not request.cp_id:
+            raise GRPCError(Status.INVALID_ARGUMENT, "cp_id is required")
+        if request.reservation_id <= 0:
+            raise GRPCError(Status.INVALID_ARGUMENT, "reservation_id must be > 0")
+
+        ocpp_response = await self._dispatch_ocpp_call(
+            rpc="CancelReservation",
+            cp_id=request.cp_id,
+            ocpp_request=ocpp_call.CancelReservation(reservation_id=int(request.reservation_id)),
+        )
+
+        proto_status = _translate_cancel_reservation_status(ocpp_response.status)
+
+        if proto_status == gateway_pb2.CANCEL_RESERVATION_STATUS_ACCEPTED:
+            try:
+                async with session_scope(self.session_factory) as session:
+                    await cancel_reservation(session, reservation_id=int(request.reservation_id))
+            except Exception as exc:
+                log.exception(
+                    "grpc.cancel_reservation.persist_failed",
+                    reservation_id=int(request.reservation_id),
+                    error=str(exc),
+                )
+
+        await stream.send_message(gateway_pb2.CancelReservationResponse(status=proto_status))
 
     async def GetChargerStatus(
         self,
@@ -848,6 +1004,30 @@ def _translate_authorization_status_to_ocpp(proto_status: int) -> str:
             "id_tag_info.status must be a defined AuthorizationStatus (not UNSPECIFIED)",
         )
     return mapping[proto_status]
+
+
+def _translate_reserve_now_status(ocpp_status: str) -> int:
+    if ocpp_status == "Accepted":
+        return gateway_pb2.RESERVE_NOW_STATUS_ACCEPTED
+    if ocpp_status == "Occupied":
+        return gateway_pb2.RESERVE_NOW_STATUS_OCCUPIED
+    if ocpp_status == "Faulted":
+        return gateway_pb2.RESERVE_NOW_STATUS_FAULTED
+    if ocpp_status == "Unavailable":
+        return gateway_pb2.RESERVE_NOW_STATUS_UNAVAILABLE
+    if ocpp_status == "Rejected":
+        return gateway_pb2.RESERVE_NOW_STATUS_REJECTED
+    log.warning("grpc.unknown_ocpp_status", rpc="ReserveNow", ocpp_status=ocpp_status)
+    return gateway_pb2.RESERVE_NOW_STATUS_UNSPECIFIED
+
+
+def _translate_cancel_reservation_status(ocpp_status: str) -> int:
+    if ocpp_status == "Accepted":
+        return gateway_pb2.CANCEL_RESERVATION_STATUS_ACCEPTED
+    if ocpp_status == "Rejected":
+        return gateway_pb2.CANCEL_RESERVATION_STATUS_REJECTED
+    log.warning("grpc.unknown_ocpp_status", rpc="CancelReservation", ocpp_status=ocpp_status)
+    return gateway_pb2.CANCEL_RESERVATION_STATUS_UNSPECIFIED
 
 
 # -----------------------------------------------------------------------------
