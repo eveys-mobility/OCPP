@@ -19,6 +19,7 @@
 | E0-7 | `.editorconfig`, `.gitignore`, `.gitattributes` | Standard project hygiene | ✅ done |
 | E0-8 | Implementation plan written and reviewed | `docs/06-implementation-plan.md` merged | 1d |
 | E0-9 | `make doctor` target — checks versions of Python, Docker, kubectl, helm, k3d/kind against `docs/07-local-dev-setup.md` and prints what's missing | New engineers run one command and learn what to install | ✅ done |
+| E0-10 | Test trust ladder (Tier-3 compose smoke) — production-shaped `docker compose up` exercised by CI | Pre-merge guarantee: a green pipeline implies the deployable stack actually boots and stays up | ✅ done — adds `tests/compose_smoke/` (8 tests against the real built image), `make compose-smoke` target, GitLab `tests:compose-smoke` job (Docker-in-Docker), [ADR-0024](./adr/0024-test-trust-ladder.md), [docs/10-testing-strategy.md](./10-testing-strategy.md). Also fixes three deploy-time bugs the new tier caught: (1) `Dockerfile` `ENTRYPOINT` shape silently swallowed compose `command:` overrides → ingestor container had been running the gateway entrypoint; (2) compose `ocpp` service missing `EVEYS_OCPP_KAFKA_BROKERS` / `REDIS_URL` / `CLICKHOUSE_HOST` so it fell back to `localhost` defaults and crashed at boot; (3) Kafka `KAFKA_ADVERTISED_LISTENERS` only published `localhost:9092`, so in-network clients bootstrapped fine but failed every metadata-driven request — fixed by a dual-listener (HOST://:9092 + INTERNAL://:29092) layout. |
 
 ---
 
