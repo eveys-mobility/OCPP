@@ -35,28 +35,24 @@ Built on:
                           │  (the gateway)   │
                           └────┬───────┬─────┘
                                │       │
-                  gRPC commands│       │Kafka events
+              REST + webhooks  │       │ Kafka events (firehose)
                                │       ▼
                                │   ┌──────────────────────────────┐
-                               │   │ eveys platform               │
-                               │   │  payment · auth · session    │
-                               │   │  CPO · station · device      │
-                               └──►│  mobile BFF                  │
+                               │   │ Eveys backend                │
+                               └──►│  (auth · sessions · billing) │
                                    └──────────────────────────────┘
 ```
 
-`eveys/ocpp` is **the only service that holds charger sockets**. Other Eveys services reach chargers through `eveys/ocpp`'s gRPC; they learn about charger events by subscribing to Kafka topics.
+`eveys/ocpp` is **the only service that holds charger sockets**. The Eveys backend reaches chargers through `eveys/ocpp`'s REST API (or gRPC for the lower-overhead path); it learns about charger events by webhook delivery and / or by subscribing to Kafka topics.
 
 ## What `eveys/ocpp` does **not** own
 
-- ❌ Drivers, accounts, RFID tokens (owned by the `auth` service)
-- ❌ Mobile-app API surface (owned by `mobile-bff`)
-- ❌ Station / location metadata (owned by `station` / `cpo` services)
-- ❌ Payment processing (owned by `payment-gateway`)
-- ❌ Operator UI (owned by `admin`)
-- ❌ ISO 15118, OCPI roaming (future, separate services)
+- ❌ Drivers, accounts, RFID tokens — the backend owns user / authorization state.
+- ❌ Billing, session-cost calculation — the backend owns the billing record; `eveys/ocpp` reports start/stop meter readings.
+- ❌ Operator UI — separate concern; the backend or a downstream UI consumes the gateway's REST surface.
+- ❌ ISO 15118, OCPI roaming — future, separate concerns.
 
-When `eveys/ocpp` needs a decision (e.g. "is `id_tag=ABC123` authorized?"), it **calls out** via gRPC to the relevant service. It never imports their database.
+When `eveys/ocpp` needs a decision (e.g. "is `id_tag=ABC123` authorized?"), it **calls out** to the backend over REST per the contract in [`docs/integration/`](./integration/README.md). It never imports the backend's database.
 
 ## What this project must do
 
@@ -83,7 +79,7 @@ These constraints don't fit a typical request/response service. `eveys/ocpp` is 
 
 - Replacing the rest of the Eveys platform.
 - Writing new payment / auth / session logic.
-- Building a new mobile app or admin UI.
+- Building consumer-facing UIs (mobile, web, admin) — those live in the Eveys backend / its downstream apps.
 - Migrating chargers to OCPP 2.0.1 firmware (separate program).
 - Building OCPI roaming or ISO 15118 plug-and-charge (future projects).
 

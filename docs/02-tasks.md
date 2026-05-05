@@ -33,7 +33,7 @@
 | E1-5 | Handler: `BootNotification` | ✅ done — replay-gated by the Redis idempotency cache (E2-11), Kafka emit on `cp.boot` (E2-8) |
 | E1-6 | Handler: `Heartbeat` | ✅ done — refreshes Redis TTL via E2-9 registry; re-claims ownership if key expired between heartbeats |
 | E1-7 | Handler: `StatusNotification` | ✅ done — Kafka emit on `cp.status` (E2-8); per-state history reaches ClickHouse via E2-14 |
-| E1-8 | Handler: `Authorize` | ✅ done (auth-service mocked; real call in E3-3) |
+| E1-8 | Handler: `Authorize` | ✅ done (replies `Accepted` for any `id_tag` until backend is wired in E3-3) |
 | E1-9 | Handler: `StartTransaction` / `StopTransaction` | ✅ done — `StartTransaction` emits `tx.started` to Kafka (E2-8); `StopTransaction` is replay-gated by Redis idempotency cache (E2-11) with the pre-existing DB-layer natural-key dedup as defense in depth |
 | E1-10 | Postgres schema (`charge_points`, `transactions`) + Alembic migration | ✅ done |
 | E1-11 | Structured logging on every message in/out (`cp_id`, `message_id`, `action`, `direction`) | ✅ done |
@@ -67,17 +67,20 @@
 
 ## Phase 3 — Platform integration
 
+Integration shape locked in [ADR-0023](./adr/0023-backend-rest-integration.md) and specced in [`docs/integration/`](./integration/README.md): two REST surfaces (gateway calls backend on the hot path; backend calls gateway for state + commands) plus async webhooks. JSON over HTTP with bearer-token auth; mTLS overlays in Phase 5.
+
 | ID | Task | Output |
 |---|---|---|
-| E3-1 | Define gRPC contracts with platform services (`auth`, `session`, `device`) | Frozen `.proto` files with semver |
-| E3-2 | Implement gRPC clients in `eveys_ocpp.platform_client` | All 3 clients with timeout + retry + circuit breaker |
-| E3-3 | Wire `Authorize` → `auth-service.CheckAuthorization` | Real auth check works |
-| E3-4 | Cache `Authorize` results in Redis (TTL 30s) | P99 < 50ms in load test |
-| E3-5 | Wire `StartTransaction` → `session-service.OpenSession` | tx_id issued by session-service |
-| E3-6 | Wire `StopTransaction` → `session-service.CloseSession` | Session closed in session-service |
-| E3-7 | Mobile BFF subscribes to `cp.status` (Kafka) | Mobile dev confirms live status |
-| E3-9 | Publish mock `ocpp-gw` server (Python package) | Downstream teams develop without us |
-| E3-10 | Document gRPC versioning + deprecation policy | ADR added |
+| E3-1 | Backend REST contract finalised: `docs/integration/01-backend-rest-contract.md` + ADR-0023 reviewed and merged | Contract frozen for the backend dev to implement against |
+| E3-2 | Implement `eveys_ocpp.platform.client` — async HTTP client (`httpx`) with bearer auth, timeout, retry, circuit breaker, structured logging | Unit tests against a mock backend; contract tests run in CI |
+| E3-3 | Wire `Authorize` handler → `POST /api/eveys/authorize` | Charger sees real `IdTagInfo` outcomes; fallback policy honoured when backend unreachable |
+| E3-4 | Cache `Authorize` results in Redis (TTL 30s) | P99 `Authorize` < 50 ms in load test |
+| E3-5 | Wire `StartTransaction` handler → `POST /api/eveys/sessions/open`; wire `BootNotification` handler → `POST /api/eveys/charge-points/register` | Sessions and charger registrations recorded by the backend |
+| E3-6 | Wire `StopTransaction` handler → `POST /api/eveys/sessions/close` | Session closed; final meter delivered for billing |
+| E3-7 | Implement gateway-side REST API at `/api/v1/...` — read endpoints (charge-points, meter-values, status-history, transactions, reservations, charging-profiles) per `docs/integration/02-gateway-rest-api.md` | Backend can read all gateway-known state over HTTP |
+| E3-8 | Implement gateway-side command endpoints — 19 HTTP wrappers around the existing gRPC RPCs | Backend can issue any OCPP CSMS command via HTTP |
+| E3-9 | Implement webhook delivery — HMAC-signed, retried, dedupable; per-event URL / enable toggles per `docs/integration/03-webhooks.md` | `cp.boot` / `cp.status` / `cp.firmware_status_changed` / `cp.diagnostics_status_changed` / `tx.started` / `tx.stopped` delivered reliably |
+| E3-10 | Publish a mock backend (FastAPI, in-repo) the gateway tests against | `make e2e` runs against the mock without a live backend |
 
 ---
 

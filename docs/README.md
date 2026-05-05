@@ -159,3 +159,13 @@ The two hidden `{toctree}` directives below this section define the navigation. 
 
 adr/*
 ```
+
+```{toctree}
+:hidden:
+:caption: Backend integration
+
+integration/README
+integration/01-backend-rest-contract
+integration/02-gateway-rest-api
+integration/03-webhooks
+```
