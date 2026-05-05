@@ -93,7 +93,10 @@ _OCPP_CALL_DISPATCH: dict[str, type[Any]] = {
 
 
 class OcppGatewayService(gateway_grpc.OcppGatewayBase):
-    """Implementation of `OcppGateway`. All seven RPCs live here."""
+    """Implementation of `OcppGateway`. All 14 RPCs live here (7 Phase-2
+    Core + 7 long-tail across E2-1A/B/C: DataTransfer, GetConfiguration,
+    ClearCache, GetLocalListVersion, SendLocalList, ReserveNow,
+    CancelReservation)."""
 
     def __init__(
         self,
