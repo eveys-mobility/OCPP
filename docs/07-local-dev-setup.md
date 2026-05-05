@@ -218,10 +218,12 @@ helm install kafka bitnami/kafka \
 
 # ClickHouse via Altinity operator (production-like)
 kubectl apply -f https://raw.githubusercontent.com/Altinity/clickhouse-operator/master/deploy/operator/clickhouse-operator-install-bundle.yaml
-kubectl apply -f deploy/k8s/clickhouse-dev.yaml
+# Skipped on Path B until Phase 4 lands `deploy/k8s/clickhouse-dev.yaml` —
+# see the note immediately below.
+# kubectl apply -f deploy/k8s/clickhouse-dev.yaml
 ```
 
-(`deploy/k8s/clickhouse-dev.yaml` is **not** part of E2-13/E2-14 — that work was scoped to the compose stack and the in-cluster ingestion sidecar is per-pod independent. The K8s ClickHouse manifest lands in Phase 4 alongside the load test, when the single-node-vs-`ReplicatedMergeTree` decision is informed by real numbers; see ADR-0020 § "Project conventions implied".)
+(`deploy/k8s/clickhouse-dev.yaml` is **not** part of E2-13/E2-14 — that work was scoped to the compose stack and the in-cluster ingestion sidecar is per-pod independent. The K8s ClickHouse manifest lands in Phase 4 alongside the load test, when the single-node-vs-`ReplicatedMergeTree` decision is informed by real numbers; see ADR-0020 § "Project conventions implied". Until then, Path B operators get the operator installed but no ClickHouse instance — bring one up with `kubectl run` or use Path A's docker-compose stack for a local ClickHouse.)
 
 Wait for everything to be `Ready`:
 
