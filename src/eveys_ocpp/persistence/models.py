@@ -53,6 +53,12 @@ class ChargePoint(Base):
         back_populates="charge_point", cascade="all, delete-orphan"
     )
 
+    local_auth_list: Mapped[LocalAuthList | None] = relationship(
+        back_populates="charge_point",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
+
 
 class Transaction(Base):
     """One row per OCPP transaction (StartTransaction → StopTransaction)."""
@@ -88,3 +94,96 @@ class Transaction(Base):
     # Idempotency anchor for inbound StopTransaction retries (AGENTS rule 3).
     # Once a stop is recorded for a transaction, replays must be no-ops.
     idempotency_key: Mapped[str | None] = mapped_column(Text, unique=True, index=True)
+
+
+class LocalAuthList(Base):
+    """OCPP 1.6 LocalAuthList — one row per charger that has a list.
+
+    The CSMS pushes the list to the charger via ``SendLocalList``. We
+    mirror what the charger accepted so the gateway can answer
+    operator queries ("what's on charger X's list?") without polling
+    the charger, and so we can re-send the right shape on a
+    Differential update without re-fetching from the charger first.
+
+    The charger remains the source of truth for "what list is
+    actually active right now"; this row is a mirror that's only
+    written when the charger replies ``Accepted``.
+    """
+
+    __tablename__ = "local_auth_lists"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    charge_point_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("charge_points.id", ondelete="CASCADE"),
+        unique=True,
+        nullable=False,
+    )
+    charge_point: Mapped[ChargePoint] = relationship(back_populates="local_auth_list")
+
+    # OCPP 1.6 listVersion. Monotonically increasing; the charger uses
+    # it to detect "we got a Differential for an older snapshot —
+    # reject as VersionMismatch" so the CSMS knows to send a Full.
+    list_version: Mapped[int] = mapped_column(nullable=False)
+
+    last_full_replace_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    entries: Mapped[list[LocalAuthListEntry]] = relationship(
+        back_populates="local_auth_list", cascade="all, delete-orphan"
+    )
+
+
+class LocalAuthListEntry(Base):
+    """One id_tag → IdTagInfo on a charger's local list.
+
+    Two-table layout (rather than JSONB on `local_auth_lists`) so a
+    Differential update can do per-tag insert / update / delete
+    without read-modify-write of the entire list. Postgres enforces
+    the (list, id_tag) uniqueness; SQLAlchemy's ON CONFLICT path
+    handles the upsert in the repository layer.
+    """
+
+    __tablename__ = "local_auth_list_entries"
+    __table_args__ = (
+        UniqueConstraint(
+            "local_auth_list_id", "id_tag", name="uq_local_auth_list_entries_list_tag"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    local_auth_list_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("local_auth_lists.id", ondelete="CASCADE"),
+        index=True,
+        nullable=False,
+    )
+    local_auth_list: Mapped[LocalAuthList] = relationship(back_populates="entries")
+
+    id_tag: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+
+    # AuthorizationStatus enum name from `ocpp.v16.enums.AuthorizationStatus`.
+    # Stored as String for the same forward-compat reason ADR-0020 stores
+    # proto enums as strings in ClickHouse.
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    parent_id_tag: Mapped[str | None] = mapped_column(String(64))
+    expiry_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )

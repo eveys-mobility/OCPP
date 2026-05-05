@@ -680,3 +680,177 @@ async def test_grpc_get_charger_status_online_with_cached_state(
         assert response.last_status == "Available"
 
         loop_task.cancel()
+
+
+# --------------------------------------------------------------------------
+# E2-1B — LocalAuthList round-trip
+# --------------------------------------------------------------------------
+
+
+class _LocalAuthListSimHandler:
+    """Charger-side OCPP handlers for LocalAuthList. Captures every
+    `SendLocalList` and `GetLocalListVersion` request the gateway sends
+    and replies with configurable status / version values so the test
+    can assert end-to-end behaviour."""
+
+    def __init__(self, *, send_status: str = "Accepted", reported_version: int = 0) -> None:
+        self.send_received: list[dict[str, object]] = []
+        self.get_received: int = 0
+        self.send_status = send_status
+        self.reported_version = reported_version
+
+    @staticmethod
+    def _on_send_local_list(self: object, **kwargs: object) -> object:
+        # Static so the @on decorator can find it; bound at __init_subclass__.
+        raise NotImplementedError
+
+
+@pytest.mark.asyncio
+async def test_local_auth_list_full_replace_persists_mirror(
+    running_service: None, db_engine: sa.ext.asyncio.AsyncEngine
+) -> None:
+    """E2-1B — gRPC SendLocalList(Full, Accepted) → charger receives it →
+    gateway-side `local_auth_lists` + `local_auth_list_entries` tables
+    reflect the new state.
+    """
+    from grpclib.client import Channel as _Channel
+    from ocpp.routing import on as _on
+    from ocpp.v16 import call_result as _call_result
+    from ocpp.v16.enums import Action as _Action
+
+    from eveys_ocpp._generated.ocpp_gw.v1 import gateway_grpc as _gateway_grpc
+    from eveys_ocpp._generated.ocpp_gw.v1 import gateway_pb2 as _gateway_pb2
+
+    captured: dict[str, object] = {}
+
+    class _Sim(_SimChargePoint):
+        @_on(_Action.send_local_list)
+        async def _on_send_local_list(
+            self,
+            list_version: int,
+            update_type: str,
+            local_authorization_list: list[dict[str, object]] | None = None,
+            **_kw: object,
+        ) -> _call_result.SendLocalList:
+            captured["list_version"] = list_version
+            captured["update_type"] = update_type
+            captured["entries"] = local_authorization_list or []
+            return _call_result.SendLocalList(status="Accepted")
+
+    cp_id = "SMOKE_E2_1B_001"
+    async with connect(f"ws://localhost:{_TEST_WS_PORT}/{cp_id}", subprotocols=["ocpp1.6"]) as ws:
+        sim = _Sim(cp_id, ws)
+        loop_task = asyncio.create_task(sim.start())
+
+        # Charger row must exist before SendLocalList — it's the FK
+        # target for `local_auth_lists`. BootNotification creates it.
+        await sim.call(call.BootNotification(charge_point_vendor="ACME", charge_point_model="X1"))
+
+        async with _Channel("127.0.0.1", _TEST_GRPC_PORT) as ch:
+            stub = _gateway_grpc.OcppGatewayStub(ch)
+            response = await stub.SendLocalList(
+                _gateway_pb2.SendLocalListRequest(
+                    cp_id=cp_id,
+                    list_version=11,
+                    update_type=_gateway_pb2.LOCAL_AUTH_LIST_UPDATE_TYPE_FULL,
+                    local_authorization_list=[
+                        _gateway_pb2.AuthorizationData(
+                            id_tag="TAG_ALPHA",
+                            id_tag_info=_gateway_pb2.IdTagInfo(
+                                status=_gateway_pb2.AUTHORIZATION_STATUS_ACCEPTED,
+                                parent_id_tag="FAMILY_1",
+                            ),
+                        ),
+                        _gateway_pb2.AuthorizationData(
+                            id_tag="TAG_BETA",
+                            id_tag_info=_gateway_pb2.IdTagInfo(
+                                status=_gateway_pb2.AUTHORIZATION_STATUS_BLOCKED
+                            ),
+                        ),
+                    ],
+                )
+            )
+
+        assert response.status == _gateway_pb2.SEND_LOCAL_LIST_STATUS_ACCEPTED
+
+        # The charger sim received exactly what we sent.
+        assert captured["list_version"] == 11
+        assert captured["update_type"] == "Full"
+        entries = captured["entries"]
+        assert isinstance(entries, list)
+        assert len(entries) == 2
+
+        # Tiny sleep to let the post-charger persist commit.
+        await asyncio.sleep(0.1)
+
+        # Gateway-side mirror reflects what the charger accepted.
+        async with db_engine.connect() as conn:
+            mirror_row = (
+                await conn.execute(
+                    sa.text(
+                        "SELECT lal.list_version, lal.last_full_replace_at "
+                        "FROM local_auth_lists lal "
+                        "JOIN charge_points cp ON cp.id = lal.charge_point_id "
+                        "WHERE cp.cp_id = :cp_id"
+                    ),
+                    {"cp_id": cp_id},
+                )
+            ).one()
+            entries_rows = (
+                await conn.execute(
+                    sa.text(
+                        "SELECT e.id_tag, e.status, e.parent_id_tag "
+                        "FROM local_auth_list_entries e "
+                        "JOIN local_auth_lists lal ON lal.id = e.local_auth_list_id "
+                        "JOIN charge_points cp ON cp.id = lal.charge_point_id "
+                        "WHERE cp.cp_id = :cp_id ORDER BY e.id_tag"
+                    ),
+                    {"cp_id": cp_id},
+                )
+            ).all()
+
+        assert mirror_row.list_version == 11
+        assert mirror_row.last_full_replace_at is not None
+        assert [(r.id_tag, r.status, r.parent_id_tag) for r in entries_rows] == [
+            ("TAG_ALPHA", "Accepted", "FAMILY_1"),
+            ("TAG_BETA", "Blocked", None),
+        ]
+
+        loop_task.cancel()
+
+
+@pytest.mark.asyncio
+async def test_local_auth_list_get_version_reads_from_charger(
+    running_service: None,
+) -> None:
+    """GetLocalListVersion is a charger round-trip — the gateway forwards
+    whatever the charger reports (here: -1 to mean "no list"). The
+    gateway-side mirror is for operator queries / Differential planning,
+    not this RPC."""
+    from grpclib.client import Channel as _Channel
+    from ocpp.routing import on as _on
+    from ocpp.v16 import call_result as _call_result
+    from ocpp.v16.enums import Action as _Action
+
+    from eveys_ocpp._generated.ocpp_gw.v1 import gateway_grpc as _gateway_grpc
+    from eveys_ocpp._generated.ocpp_gw.v1 import gateway_pb2 as _gateway_pb2
+
+    class _Sim(_SimChargePoint):
+        @_on(_Action.get_local_list_version)
+        async def _on_get(self, **_kw: object) -> _call_result.GetLocalListVersion:
+            return _call_result.GetLocalListVersion(list_version=-1)
+
+    cp_id = "SMOKE_E2_1B_002"
+    async with connect(f"ws://localhost:{_TEST_WS_PORT}/{cp_id}", subprotocols=["ocpp1.6"]) as ws:
+        sim = _Sim(cp_id, ws)
+        loop_task = asyncio.create_task(sim.start())
+        await sim.call(call.BootNotification(charge_point_vendor="ACME", charge_point_model="X1"))
+
+        async with _Channel("127.0.0.1", _TEST_GRPC_PORT) as ch:
+            stub = _gateway_grpc.OcppGatewayStub(ch)
+            response = await stub.GetLocalListVersion(
+                _gateway_pb2.GetLocalListVersionRequest(cp_id=cp_id)
+            )
+
+        assert response.list_version == -1
+        loop_task.cancel()

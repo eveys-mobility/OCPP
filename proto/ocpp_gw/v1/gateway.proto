@@ -76,6 +76,14 @@ service OcppGateway {
   // commands, opaque payload. Used for vendor features outside the
   // OCPP standard surface.
   rpc DataTransfer(DataTransferRequest) returns (DataTransferResponse);
+
+  // Read the current LocalAuthList version on the charger.
+  // OCPP 1.6: GetLocalListVersion.req → GetLocalListVersion.conf.
+  rpc GetLocalListVersion(GetLocalListVersionRequest) returns (GetLocalListVersionResponse);
+
+  // Push a new LocalAuthList (Full or Differential) to the charger.
+  // OCPP 1.6: SendLocalList.req → SendLocalList.conf.
+  rpc SendLocalList(SendLocalListRequest) returns (SendLocalListResponse);
 }
 
 // -----------------------------------------------------------------------------
@@ -328,6 +336,81 @@ enum DataTransferStatus {
   DATA_TRANSFER_STATUS_UNKNOWN_MESSAGE_ID = 3;
   // Charger does not implement this vendor_id at all.
   DATA_TRANSFER_STATUS_UNKNOWN_VENDOR_ID = 4;
+}
+
+// -----------------------------------------------------------------------------
+// LocalAuthList (E2-1B — LocalAuthList profile)
+// -----------------------------------------------------------------------------
+
+message GetLocalListVersionRequest {
+  string cp_id = 1;
+}
+
+message GetLocalListVersionResponse {
+  // Per OCPP 1.6 spec: -1 means the charger has no list (or doesn't
+  // support LocalAuthList). 0 means an empty list. Non-negative
+  // monotonically increasing integers from there.
+  int32 list_version = 1;
+}
+
+message SendLocalListRequest {
+  string cp_id = 1;
+  // The new list version the charger should adopt on success.
+  int32 list_version = 2;
+  LocalAuthListUpdateType update_type = 3;
+  // For ``LOCAL_AUTH_LIST_UPDATE_TYPE_FULL``: the entire new list.
+  // For ``..._DIFFERENTIAL``: per-tag insert/update (with `id_tag_info`
+  // set) and delete (with `id_tag_info` empty / unset).
+  repeated AuthorizationData local_authorization_list = 4;
+}
+
+message SendLocalListResponse {
+  SendLocalListStatus status = 1;
+}
+
+enum LocalAuthListUpdateType {
+  LOCAL_AUTH_LIST_UPDATE_TYPE_UNSPECIFIED = 0;
+  LOCAL_AUTH_LIST_UPDATE_TYPE_FULL = 1;
+  LOCAL_AUTH_LIST_UPDATE_TYPE_DIFFERENTIAL = 2;
+}
+
+enum SendLocalListStatus {
+  SEND_LOCAL_LIST_STATUS_UNSPECIFIED = 0;
+  SEND_LOCAL_LIST_STATUS_ACCEPTED = 1;
+  SEND_LOCAL_LIST_STATUS_FAILED = 2;
+  SEND_LOCAL_LIST_STATUS_NOT_SUPPORTED = 3;
+  // The charger's notion of the list version doesn't match what we
+  // sent — it's expected on Differential when the gateway and charger
+  // have drifted; the operator's response is to send a Full update.
+  SEND_LOCAL_LIST_STATUS_VERSION_MISMATCH = 4;
+}
+
+message AuthorizationData {
+  string id_tag = 1;
+  // Absent / cleared on a Differential update means "delete this tag
+  // from the list". On a Full update, every entry must carry a populated
+  // ``id_tag_info``; entries with no info are silently dropped at the
+  // gateway boundary on Full to avoid sending malformed traffic to the
+  // charger.
+  IdTagInfo id_tag_info = 2;
+}
+
+message IdTagInfo {
+  AuthorizationStatus status = 1;
+  // Optional: id_tag that this one is grouped under (e.g. one
+  // family-card tag covering several physical RFID cards).
+  string parent_id_tag = 2;
+  // Optional: ISO-8601 UTC. Empty means "no expiry".
+  string expiry_date = 3;
+}
+
+enum AuthorizationStatus {
+  AUTHORIZATION_STATUS_UNSPECIFIED = 0;
+  AUTHORIZATION_STATUS_ACCEPTED = 1;
+  AUTHORIZATION_STATUS_BLOCKED = 2;
+  AUTHORIZATION_STATUS_EXPIRED = 3;
+  AUTHORIZATION_STATUS_INVALID = 4;
+  AUTHORIZATION_STATUS_CONCURRENT_TX = 5;
 }
 
 // -----------------------------------------------------------------------------
