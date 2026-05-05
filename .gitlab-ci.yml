@@ -312,7 +312,13 @@ tests:e2e:
 # Tier-1 unit and Tier-2 integration tests cannot see.
 tests:compose-smoke:
   stage: test
-  image: docker:27
+  # Glibc-based image (NOT alpine `docker:27`). Several transitive deps
+  # — `lz4` chief among them — ship manylinux wheels but no musllinux
+  # wheels for cp313. On alpine the install would fall back to compiling
+  # from source, which needs a C toolchain we don't carry. python:3.13-slim
+  # is debian-slim with cpython 3.13 already on PATH; we add the Docker
+  # CLI + compose plugin via apt so this job can drive the dind sidecar.
+  image: python:3.13-slim
   services:
     - name: docker:27-dind
       alias: docker
@@ -320,6 +326,7 @@ tests:compose-smoke:
   variables:
     DOCKER_HOST: tcp://docker:2375
     DOCKER_TLS_CERTDIR: ""
+    DEBIAN_FRONTEND: noninteractive
     # `COMPOSE_SMOKE_REQUIRE=1` flips the conftest's "skip if Docker
     # missing" into a hard failure — a green-but-skipped pipeline is
     # the original class of bug this layer was added to prevent.
@@ -336,7 +343,12 @@ tests:compose-smoke:
         - .gitlab-ci.yml
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
   before_script:
-    - apk add --no-cache python3 py3-pip docker-cli-compose curl bash
+    # Docker CLI + compose plugin from Debian's repos. We do NOT install
+    # the daemon — that's the dind service. `make` runs the
+    # `compose-smoke` target; ca-certificates / curl are for the uv
+    # installer.
+    - apt-get update -qq
+    - apt-get install -y --no-install-recommends ca-certificates curl docker.io docker-compose-plugin make git >/dev/null
     # Install uv so we can build a venv for pytest itself (the tests
     # are Python; only the stack-under-test is in Docker).
     - curl -LsSf https://astral.sh/uv/install.sh | sh
