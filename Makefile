@@ -180,6 +180,15 @@ e2e: install
 	$(MAKE) compose-down; \
 	exit $$rc
 
+# ---- E3-10 mock backend -----------------------------------------------------
+# Boots the dev-only mock implementing docs/integration/01-backend-rest-contract.md.
+# Used by E3-2..E3-6 wiring work; not part of the production runtime.
+# Defaults: bind 0.0.0.0:9200, bearer token "dev-token", accept all id_tags.
+# Override via MOCK_BACKEND_* env vars (see tests/mock_backend/__init__.py).
+mock-backend: install
+	@echo ">> booting mock backend on http://localhost:$${MOCK_BACKEND_PORT:-9200} ..."
+	@$(VENV)/bin/python -m tests.mock_backend
+
 # ---- docs (delegates to docs/Makefile) --------------------------------------
 
 docs:
