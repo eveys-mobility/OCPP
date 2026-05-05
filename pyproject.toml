@@ -38,6 +38,9 @@ dev = [
     "pre-commit>=3.8",
     "freezegun>=1.5",              # deterministic timestamps in tests
     "grpcio-tools>=1.66",          # protoc + grpc_tools.protoc for codegen (dev only)
+    "fastapi>=0.115",              # E3-10 mock backend (dev / test only — never imported by gateway runtime)
+    "uvicorn[standard]>=0.32",     # E3-10 mock backend ASGI server
+    "httpx>=0.28",                 # E3-10 test client + future E3-2 gateway HTTP client (test side only here; runtime promotion in E3-2)
 ]
 
 [project.scripts]
