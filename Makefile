@@ -13,7 +13,7 @@ COMPOSE    := docker compose -f deploy/compose/docker-compose.yml
 
 .PHONY: help doctor install format lint types tests e2e smoke compose-smoke precommit clean distclean \
         compose-up compose-down compose-status compose-down-volumes compose-wait \
-        build-image protoc ch-migrate docs docs-clean
+        build-image protoc ch-migrate docs docs-clean config-export config-export-check
 
 # ---- meta -------------------------------------------------------------------
 
@@ -43,6 +43,10 @@ help:
 	@echo "Docs:"
 	@echo "  make docs               build the docs site (Sphinx + MyST)"
 	@echo "  make docs-clean         remove docs/_build/"
+	@echo ""
+	@echo "Config reference (ADR-0025):"
+	@echo "  make config-export       regenerate docs/11-configuration-reference.md + .env.example"
+	@echo "  make config-export-check fail if either file is out of date with src/eveys_ocpp/settings.py"
 	@echo ""
 	@echo "Cleanup:"
 	@echo "  make clean              remove build/test caches"
@@ -220,6 +224,18 @@ docs:
 
 docs-clean:
 	$(MAKE) -C docs clean
+
+# ---- config reference (ADR-0025) --------------------------------------------
+#
+# `Settings` is the source of truth for docs/11-configuration-reference.md
+# and .env.example. Regenerate both with `make config-export` whenever you
+# add or change a field. CI runs `--check` (E0-14) to refuse drift.
+
+config-export: install
+	$(VENV)/bin/python scripts/render_config_reference.py
+
+config-export-check: install
+	$(VENV)/bin/python scripts/render_config_reference.py --check
 
 # ---- cleanup ----------------------------------------------------------------
 
