@@ -136,13 +136,13 @@ These are charger-initiated actions the CSMS must respond to. Appendix C tests t
 
 ## Conformance matrix — Reservations profile (CSMS, in scope)
 
-| TC ID | Scenario | Status |
-|---|---|---|
-| TC_046 | Reservation of a Connector — Transaction | ⏳ Phase 2 |
-| TC_047 | Reservation of a Connector — Expire | ⏳ Phase 2 |
-| TC_048_4 | Reservation of a Connector — Rejected | ⏳ Phase 2 |
-| TC_049 | Reservation of a Charge Point — Transaction | ⏳ Phase 2 |
-| TC_051 | Cancel Reservation | ⏳ Phase 2 |
+| TC ID | Scenario | Status | Implementation |
+|---|---|---|---|
+| TC_046 | Reservation of a Connector — Transaction | 🟡 E2-1C | gRPC `ReserveNow(connector_id>0)` flips a `Pending` row to `Active` on charger Accepted; consumed when charger sees a matching `StartTransaction` (charger-side enforcement; ADR-0021). e2e: `test_reserve_now_full_lifecycle`. |
+| TC_047 | Reservation of a Connector — Expire | 🟡 E2-1C | Charger enforces `expiry_date` locally (untrusted clock per AGENTS rule 7); gateway computes effective expiry at query time per ADR-0021 § "no scheduler". |
+| TC_048_4 | Reservation of a Connector — Rejected | 🟡 E2-1C | Charger reply `Occupied`/`Faulted`/`Unavailable`/`Rejected` translates to the matching proto enum and the Pending row is deleted (no orphan rows on refusal). e2e: `test_reserve_now_charger_occupied_drops_pending_row`. |
+| TC_049 | Reservation of a Charge Point — Transaction | 🟡 E2-1C | `connector_id=0` reserves the whole charger per OCPP 1.6 spec. Same code path as TC_046. |
+| TC_051 | Cancel Reservation | 🟡 E2-1C | gRPC `CancelReservation(reservation_id)` forwards to charger; on Accepted flips mirror to `Cancelled`; on Rejected leaves the row alone (charger's view wins). e2e covered in `test_reserve_now_full_lifecycle`. ADR-0021. |
 
 ---
 

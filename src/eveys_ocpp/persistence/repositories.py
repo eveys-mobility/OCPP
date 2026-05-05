@@ -13,7 +13,7 @@ from sqlalchemy import delete, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .models import ChargePoint, LocalAuthList, LocalAuthListEntry, Transaction
+from .models import ChargePoint, LocalAuthList, LocalAuthListEntry, Reservation, Transaction
 
 
 async def upsert_charge_point_boot(
@@ -308,3 +308,73 @@ def _id_tag_info_columns(info: object) -> dict[str, object]:
         "parent_id_tag": info.get("parent_id_tag"),
         "expiry_date": expiry,
     }
+
+
+# ---- Reservations (E2-1C) --------------------------------------------------
+
+
+async def insert_pending_reservation(
+    session: AsyncSession,
+    *,
+    cp_id: str,
+    connector_id: int,
+    id_tag: str,
+    parent_id_tag: str | None,
+    expiry_date: datetime,
+) -> int:
+    """Insert a `Pending` reservation row and return the assigned ID.
+
+    The ID is what the gateway forwards to the charger as the OCPP
+    ``reservation_id`` (per ADR-0021). Caller flips the row to
+    ``Active`` on charger Accepted, or deletes it via
+    ``delete_reservation`` on any other reply.
+    """
+    cp_row = await _resolve_charge_point(session, cp_id)
+    row = Reservation(
+        charge_point_id=cp_row.id,
+        connector_id=connector_id,
+        id_tag=id_tag,
+        parent_id_tag=parent_id_tag,
+        expiry_date=expiry_date,
+        status="Pending",
+    )
+    session.add(row)
+    await session.flush()
+    return row.id
+
+
+async def activate_reservation(session: AsyncSession, *, reservation_id: int) -> None:
+    """Flip a Pending reservation to Active. No-op if the row is gone
+    (a concurrent CancelReservation could have raced)."""
+    await session.execute(
+        update(Reservation)
+        .where(Reservation.id == reservation_id, Reservation.status == "Pending")
+        .values(status="Active")
+        .execution_options(synchronize_session=False)
+    )
+
+
+async def delete_reservation(session: AsyncSession, *, reservation_id: int) -> None:
+    """Drop a reservation row. Used when the charger rejects the
+    initial ReserveNow — the row was inserted as Pending solely to
+    allocate the ID, so it never came alive on the charger side."""
+    await session.execute(delete(Reservation).where(Reservation.id == reservation_id))
+
+
+async def cancel_reservation(session: AsyncSession, *, reservation_id: int) -> bool:
+    """Mark a reservation Cancelled. Returns True if the row was
+    Active (or Pending) and got updated; False if the row is gone or
+    already Cancelled — same semantics as the OCPP charger reply
+    (``Rejected`` for unknown / already-cancelled reservations).
+    """
+    result = await session.execute(
+        update(Reservation)
+        .where(
+            Reservation.id == reservation_id,
+            Reservation.status.in_(("Active", "Pending")),
+        )
+        .values(status="Cancelled")
+        .execution_options(synchronize_session=False)
+    )
+    rowcount: int = result.rowcount  # type: ignore[attr-defined]
+    return rowcount > 0

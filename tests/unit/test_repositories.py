@@ -222,3 +222,99 @@ async def test_insert_transaction_assigns_transaction_id_to_id() -> None:
     assert transaction_id == 7
     # Two flushes: one to populate id, one to commit transaction_id = id.
     assert session.flush.await_count == 2
+
+
+# ---- Reservations (E2-1C) -------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_insert_pending_reservation_returns_assigned_id() -> None:
+    """The repo flushes after `session.add` and returns the surrogate
+    id Postgres assigned via the autoincrement column."""
+    cp_row = MagicMock()
+    cp_row.id = 12
+
+    session = MagicMock()
+    session.scalar = AsyncMock(return_value=cp_row)
+    session.add = MagicMock()
+
+    async def fake_flush() -> None:
+        added = session.add.call_args.args[0]
+        if added.id is None:
+            added.id = 99
+
+    session.flush = AsyncMock(side_effect=fake_flush)
+
+    rid = await repositories.insert_pending_reservation(
+        session,
+        cp_id="CP1",
+        connector_id=2,
+        id_tag="TAG",
+        parent_id_tag=None,
+        expiry_date=datetime(2026, 12, 31, tzinfo=UTC),
+    )
+    assert rid == 99
+    added = session.add.call_args.args[0]
+    assert added.status == "Pending"
+    assert added.charge_point_id == 12
+    assert added.connector_id == 2
+
+
+@pytest.mark.asyncio
+async def test_insert_pending_reservation_raises_when_charger_missing() -> None:
+    """Operator can't reserve a connector on a charger we've never
+    seen — surface it as `LookupError` rather than write an orphan
+    row (FK would error at flush, but this is the friendly path)."""
+    session = MagicMock()
+    session.scalar = AsyncMock(return_value=None)
+
+    with pytest.raises(LookupError, match="unknown charger"):
+        await repositories.insert_pending_reservation(
+            session,
+            cp_id="GHOST",
+            connector_id=1,
+            id_tag="X",
+            parent_id_tag=None,
+            expiry_date=datetime.now(UTC),
+        )
+
+
+@pytest.mark.asyncio
+async def test_activate_reservation_runs_update() -> None:
+    session = AsyncMock()
+    session.execute = AsyncMock()
+    await repositories.activate_reservation(session, reservation_id=42)
+    session.execute.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_delete_reservation_runs_delete() -> None:
+    session = AsyncMock()
+    session.execute = AsyncMock()
+    await repositories.delete_reservation(session, reservation_id=42)
+    session.execute.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_cancel_reservation_returns_true_when_row_updated() -> None:
+    """Active row → update returns rowcount=1 → True."""
+    result_obj = MagicMock()
+    result_obj.rowcount = 1
+
+    session = AsyncMock()
+    session.execute = AsyncMock(return_value=result_obj)
+
+    assert await repositories.cancel_reservation(session, reservation_id=42) is True
+
+
+@pytest.mark.asyncio
+async def test_cancel_reservation_returns_false_when_already_cancelled() -> None:
+    """Row already Cancelled (or non-existent) → rowcount=0 → False.
+    Mirrors the OCPP-level Rejected outcome."""
+    result_obj = MagicMock()
+    result_obj.rowcount = 0
+
+    session = AsyncMock()
+    session.execute = AsyncMock(return_value=result_obj)
+
+    assert await repositories.cancel_reservation(session, reservation_id=42) is False

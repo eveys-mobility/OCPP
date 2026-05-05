@@ -84,6 +84,16 @@ service OcppGateway {
   // Push a new LocalAuthList (Full or Differential) to the charger.
   // OCPP 1.6: SendLocalList.req → SendLocalList.conf.
   rpc SendLocalList(SendLocalListRequest) returns (SendLocalListResponse);
+
+  // Reserve a connector for a specific id_tag. The CSMS assigns the
+  // reservation_id; the gateway returns it in the response so the
+  // caller can use it later for CancelReservation.
+  // OCPP 1.6: ReserveNow.req → ReserveNow.conf.
+  rpc ReserveNow(ReserveNowRequest) returns (ReserveNowResponse);
+
+  // Cancel a previously-issued reservation by ID.
+  // OCPP 1.6: CancelReservation.req → CancelReservation.conf.
+  rpc CancelReservation(CancelReservationRequest) returns (CancelReservationResponse);
 }
 
 // -----------------------------------------------------------------------------
@@ -411,6 +421,65 @@ enum AuthorizationStatus {
   AUTHORIZATION_STATUS_EXPIRED = 3;
   AUTHORIZATION_STATUS_INVALID = 4;
   AUTHORIZATION_STATUS_CONCURRENT_TX = 5;
+}
+
+// -----------------------------------------------------------------------------
+// Reservations (E2-1C — Reservations profile, ADR-0021)
+// -----------------------------------------------------------------------------
+
+message ReserveNowRequest {
+  string cp_id = 1;
+  // Specific connector to reserve. Per OCPP 1.6 spec a connector_id
+  // of 0 reserves the whole charger; a positive integer reserves a
+  // specific connector.
+  int32 connector_id = 2;
+  // ISO-8601 UTC. Charger releases the reservation locally when this
+  // passes (charger clock; see ADR-0021 for the two-clock note).
+  string expiry_date = 3;
+  string id_tag = 4;
+  // Optional: id_tag this reservation is grouped under (family card
+  // covering several physical RFIDs).
+  string parent_id_tag = 5;
+}
+
+message ReserveNowResponse {
+  ReserveNowStatus status = 1;
+  // The gateway-assigned reservation_id. Returned even on non-Accepted
+  // statuses (the row was deleted on charger refusal — but the caller
+  // sometimes wants the ID for logging / correlation). Zero when the
+  // gateway never inserted a row (e.g. INVALID_ARGUMENT before dispatch).
+  int64 reservation_id = 2;
+}
+
+enum ReserveNowStatus {
+  RESERVE_NOW_STATUS_UNSPECIFIED = 0;
+  RESERVE_NOW_STATUS_ACCEPTED = 1;
+  // Charger reports the connector currently has a transaction.
+  RESERVE_NOW_STATUS_OCCUPIED = 2;
+  // Charger reports a fault on the connector.
+  RESERVE_NOW_STATUS_FAULTED = 3;
+  // Charger reports the connector is administratively unavailable.
+  RESERVE_NOW_STATUS_UNAVAILABLE = 4;
+  // Charger refused (e.g. Reservations profile disabled on this charger).
+  RESERVE_NOW_STATUS_REJECTED = 5;
+}
+
+message CancelReservationRequest {
+  string cp_id = 1;
+  // The reservation_id returned by ReserveNow.
+  int64 reservation_id = 2;
+}
+
+message CancelReservationResponse {
+  CancelReservationStatus status = 1;
+}
+
+enum CancelReservationStatus {
+  CANCEL_RESERVATION_STATUS_UNSPECIFIED = 0;
+  CANCEL_RESERVATION_STATUS_ACCEPTED = 1;
+  // Charger doesn't know about this reservation_id (already expired,
+  // already consumed, or never issued to this charger).
+  CANCEL_RESERVATION_STATUS_REJECTED = 2;
 }
 
 // -----------------------------------------------------------------------------
