@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from eveys_ocpp.connections import ConnectionMap
     from eveys_ocpp.events import EventProducer
     from eveys_ocpp.idempotency import IdempotencyCache
+    from eveys_ocpp.platform import BackendHTTPClient
     from eveys_ocpp.registry import Registry
     from eveys_ocpp.settings import Settings
 
@@ -40,6 +41,7 @@ async def _on_connect(
     connections: ConnectionMap | None,
     event_producer: EventProducer | None = None,
     idempotency: IdempotencyCache | None = None,
+    backend_client: BackendHTTPClient | None = None,
 ) -> None:
     """Per-connection coroutine. Lives for the duration of the WS."""
     if connection.subprotocol != OCPP_SUBPROTOCOL:
@@ -69,6 +71,7 @@ async def _on_connect(
         registry=registry,
         event_producer=event_producer,
         idempotency=idempotency,
+        backend_client=backend_client,
     )
     if connections is not None:
         connections.add(cp)
@@ -94,16 +97,19 @@ async def serve_forever(
     connections: ConnectionMap | None = None,
     event_producer: EventProducer | None = None,
     idempotency: IdempotencyCache | None = None,
+    backend_client: BackendHTTPClient | None = None,
 ) -> None:
     """Start the WS server and block until cancelled.
 
-    All Redis/Kafka dependencies are optional so unit tests + the
+    All Redis/Kafka/HTTP dependencies are optional so unit tests + the
     W1-style local stack can opt out. Production wiring (`__main__.py`)
     always passes all of them — `connections` is how gRPC RemoteStart
     finds the live WS, `event_producer` is how events reach Kafka,
-    `registry` is how cross-pod ownership is tracked, and `idempotency`
-    is how `BootNotification`/`StopTransaction` replays are dropped
-    (E2-11).
+    `registry` is how cross-pod ownership is tracked, `idempotency` is
+    how `BootNotification`/`StopTransaction` replays are dropped
+    (E2-11), and `backend_client` is how `Authorize` /
+    `StartTransaction` / `StopTransaction` consult the backend (E3-3
+    onwards).
     """
 
     async def handler(connection: ServerConnection) -> None:
@@ -115,6 +121,7 @@ async def serve_forever(
             connections=connections,
             event_producer=event_producer,
             idempotency=idempotency,
+            backend_client=backend_client,
         )
 
     async with serve(
