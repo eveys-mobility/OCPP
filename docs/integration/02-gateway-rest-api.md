@@ -104,7 +104,6 @@ Single charger detail. Same per-charger object as the list endpoint, plus active
 
 ---
 
-(meter-values)=
 ### `GET /api/v1/charge-points/{cp_id}/meter-values`
 
 MeterValues time-series for a charger. **ClickHouse-backed**.
