@@ -89,14 +89,16 @@ _OCPP_CALL_DISPATCH: dict[str, type[Any]] = {
     "SendLocalList": ocpp_call.SendLocalList,
     "ReserveNow": ocpp_call.ReserveNow,
     "CancelReservation": ocpp_call.CancelReservation,
+    "GetDiagnostics": ocpp_call.GetDiagnostics,
+    "UpdateFirmware": ocpp_call.UpdateFirmware,
 }
 
 
 class OcppGatewayService(gateway_grpc.OcppGatewayBase):
-    """Implementation of `OcppGateway`. All 14 RPCs live here (7 Phase-2
-    Core + 7 long-tail across E2-1A/B/C: DataTransfer, GetConfiguration,
+    """Implementation of `OcppGateway`. All 16 RPCs live here (7 Phase-2
+    Core + 9 long-tail across E2-1A/B/C/F: DataTransfer, GetConfiguration,
     ClearCache, GetLocalListVersion, SendLocalList, ReserveNow,
-    CancelReservation)."""
+    CancelReservation, GetDiagnostics, UpdateFirmware)."""
 
     def __init__(
         self,
@@ -558,6 +560,69 @@ class OcppGatewayService(gateway_grpc.OcppGatewayBase):
                 )
 
         await stream.send_message(gateway_pb2.CancelReservationResponse(status=proto_status))
+
+    # ---- E2-1F — FirmwareManagement profile ---------------------------------
+
+    async def GetDiagnostics(
+        self,
+        stream: Stream[gateway_pb2.GetDiagnosticsRequest, gateway_pb2.GetDiagnosticsResponse],
+    ) -> None:
+        """Tell the charger to upload a diagnostics file.
+
+        The charger may reply with a chosen ``file_name``; we forward
+        verbatim. Status transitions arrive asynchronously via the
+        inbound ``DiagnosticsStatusNotification`` handler, which
+        updates ``charge_points.last_diagnostics_status``.
+        """
+        request = await self._recv(stream)
+        if not request.location:
+            raise GRPCError(Status.INVALID_ARGUMENT, "location is required")
+        ocpp_response = await self._dispatch_ocpp_call(
+            rpc="GetDiagnostics",
+            cp_id=request.cp_id,
+            ocpp_request=ocpp_call.GetDiagnostics(
+                location=request.location,
+                retries=request.retries or None,
+                retry_interval=request.retry_interval or None,
+                start_time=request.start_time or None,
+                stop_time=request.stop_time or None,
+            ),
+        )
+        await stream.send_message(
+            gateway_pb2.GetDiagnosticsResponse(
+                file_name=getattr(ocpp_response, "file_name", "") or "",
+            )
+        )
+
+    async def UpdateFirmware(
+        self,
+        stream: Stream[gateway_pb2.UpdateFirmwareRequest, gateway_pb2.UpdateFirmwareResponse],
+    ) -> None:
+        """Trigger a firmware download + install on the charger.
+
+        The OCPP conf carries no fields (``UpdateFirmware.conf`` is
+        empty). Operators learn whether the rollout succeeded by
+        watching the inbound ``FirmwareStatusNotification`` flow that
+        updates ``charge_points.last_firmware_status`` end-to-end:
+        Downloading → Downloaded → Installing → Installed (or one of
+        the failure states).
+        """
+        request = await self._recv(stream)
+        if not request.location:
+            raise GRPCError(Status.INVALID_ARGUMENT, "location is required")
+        if not request.retrieve_date:
+            raise GRPCError(Status.INVALID_ARGUMENT, "retrieve_date is required")
+        await self._dispatch_ocpp_call(
+            rpc="UpdateFirmware",
+            cp_id=request.cp_id,
+            ocpp_request=ocpp_call.UpdateFirmware(
+                location=request.location,
+                retrieve_date=request.retrieve_date,
+                retries=request.retries or None,
+                retry_interval=request.retry_interval or None,
+            ),
+        )
+        await stream.send_message(gateway_pb2.UpdateFirmwareResponse())
 
     async def GetChargerStatus(
         self,
