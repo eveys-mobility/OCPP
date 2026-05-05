@@ -302,6 +302,83 @@ tests:e2e:
         --db "${EVEYS_OCPP_CLICKHOUSE_DB}"
     - .venv/bin/pytest tests/e2e -v --no-cov
 
+# ---- Tier-3 compose smoke (ADR-0024, docs/10-testing-strategy.md) ----------
+# Builds the production-shaped image from `deploy/Dockerfile`, brings the
+# entire `deploy/compose/docker-compose.yml` stack up via Docker-in-Docker,
+# asserts every container reaches a stable Running state with no restart
+# count, and drives a real OCPP charger flow through the published WS
+# port.  This is the layer that catches deploy-time wiring bugs (env vars,
+# Kafka listener layout, ENTRYPOINT/CMD shape, healthchecks) — bugs that
+# Tier-1 unit and Tier-2 integration tests cannot see.
+tests:compose-smoke:
+  stage: test
+  image: docker:27
+  services:
+    - name: docker:27-dind
+      alias: docker
+      command: ["--tls=false"]
+  variables:
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_TLS_CERTDIR: ""
+    # `COMPOSE_SMOKE_REQUIRE=1` flips the conftest's "skip if Docker
+    # missing" into a hard failure — a green-but-skipped pipeline is
+    # the original class of bug this layer was added to prevent.
+    COMPOSE_SMOKE: "1"
+    COMPOSE_SMOKE_REQUIRE: "1"
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes:
+        - deploy/**/*
+        - tests/compose_smoke/**/*
+        - pyproject.toml
+        - src/eveys_ocpp/__main__.py
+        - src/eveys_ocpp/clickhouse/ingestor.py
+        - .gitlab-ci.yml
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  before_script:
+    - apk add --no-cache python3 py3-pip docker-cli-compose curl bash
+    # Install uv so we can build a venv for pytest itself (the tests
+    # are Python; only the stack-under-test is in Docker).
+    - curl -LsSf https://astral.sh/uv/install.sh | sh
+    - export PATH="$HOME/.local/bin:$PATH"
+    - uv venv --clear .venv
+    - uv pip install --python .venv/bin/python -e ".[dev]"
+    # Generate gRPC stubs that alembic + the test suite import
+    # transitively. (Same incantation as the other test jobs.)
+    - .venv/bin/python -m grpc_tools.protoc
+        --plugin=protoc-gen-grpclib_python=.venv/bin/protoc-gen-grpclib_python
+        --proto_path=proto
+        --python_out=src/eveys_ocpp/_generated
+        --grpclib_python_out=src/eveys_ocpp/_generated
+        proto/ocpp_gw/v1/gateway.proto
+        proto/events/v1/events.proto
+    - find src/eveys_ocpp/_generated -mindepth 1 -type d -exec touch {}/__init__.py \;
+  script:
+    # Wait for the dind daemon. `docker info` blocks until the daemon
+    # is reachable; this is the standard dind warm-up dance.
+    - until docker info >/dev/null 2>&1; do echo "  waiting for dockerd..."; sleep 1; done
+    # Build the image referenced by the compose file. `make compose-smoke`
+    # would also build, but we split it so a build failure is a
+    # distinct, faster signal than a stack-startup failure.
+    - docker compose -f deploy/compose/docker-compose.yml build
+    # Bring the stack up, run the smoke suite, tear down. The Make
+    # target captures container logs into `.compose-smoke-logs/` even
+    # on failure — those are surfaced as job artifacts below.
+    - make compose-smoke
+  after_script:
+    # Even on failure, surface container logs so a remote-runner crash
+    # produces the same debug signal as a laptop crash.
+    - mkdir -p .compose-smoke-logs
+    - for c in eveys-ocpp eveys-ocpp-clickhouse-ingestor eveys-ocpp-postgres eveys-ocpp-redis eveys-ocpp-kafka eveys-ocpp-clickhouse; do
+        docker logs "$c" > ".compose-smoke-logs/$c.log" 2>&1 || true;
+      done
+  artifacts:
+    name: "compose-smoke-logs-$CI_JOB_ID"
+    when: always
+    paths:
+      - .compose-smoke-logs/
+    expire_in: 7 days
+
 # ---- docs (tagged-release artifact, unchanged) -----------------------------
 
 docs:build:
