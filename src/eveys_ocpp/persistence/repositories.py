@@ -8,12 +8,22 @@ keeps the handler/persistence boundary narrow.
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
+from typing import Any
 
 from sqlalchemy import delete, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .models import ChargePoint, LocalAuthList, LocalAuthListEntry, Reservation, Transaction
+from .models import (
+    ChargePoint,
+    ChargingProfile,
+    ChargingSchedulePeriod,
+    LocalAuthList,
+    LocalAuthListEntry,
+    Reservation,
+    Transaction,
+)
 
 
 async def upsert_charge_point_boot(
@@ -392,3 +402,155 @@ async def cancel_reservation(session: AsyncSession, *, reservation_id: int) -> b
     )
     rowcount: int = result.rowcount  # type: ignore[attr-defined]
     return rowcount > 0
+
+
+# ---- Smart Charging (E2-1E, ADR-0022) -------------------------------------
+
+
+async def upsert_charging_profile(
+    session: AsyncSession,
+    *,
+    cp_id: str,
+    connector_id: int,
+    profile: dict[str, Any],
+    schedule_periods: list[dict[str, Any]],
+) -> int:
+    """Insert-or-replace a profile mirror after the charger Accepts.
+
+    Upsert key is `(charge_point_id, charging_profile_id)`. The
+    operator-supplied `chargingProfileId` is the natural identifier
+    on the OCPP wire; replacing a profile with the same ID
+    wholesale-replaces the schedule (delete + reinsert children).
+
+    Returns the gateway-side row PK.
+    """
+    cp_row = await _resolve_charge_point(session, cp_id)
+    profile_id = int(profile["charging_profile_id"])
+
+    existing = await session.scalar(
+        select(ChargingProfile).where(
+            ChargingProfile.charge_point_id == cp_row.id,
+            ChargingProfile.charging_profile_id == profile_id,
+        )
+    )
+
+    if existing is None:
+        row = ChargingProfile(
+            charge_point_id=cp_row.id,
+            connector_id=connector_id,
+            charging_profile_id=profile_id,
+            status="Active",
+            **_charging_profile_fields(profile),
+        )
+        session.add(row)
+        await session.flush()
+    else:
+        # Wipe child rows, update parent fields, set Active.
+        await session.execute(
+            delete(ChargingSchedulePeriod).where(
+                ChargingSchedulePeriod.charging_profile_id == existing.id
+            )
+        )
+        existing.connector_id = connector_id
+        existing.status = "Active"
+        for k, v in _charging_profile_fields(profile).items():
+            setattr(existing, k, v)
+        row = existing
+        await session.flush()
+
+    period_rows = [
+        ChargingSchedulePeriod(
+            charging_profile_id=row.id,
+            start_period=int(p["start_period"]),
+            limit=Decimal(str(p["limit"])),
+            number_phases=int(p["number_phases"]) if p.get("number_phases") is not None else None,
+        )
+        for p in schedule_periods
+    ]
+    session.add_all(period_rows)
+    await session.flush()
+    return row.id
+
+
+async def clear_charging_profiles(
+    session: AsyncSession,
+    *,
+    cp_id: str,
+    profile_id: int | None,
+    connector_id: int | None,
+    purpose: str | None,
+    stack_level: int | None,
+) -> int:
+    """Mark profiles matching the filter as `Cleared`. Returns the
+    number of rows updated. Each filter is optional — None means "any".
+
+    Mirrors the OCPP `ClearChargingProfile` semantics: charger removes
+    every profile that matches all set filters; gateway flips the same
+    set in its mirror.
+    """
+    cp_row = await _resolve_charge_point(session, cp_id)
+    stmt = update(ChargingProfile).where(
+        ChargingProfile.charge_point_id == cp_row.id,
+        ChargingProfile.status == "Active",
+    )
+    if profile_id is not None:
+        stmt = stmt.where(ChargingProfile.charging_profile_id == profile_id)
+    if connector_id is not None:
+        stmt = stmt.where(ChargingProfile.connector_id == connector_id)
+    if purpose is not None:
+        stmt = stmt.where(ChargingProfile.charging_profile_purpose == purpose)
+    if stack_level is not None:
+        stmt = stmt.where(ChargingProfile.stack_level == stack_level)
+    result = await session.execute(
+        stmt.values(status="Cleared").execution_options(synchronize_session=False)
+    )
+    rowcount: int = result.rowcount  # type: ignore[attr-defined]
+    return rowcount
+
+
+def _charging_profile_fields(profile: dict[str, Any]) -> dict[str, Any]:
+    """Translate a wire-shape profile dict into ChargingProfile column kwargs.
+
+    The dict shape comes from the gRPC translator: it carries OCPP
+    field names verbatim except the schedule, which is split into
+    parent fields (`charging_rate_unit`, `min_charging_rate`,
+    `schedule_duration`, `start_schedule`) and the period list (passed
+    separately to ``upsert_charging_profile``).
+    """
+    schedule = profile.get("charging_schedule") or {}
+    if not isinstance(schedule, dict):
+        schedule = {}
+    return {
+        "stack_level": int(profile.get("stack_level", 0) or 0),
+        "charging_profile_purpose": str(profile.get("charging_profile_purpose") or ""),
+        "charging_profile_kind": str(profile.get("charging_profile_kind") or ""),
+        "recurrency_kind": (
+            str(profile["recurrency_kind"]) if profile.get("recurrency_kind") else None
+        ),
+        "valid_from": _coerce_optional_datetime(profile.get("valid_from")),
+        "valid_to": _coerce_optional_datetime(profile.get("valid_to")),
+        "transaction_id": (
+            int(profile["transaction_id"]) if profile.get("transaction_id") is not None else None
+        ),
+        "charging_rate_unit": str(schedule.get("charging_rate_unit") or ""),
+        "min_charging_rate": (
+            Decimal(str(schedule["min_charging_rate"]))
+            if schedule.get("min_charging_rate") is not None
+            else None
+        ),
+        "schedule_duration": (
+            int(schedule["duration"]) if schedule.get("duration") is not None else None
+        ),
+        "start_schedule": _coerce_optional_datetime(schedule.get("start_schedule")),
+    }
+
+
+def _coerce_optional_datetime(value: object) -> datetime | None:
+    """Accept either a datetime, an ISO-8601 string, or None."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        return datetime.fromisoformat(value)
+    return None
