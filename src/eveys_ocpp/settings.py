@@ -699,6 +699,45 @@ class Settings(BaseSettings):
         },
     )
 
+    # ---- Authorize cache (E3-4) --------------------------------------------
+    backend_authorize_cache_enabled: bool = Field(
+        default=True,
+        description=(
+            "Enable Redis caching of the Authorize result keyed on "
+            "`(cp_id, id_tag)`. Cache hits short-circuit the backend "
+            "round-trip on the OCPP hot path."
+        ),
+        json_schema_extra={
+            "category": "authorize_cache",
+            "impact": (
+                "Disabling pushes every Authorize through the backend — "
+                "useful for ops debugging when a stale cached "
+                "`Blocked` is suspected. Re-enable as soon as the "
+                "issue is understood."
+            ),
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+    backend_authorize_cache_ttl_seconds: int = Field(
+        default=30,
+        ge=1,
+        le=3600,
+        description="TTL on cached Authorize entries.",
+        json_schema_extra={
+            "category": "authorize_cache",
+            "impact": (
+                "Short enough that `Blocked`/`Expired` decisions "
+                "propagate within ~30 s; long enough to absorb depot-"
+                "shift bursts (a fleet returning at once = same-tag "
+                "taps within a minute). Drop toward 1 s for ops "
+                "debugging."
+            ),
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+
 
 def get_settings() -> Settings:
     """Build a fresh `Settings` from the current environment.

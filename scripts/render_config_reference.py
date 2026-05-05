@@ -53,6 +53,7 @@ _CATEGORY_ORDER: Final[tuple[str, ...]] = (
     "idempotency",
     "clickhouse_ingest",
     "backend_integration",
+    "authorize_cache",
 )
 
 # Human-readable H2 heading per category. Mirrors the hand-written seed.
@@ -70,6 +71,7 @@ _SECTION_TITLES: Final[dict[str, str]] = {
     "idempotency": "Idempotency cache (E2-11)",
     "clickhouse_ingest": "ClickHouse ingestion sidecar (ADR-0020)",
     "backend_integration": "Backend integration (ADR-0023, E3-2..E3-6)",
+    "authorize_cache": "Authorize cache (E3-4)",
 }
 
 # Optional per-section blockquote shown immediately under the H2.

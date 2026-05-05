@@ -26,6 +26,7 @@ ALLOWED_CATEGORIES = {
     "idempotency",
     "clickhouse_ingest",
     "backend_integration",
+    "authorize_cache",
 }
 
 ALLOWED_STABILITY = {"tunable", "structural", "dev-only"}

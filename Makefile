@@ -11,7 +11,7 @@ PYTHON     ?= $(shell command -v python3.13 || command -v python3.12)
 UV         ?= $(shell command -v uv)
 COMPOSE    := docker compose -f deploy/compose/docker-compose.yml
 
-.PHONY: help doctor install format lint types tests e2e smoke precommit clean distclean \
+.PHONY: help doctor install format lint types tests e2e smoke compose-smoke precommit clean distclean \
         compose-up compose-down compose-status compose-down-volumes compose-wait \
         build-image protoc ch-migrate docs docs-clean config-export config-export-check
 
@@ -38,6 +38,7 @@ help:
 	@echo "  make build-image        build the eveys-ocpp:dev container image"
 	@echo "  make ch-migrate         apply ClickHouse migrations (E2-13, ADR-0020)"
 	@echo "  make e2e                full e2e: compose-up + alembic + ch-migrate + e2e tests + compose-down"
+	@echo "  make compose-smoke      Tier-3 smoke: build image + bring real compose stack up + assert it stays up + drive a charger flow (see ADR-0024)"
 	@echo ""
 	@echo "Docs:"
 	@echo "  make docs               build the docs site (Sphinx + MyST)"
@@ -182,6 +183,29 @@ e2e: install
 	rc=$$?; \
 	echo ">> tearing down..."; \
 	$(MAKE) compose-down; \
+	exit $$rc
+
+# Tier-3 compose-smoke (ADR-0024). Builds the production-shaped image
+# from `deploy/Dockerfile`, brings the entire compose stack up, applies
+# Postgres + ClickHouse schemas, runs `tests/compose_smoke/` against
+# the running stack, tears down. Catches the bug class that ships
+# green through unit + integration tests but breaks `docker compose up`
+# on a fresh dev laptop or in production. See `docs/10-testing-strategy.md`.
+#
+# Slower than `make tests` (~ 90s); not run as part of `make tests` so
+# the fast inner loop stays fast. CI runs it on MRs that touch
+# `deploy/`, `tests/compose_smoke/`, or `pyproject.toml`.
+compose-smoke: install
+	@echo ">> Tier-3 compose smoke (ADR-0024)..."
+	@echo ">> running compose-smoke tests against the production-shaped stack..."
+	@echo "   (the suite's session fixture owns docker compose up/down + schema apply)"
+	@COMPOSE_SMOKE=1 $(VENV)/bin/pytest tests/compose_smoke -v --no-cov; \
+	rc=$$?; \
+	echo ">> capturing container logs as artifacts (best-effort)..."; \
+	mkdir -p .compose-smoke-logs && \
+	for c in eveys-ocpp eveys-ocpp-clickhouse-ingestor eveys-ocpp-postgres eveys-ocpp-redis eveys-ocpp-kafka eveys-ocpp-clickhouse; do \
+	    docker logs $$c > .compose-smoke-logs/$$c.log 2>&1 || true; \
+	done; \
 	exit $$rc
 
 # ---- E3-10 mock backend -----------------------------------------------------

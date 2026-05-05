@@ -55,6 +55,7 @@ from eveys_ocpp.platform import (
     BackendBusinessError,
     BackendUnavailableError,
 )
+from eveys_ocpp.platform import IdTagInfo as PlatformIdTagInfo
 
 if TYPE_CHECKING:
     from eveys_ocpp.connection import EveysChargePoint
@@ -95,6 +96,19 @@ async def handle(
         log.info("authorize.no_backend_client", id_tag=id_tag, decision="Accepted")
         return call_result.Authorize(id_tag_info=IdTagInfo(status=AuthorizationStatus.accepted))
 
+    # Cache lookup. Hit → forward immediately, no backend round-trip
+    # (the OCPP hot-path P99 budget collapses to whatever Redis takes,
+    # ~sub-ms). Miss / cache outage → fall through to the backend.
+    if cp.authorize_cache is not None:
+        cached = await cp.authorize_cache.get(cp_id=cp.id, id_tag=id_tag)
+        if cached is not None:
+            log.info(
+                "authorize.cache_hit",
+                id_tag=id_tag,
+                decision=cached.status,
+            )
+            return _id_tag_info_to_response(cached)
+
     idempotency_key = f"ocpp-auth-{cp.id}-{id_tag}-{message_id or 'no-msg-id'}"
 
     try:
@@ -109,7 +123,9 @@ async def handle(
         # Backend understood the request and refused (e.g.
         # `UNKNOWN_ID_TAG`). Pass that through as Invalid — the
         # charger doesn't need the error_code, just the OCPP-level
-        # outcome.
+        # outcome. We deliberately do NOT cache this: a backend
+        # fix landing for an id_tag should reach the charger on
+        # the next tap, not after the cache TTL.
         log.warning(
             "authorize.business_rejected",
             id_tag=id_tag,
@@ -118,34 +134,48 @@ async def handle(
         )
         return call_result.Authorize(id_tag_info=IdTagInfo(status=AuthorizationStatus.invalid))
 
+    # Cache the freshly-resolved result (Accepted/Blocked/Expired/Invalid/
+    # ConcurrentTx all alike — caching `Blocked` is just as valuable
+    # as caching `Accepted` for refusing repeated taps).
+    if cp.authorize_cache is not None:
+        await cp.authorize_cache.set(cp_id=cp.id, id_tag=id_tag, info=result.id_tag_info)
+
     return _result_to_response(result)
 
 
-def _result_to_response(result: AuthorizeResult) -> call_result.Authorize:
-    """Translate the typed `AuthorizeResult` to an OCPP `IdTagInfo`."""
-    status = _STATUS_MAP.get(result.id_tag_info.status)
+def _id_tag_info_to_response(info: PlatformIdTagInfo) -> call_result.Authorize:
+    """Translate a typed platform `IdTagInfo` (from cache or fresh
+    backend) to an OCPP `IdTagInfo`.
+
+    Unknown / forward-compat status strings map to Invalid — safer
+    default than Accepted for an unrecognised shape.
+    """
+    status = _STATUS_MAP.get(info.status)
     if status is None:
         log.warning(
             "authorize.unknown_status_from_backend",
-            id_tag=result.id_tag,
-            backend_status=result.id_tag_info.status,
+            backend_status=info.status,
         )
         status = AuthorizationStatus.invalid
-
-    log.info(
-        "authorize.decided",
-        id_tag=result.id_tag,
-        decision=status.value,
-        backend_request_id=result.request_id,
-    )
 
     return call_result.Authorize(
         id_tag_info=IdTagInfo(
             status=status,
-            parent_id_tag=result.id_tag_info.parent_id_tag,
-            expiry_date=result.id_tag_info.expiry_date,
+            parent_id_tag=info.parent_id_tag,
+            expiry_date=info.expiry_date,
         )
     )
+
+
+def _result_to_response(result: AuthorizeResult) -> call_result.Authorize:
+    """Translate the typed `AuthorizeResult` to an OCPP `IdTagInfo`."""
+    log.info(
+        "authorize.decided",
+        id_tag=result.id_tag,
+        decision=result.id_tag_info.status,
+        backend_request_id=result.request_id,
+    )
+    return _id_tag_info_to_response(result.id_tag_info)
 
 
 def _fallback(

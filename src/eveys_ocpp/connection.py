@@ -33,7 +33,7 @@ if TYPE_CHECKING:
 
     from eveys_ocpp.events import EventProducer
     from eveys_ocpp.idempotency import IdempotencyCache
-    from eveys_ocpp.platform import BackendHTTPClient
+    from eveys_ocpp.platform import AuthorizeCache, BackendHTTPClient
     from eveys_ocpp.registry import Registry
     from eveys_ocpp.settings import Settings
 
@@ -47,6 +47,7 @@ class EveysChargePoint(Cpv16):
     - Redis registry handle (None in unit tests + Kafka-less stacks)
     - Kafka event producer (None in unit tests + Kafka-less stacks)
     - Backend HTTP client (None in unit tests / when backend_base_url is empty)
+    - Authorize cache (None when no Redis is wired)
     - per-charger logging context
     """
 
@@ -61,6 +62,7 @@ class EveysChargePoint(Cpv16):
         event_producer: EventProducer | None = None,
         idempotency: IdempotencyCache | None = None,
         backend_client: BackendHTTPClient | None = None,
+        authorize_cache: AuthorizeCache | None = None,
     ) -> None:
         super().__init__(cp_id, connection)
         self.session_factory = session_factory
@@ -69,6 +71,7 @@ class EveysChargePoint(Cpv16):
         self.event_producer = event_producer
         self.idempotency = idempotency
         self.backend_client = backend_client
+        self.authorize_cache = authorize_cache
 
     # ---- handler delegation -------------------------------------------------
     # Each handler module exports a `handle(...)` coroutine. We thin-wrap
