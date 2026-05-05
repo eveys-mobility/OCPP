@@ -43,7 +43,7 @@ from grpclib.client import Channel
 from ocpp.routing import on
 from ocpp.v16 import ChargePoint as OcppCp
 from ocpp.v16 import call, call_result
-from ocpp.v16.enums import Action
+from ocpp.v16.enums import Action, ClearCacheStatus, DataTransferStatus
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import create_async_engine
 from websockets.asyncio.client import connect as ws_connect
@@ -241,6 +241,242 @@ async def test_remote_stop_routes_across_two_pods(redis_client: Redis) -> None:
         assert response.status == gateway_pb2.REMOTE_STOP_STATUS_ACCEPTED
         pod_a_cp.call.assert_awaited_once()
         assert pod_a_cp.call.await_args.args[0].transaction_id == 99
+    finally:
+        pod_b_grpc.close()
+        await pod_b_grpc.wait_closed()
+        await pod_a_bus.stop()
+        await pod_b_bus.stop()
+
+
+@pytest.mark.asyncio
+async def test_get_configuration_routes_across_two_pods(redis_client: Redis) -> None:
+    """E2-1A: GetConfiguration's list-of-dicts response shape survives the
+    JSON envelope round-trip across the bus and lands as typed proto on
+    the requester side.
+
+    The owning side reconstructs an `ocpp.v16.call.GetConfiguration`
+    dataclass from the bus payload, dispatches it via `cp.call(...)`, and
+    serialises the response — which contains parallel arrays for
+    `configuration_key` (list of dicts) and `unknown_key` (list of
+    strings). If the bus's serialiser ever drops fields or coerces dicts
+    into something else, this test fails before production does.
+    """
+    settings = Settings()
+
+    pod_a_cp = MagicMock()
+    pod_a_cp.id = "CP_GETCFG"
+    # Use a real ocpp.v16.call_result dataclass so the owning side's
+    # `is_dataclass(...) → asdict(...)` path runs (production charger
+    # replies are these dataclasses; a MagicMock would fall through
+    # to a status-only reply and the test would catch the wrong bug).
+    pod_a_response = call_result.GetConfiguration(
+        configuration_key=[
+            {"key": "HeartbeatInterval", "readonly": False, "value": "60"},
+            {"key": "NumberOfConnectors", "readonly": True, "value": "2"},
+        ],
+        unknown_key=["NoSuchKey"],
+    )
+    pod_a_cp.call = AsyncMock(return_value=pod_a_response)
+    pod_a_connections = ConnectionMap()
+    pod_a_connections.add(pod_a_cp)
+
+    pod_a_registry = AsyncMock()
+    pod_a_registry.get_pod = AsyncMock(return_value="pod-A")
+
+    pod_a_bus = CommandBus(
+        redis_client, pod_id="pod-A", connections=pod_a_connections, request_timeout_seconds=5.0
+    )
+    OcppGatewayService(
+        session_factory=MagicMock(),
+        settings=settings,
+        connections=pod_a_connections,
+        registry=pod_a_registry,
+        bus=pod_a_bus,
+    )
+
+    pod_b_connections = ConnectionMap()
+    pod_b_registry = AsyncMock()
+    pod_b_registry.get_pod = AsyncMock(return_value="pod-A")
+    pod_b_bus = CommandBus(
+        redis_client, pod_id="pod-B", connections=pod_b_connections, request_timeout_seconds=5.0
+    )
+    pod_b_service = OcppGatewayService(
+        session_factory=MagicMock(),
+        settings=settings,
+        connections=pod_b_connections,
+        registry=pod_b_registry,
+        bus=pod_b_bus,
+    )
+
+    await pod_a_bus.start()
+    await pod_b_bus.start()
+    pod_b_grpc, pod_b_port = await _spawn_grpc(pod_b_service)
+    try:
+        async with Channel("127.0.0.1", pod_b_port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            response = await stub.GetConfiguration(
+                gateway_pb2.GetConfigurationRequest(
+                    cp_id="CP_GETCFG",
+                    keys=["HeartbeatInterval", "NumberOfConnectors", "NoSuchKey"],
+                )
+            )
+
+        # Both known keys round-tripped with their readonly flags preserved.
+        assert len(response.configuration_key) == 2
+        keys_by_name = {ck.key: ck for ck in response.configuration_key}
+        assert keys_by_name["HeartbeatInterval"].readonly is False
+        assert keys_by_name["HeartbeatInterval"].value == "60"
+        assert keys_by_name["NumberOfConnectors"].readonly is True
+        assert keys_by_name["NumberOfConnectors"].value == "2"
+        # Unknown keys come back as a flat string list.
+        assert list(response.unknown_key) == ["NoSuchKey"]
+
+        # Pod A's charger received an OCPP GetConfiguration with the
+        # forwarded `keys` list. (The bus serialises the payload as a
+        # dict; the owning side reconstructs the dataclass.)
+        pod_a_cp.call.assert_awaited_once()
+        ocpp_req = pod_a_cp.call.await_args.args[0]
+        assert ocpp_req.key == ["HeartbeatInterval", "NumberOfConnectors", "NoSuchKey"]
+    finally:
+        pod_b_grpc.close()
+        await pod_b_grpc.wait_closed()
+        await pod_a_bus.stop()
+        await pod_b_bus.stop()
+
+
+@pytest.mark.asyncio
+async def test_clear_cache_routes_across_two_pods(redis_client: Redis) -> None:
+    """E2-1A: ClearCache is an empty-payload OCPP call. The bus must
+    happily ferry a request with no fields to set on the dataclass."""
+    settings = Settings()
+
+    pod_a_cp = MagicMock()
+    pod_a_cp.id = "CP_CLEAR"
+    pod_a_response = call_result.ClearCache(status=ClearCacheStatus.accepted)
+    pod_a_cp.call = AsyncMock(return_value=pod_a_response)
+    pod_a_connections = ConnectionMap()
+    pod_a_connections.add(pod_a_cp)
+
+    pod_a_registry = AsyncMock()
+    pod_a_registry.get_pod = AsyncMock(return_value="pod-A")
+
+    pod_a_bus = CommandBus(
+        redis_client, pod_id="pod-A", connections=pod_a_connections, request_timeout_seconds=5.0
+    )
+    OcppGatewayService(
+        session_factory=MagicMock(),
+        settings=settings,
+        connections=pod_a_connections,
+        registry=pod_a_registry,
+        bus=pod_a_bus,
+    )
+
+    pod_b_connections = ConnectionMap()
+    pod_b_registry = AsyncMock()
+    pod_b_registry.get_pod = AsyncMock(return_value="pod-A")
+    pod_b_bus = CommandBus(
+        redis_client, pod_id="pod-B", connections=pod_b_connections, request_timeout_seconds=5.0
+    )
+    pod_b_service = OcppGatewayService(
+        session_factory=MagicMock(),
+        settings=settings,
+        connections=pod_b_connections,
+        registry=pod_b_registry,
+        bus=pod_b_bus,
+    )
+
+    await pod_a_bus.start()
+    await pod_b_bus.start()
+    pod_b_grpc, pod_b_port = await _spawn_grpc(pod_b_service)
+    try:
+        async with Channel("127.0.0.1", pod_b_port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            response = await stub.ClearCache(gateway_pb2.ClearCacheRequest(cp_id="CP_CLEAR"))
+        assert response.status == gateway_pb2.CLEAR_CACHE_STATUS_ACCEPTED
+        # ClearCache.req carries no fields per OCPP — confirm the
+        # owning side really did dispatch an empty-payload call.
+        pod_a_cp.call.assert_awaited_once()
+    finally:
+        pod_b_grpc.close()
+        await pod_b_grpc.wait_closed()
+        await pod_a_bus.stop()
+        await pod_b_bus.stop()
+
+
+@pytest.mark.asyncio
+async def test_data_transfer_routes_across_two_pods(redis_client: Redis) -> None:
+    """E2-1A: DataTransfer carries vendor-namespaced strings AND a
+    string reply payload back. Both directions exercise the bus's
+    string-field round-trip beyond the simple-status pattern that
+    RemoteStart/RemoteStop / Reset / ClearCache all share.
+    """
+    settings = Settings()
+
+    pod_a_cp = MagicMock()
+    pod_a_cp.id = "CP_DTX"
+    # Real ocpp.v16.call_result.DataTransfer so the owning side's
+    # asdict() path runs (matches what a real charger reply would be).
+    pod_a_response = call_result.DataTransfer(
+        status=DataTransferStatus.accepted,
+        data='{"reply":"ok","seq":7}',
+    )
+    pod_a_cp.call = AsyncMock(return_value=pod_a_response)
+    pod_a_connections = ConnectionMap()
+    pod_a_connections.add(pod_a_cp)
+
+    pod_a_registry = AsyncMock()
+    pod_a_registry.get_pod = AsyncMock(return_value="pod-A")
+
+    pod_a_bus = CommandBus(
+        redis_client, pod_id="pod-A", connections=pod_a_connections, request_timeout_seconds=5.0
+    )
+    OcppGatewayService(
+        session_factory=MagicMock(),
+        settings=settings,
+        connections=pod_a_connections,
+        registry=pod_a_registry,
+        bus=pod_a_bus,
+    )
+
+    pod_b_connections = ConnectionMap()
+    pod_b_registry = AsyncMock()
+    pod_b_registry.get_pod = AsyncMock(return_value="pod-A")
+    pod_b_bus = CommandBus(
+        redis_client, pod_id="pod-B", connections=pod_b_connections, request_timeout_seconds=5.0
+    )
+    pod_b_service = OcppGatewayService(
+        session_factory=MagicMock(),
+        settings=settings,
+        connections=pod_b_connections,
+        registry=pod_b_registry,
+        bus=pod_b_bus,
+    )
+
+    await pod_a_bus.start()
+    await pod_b_bus.start()
+    pod_b_grpc, pod_b_port = await _spawn_grpc(pod_b_service)
+    try:
+        async with Channel("127.0.0.1", pod_b_port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            response = await stub.DataTransfer(
+                gateway_pb2.DataTransferRequest(
+                    cp_id="CP_DTX",
+                    vendor_id="acme.fastcharge",
+                    message_id="ping",
+                    data='{"hi":1}',
+                )
+            )
+        assert response.status == gateway_pb2.DATA_TRANSFER_STATUS_ACCEPTED
+        # Vendor reply payload survived the bus → grpc translation.
+        assert response.data == '{"reply":"ok","seq":7}'
+
+        # Pod A's charger got the OCPP DataTransfer with all three
+        # vendor-namespaced fields intact across the bus.
+        pod_a_cp.call.assert_awaited_once()
+        ocpp_req = pod_a_cp.call.await_args.args[0]
+        assert ocpp_req.vendor_id == "acme.fastcharge"
+        assert ocpp_req.message_id == "ping"
+        assert ocpp_req.data == '{"hi":1}'
     finally:
         pod_b_grpc.close()
         await pod_b_grpc.wait_closed()

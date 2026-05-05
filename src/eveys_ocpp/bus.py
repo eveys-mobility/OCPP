@@ -88,12 +88,22 @@ class BusReply:
 
     ``ok`` carries an OCPP status string ("Accepted", "Rejected", ...)
     that the caller's existing translator turns into a proto enum.
+    ``ocpp_response`` carries the full OCPP response payload as a dict
+    (the result of ``dataclasses.asdict(...)``) for RPCs whose reply
+    has more than just a status — ``GetConfiguration`` returns a list
+    of configuration_key dicts and a list of unknown_key strings;
+    ``DataTransfer`` returns an optional ``data`` payload alongside
+    its status. The requester reconstructs a duck-typed response
+    object whose attributes match what the local-path code reads.
+    For status-only RPCs (RemoteStart / RemoteStop / Reset / etc.)
+    ``ocpp_response`` is left at None — ``ocpp_status`` is enough.
     ``error`` carries a stable ``error_code`` so the caller can map to
     the right gRPC status.
     """
 
     ok: bool
     ocpp_status: str | None = None
+    ocpp_response: dict[str, Any] | None = None
     error_code: str | None = None
     error_message: str | None = None
 
@@ -335,6 +345,12 @@ class CommandBus:
         }
         if reply.ok:
             envelope["ocpp_status"] = reply.ocpp_status
+            # Additive on the v=1 envelope: optional full response payload
+            # for RPCs whose reply has more than just a status. Old
+            # readers ignore this field; new readers use it to
+            # reconstruct the full response on the requester side.
+            if reply.ocpp_response is not None:
+                envelope["ocpp_response"] = reply.ocpp_response
         else:
             envelope["error_code"] = reply.error_code
             envelope["error_message"] = reply.error_message
@@ -359,7 +375,14 @@ class CommandBus:
             return  # not ours, or already resolved (timeout)
 
         if envelope.get("status") == "ok":
-            future.set_result(BusReply(ok=True, ocpp_status=envelope.get("ocpp_status")))
+            ocpp_response = envelope.get("ocpp_response")
+            future.set_result(
+                BusReply(
+                    ok=True,
+                    ocpp_status=envelope.get("ocpp_status"),
+                    ocpp_response=ocpp_response if isinstance(ocpp_response, dict) else None,
+                )
+            )
         else:
             future.set_result(
                 BusReply(

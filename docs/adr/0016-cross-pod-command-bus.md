@@ -25,6 +25,8 @@ Implement E2-10 as a Redis pub/sub command bus on the existing Redis pool. Two c
 
 Envelope is JSON with a `v` field; mismatch is a hard drop. Owning-side dispatch reuses the existing OCPP request dataclasses via a small `rpc_name → dataclass` registry; the wire payload is `dataclasses.asdict(...)`.
 
+The reply envelope carries the OCPP response status string (`ocpp_status`) and, for RPCs whose reply has more than just a status, an additive `ocpp_response` field with the full `dataclasses.asdict(response)` payload (E2-1A.e2e — added for `GetConfiguration`'s list-of-dicts and `DataTransfer`'s optional `data` field). Adding the field within `v=1` was deliberate: old readers ignore unknown keys, new readers see the payload, no rolling-deploy break.
+
 ## Alternatives considered
 
 - **NATS request/reply** — cleaner request/reply primitive than Redis pub/sub. Rejected: adds a new dependency to deploy, monitor, and secure for a problem we can solve with infrastructure we already run.
