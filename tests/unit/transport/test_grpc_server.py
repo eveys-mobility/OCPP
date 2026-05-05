@@ -72,6 +72,8 @@ def test_service_class_implements_every_rpc(fake_session_factory: Any, settings:
         "DataTransfer",
         "GetLocalListVersion",
         "SendLocalList",
+        "ReserveNow",
+        "CancelReservation",
     }
     for rpc in expected:
         method = getattr(service, rpc, None)
@@ -1361,6 +1363,257 @@ async def test_send_local_list_unspecified_authorization_status_invalid(
                             )
                         ],
                     )
+                )
+        assert exc.value.status == Status.INVALID_ARGUMENT
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+# ---- E2-1C ReserveNow / CancelReservation -----------------------------------
+
+
+@pytest.mark.asyncio
+async def test_reserve_now_accepted_assigns_id_and_activates(
+    fake_session_factory: Any, settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Happy path: gateway allocates a reservation_id by inserting a
+    Pending row, charger Accepts, gateway flips it to Active. The
+    response carries the assigned ID so the caller can use it later
+    for CancelReservation."""
+    _, cm = _connected_cp("CP_001", "Accepted")
+    service = OcppGatewayService(
+        session_factory=fake_session_factory, settings=settings, connections=cm
+    )
+
+    insert_calls: list[dict[str, Any]] = []
+    activate_calls: list[int] = []
+    delete_calls: list[int] = []
+
+    async def fake_insert(_session: Any, **kwargs: Any) -> int:
+        insert_calls.append(kwargs)
+        return 777
+
+    async def fake_activate(_session: Any, *, reservation_id: int) -> None:
+        activate_calls.append(reservation_id)
+
+    async def fake_delete(_session: Any, *, reservation_id: int) -> None:
+        delete_calls.append(reservation_id)
+
+    monkeypatch.setattr("eveys_ocpp.transport.grpc_server.insert_pending_reservation", fake_insert)
+    monkeypatch.setattr("eveys_ocpp.transport.grpc_server.activate_reservation", fake_activate)
+    monkeypatch.setattr("eveys_ocpp.transport.grpc_server.delete_reservation", fake_delete)
+
+    server, port = await _spawn_server(service)
+    try:
+        async with Channel("127.0.0.1", port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            response = await stub.ReserveNow(
+                gateway_pb2.ReserveNowRequest(
+                    cp_id="CP_001",
+                    connector_id=2,
+                    expiry_date="2026-12-31T23:59:59+00:00",
+                    id_tag="TAG_VIP",
+                    parent_id_tag="FAMILY_1",
+                )
+            )
+        assert response.status == gateway_pb2.RESERVE_NOW_STATUS_ACCEPTED
+        assert response.reservation_id == 777
+        # Pending row was inserted with the operator's metadata.
+        assert insert_calls[0]["cp_id"] == "CP_001"
+        assert insert_calls[0]["connector_id"] == 2
+        assert insert_calls[0]["id_tag"] == "TAG_VIP"
+        assert insert_calls[0]["parent_id_tag"] == "FAMILY_1"
+        # Active flip happened with the assigned id; no delete.
+        assert activate_calls == [777]
+        assert delete_calls == []
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_reserve_now_charger_occupied_drops_pending_row(
+    fake_session_factory: Any, settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Charger reports Occupied → the Pending row is deleted (it
+    never came alive on the charger). The response still carries the
+    allocated ID for caller-side correlation."""
+    _, cm = _connected_cp("CP_001", "Occupied")
+    service = OcppGatewayService(
+        session_factory=fake_session_factory, settings=settings, connections=cm
+    )
+
+    activate_calls: list[int] = []
+    delete_calls: list[int] = []
+
+    async def fake_insert(_session: Any, **_kw: Any) -> int:
+        return 555
+
+    async def fake_activate(_session: Any, *, reservation_id: int) -> None:
+        activate_calls.append(reservation_id)
+
+    async def fake_delete(_session: Any, *, reservation_id: int) -> None:
+        delete_calls.append(reservation_id)
+
+    monkeypatch.setattr("eveys_ocpp.transport.grpc_server.insert_pending_reservation", fake_insert)
+    monkeypatch.setattr("eveys_ocpp.transport.grpc_server.activate_reservation", fake_activate)
+    monkeypatch.setattr("eveys_ocpp.transport.grpc_server.delete_reservation", fake_delete)
+
+    server, port = await _spawn_server(service)
+    try:
+        async with Channel("127.0.0.1", port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            response = await stub.ReserveNow(
+                gateway_pb2.ReserveNowRequest(
+                    cp_id="CP_001",
+                    connector_id=1,
+                    expiry_date="2026-12-31T23:59:59+00:00",
+                    id_tag="TAG",
+                )
+            )
+        assert response.status == gateway_pb2.RESERVE_NOW_STATUS_OCCUPIED
+        assert response.reservation_id == 555
+        assert activate_calls == []
+        assert delete_calls == [555]
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_reserve_now_invalid_expiry_returns_invalid_argument(
+    fake_session_factory: Any, settings: Settings
+) -> None:
+    """Malformed `expiry_date` is caught at the gateway boundary
+    before the Pending row is inserted (no orphan row from a bad
+    operator request)."""
+    _, cm = _connected_cp("CP_001", "Accepted")
+    service = OcppGatewayService(
+        session_factory=fake_session_factory, settings=settings, connections=cm
+    )
+    server, port = await _spawn_server(service)
+    try:
+        async with Channel("127.0.0.1", port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            with pytest.raises(GRPCError) as exc:
+                await stub.ReserveNow(
+                    gateway_pb2.ReserveNowRequest(
+                        cp_id="CP_001",
+                        connector_id=1,
+                        expiry_date="not-a-date",
+                        id_tag="TAG",
+                    )
+                )
+        assert exc.value.status == Status.INVALID_ARGUMENT
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_reserve_now_empty_id_tag_returns_invalid_argument(
+    fake_session_factory: Any, settings: Settings
+) -> None:
+    _, cm = _connected_cp("CP_001", "Accepted")
+    service = OcppGatewayService(
+        session_factory=fake_session_factory, settings=settings, connections=cm
+    )
+    server, port = await _spawn_server(service)
+    try:
+        async with Channel("127.0.0.1", port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            with pytest.raises(GRPCError) as exc:
+                await stub.ReserveNow(
+                    gateway_pb2.ReserveNowRequest(
+                        cp_id="CP_001",
+                        connector_id=1,
+                        expiry_date="2026-12-31T23:59:59+00:00",
+                        id_tag="",
+                    )
+                )
+        assert exc.value.status == Status.INVALID_ARGUMENT
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_cancel_reservation_accepted_marks_cancelled(
+    fake_session_factory: Any, settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Charger Accepts → mirror is marked Cancelled."""
+    _, cm = _connected_cp("CP_001", "Accepted")
+    service = OcppGatewayService(
+        session_factory=fake_session_factory, settings=settings, connections=cm
+    )
+
+    cancel_calls: list[int] = []
+
+    async def fake_cancel(_session: Any, *, reservation_id: int) -> bool:
+        cancel_calls.append(reservation_id)
+        return True
+
+    monkeypatch.setattr("eveys_ocpp.transport.grpc_server.cancel_reservation", fake_cancel)
+
+    server, port = await _spawn_server(service)
+    try:
+        async with Channel("127.0.0.1", port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            response = await stub.CancelReservation(
+                gateway_pb2.CancelReservationRequest(cp_id="CP_001", reservation_id=99)
+            )
+        assert response.status == gateway_pb2.CANCEL_RESERVATION_STATUS_ACCEPTED
+        assert cancel_calls == [99]
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_cancel_reservation_rejected_does_not_persist(
+    fake_session_factory: Any, settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Charger Rejects (already expired / consumed / unknown) → mirror
+    is left alone per ADR-0021. The charger's view wins."""
+    _, cm = _connected_cp("CP_001", "Rejected")
+    service = OcppGatewayService(
+        session_factory=fake_session_factory, settings=settings, connections=cm
+    )
+
+    async def boom(*args: Any, **kwargs: Any) -> bool:
+        raise AssertionError("must not call cancel_reservation on Rejected reply")
+
+    monkeypatch.setattr("eveys_ocpp.transport.grpc_server.cancel_reservation", boom)
+
+    server, port = await _spawn_server(service)
+    try:
+        async with Channel("127.0.0.1", port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            response = await stub.CancelReservation(
+                gateway_pb2.CancelReservationRequest(cp_id="CP_001", reservation_id=99)
+            )
+        assert response.status == gateway_pb2.CANCEL_RESERVATION_STATUS_REJECTED
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_cancel_reservation_zero_id_returns_invalid_argument(
+    fake_session_factory: Any, settings: Settings
+) -> None:
+    _, cm = _connected_cp("CP_001", "Accepted")
+    service = OcppGatewayService(
+        session_factory=fake_session_factory, settings=settings, connections=cm
+    )
+    server, port = await _spawn_server(service)
+    try:
+        async with Channel("127.0.0.1", port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            with pytest.raises(GRPCError) as exc:
+                await stub.CancelReservation(
+                    gateway_pb2.CancelReservationRequest(cp_id="CP_001", reservation_id=0)
                 )
         assert exc.value.status == Status.INVALID_ARGUMENT
     finally:
