@@ -138,6 +138,13 @@ sensitivity.
 | `EVEYS_OCPP_BACKEND_CIRCUIT_BREAKER_COOLDOWN_SECONDS` | `30.0` | 1.0–600.0 | tunable | no | How long the breaker stays open before letting one probe through (half-open). | Lower → faster recovery test but more load on a still-broken backend. |
 | `EVEYS_OCPP_BACKEND_AUTHORIZE_FALLBACK` | `reject` | `reject` / `accept_offline` | tunable | no | What the Authorize handler returns when the backend is unreachable past the retry budget. `reject` → `Invalid` (safe). `accept_offline` → `Accepted` with a 5-min expiry (operator opt-in to un-billable risk). | ADR-0023 § 'Fallback policy'. Default `reject` is the safe billing-relevant choice. |
 
+## Authorize cache (E3-4)
+
+| Variable | Default | Range | Stability | Secret | What it does | Impact of changing |
+|---|---|---|---|---|---|---|
+| `EVEYS_OCPP_BACKEND_AUTHORIZE_CACHE_ENABLED` | `true` | bool | tunable | no | Enable Redis caching of the Authorize result keyed on `(cp_id, id_tag)`. Cache hits short-circuit the backend round-trip on the OCPP hot path. | Disabling pushes every Authorize through the backend — useful for ops debugging when a stale cached `Blocked` is suspected. Re-enable as soon as the issue is understood. |
+| `EVEYS_OCPP_BACKEND_AUTHORIZE_CACHE_TTL_SECONDS` | `30` | 1–3600 | tunable | no | TTL on cached Authorize entries. | Short enough that `Blocked`/`Expired` decisions propagate within ~30 s; long enough to absorb depot-shift bursts (a fleet returning at once = same-tag taps within a minute). Drop toward 1 s for ops debugging. |
+
 ---
 
 ## Common operations

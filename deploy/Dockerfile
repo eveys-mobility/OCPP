@@ -75,4 +75,14 @@ USER nonroot
 # WS, gRPC, Prometheus metrics. Match `Settings` defaults.
 EXPOSE 9000 50051 9100
 
-ENTRYPOINT ["/usr/local/bin/python3.13", "-m", "eveys_ocpp"]
+# ENTRYPOINT/CMD split: the entrypoint is just the interpreter, the
+# default command runs the gateway. Splitting them this way lets a
+# sibling container (the `clickhouse-ingestor`) reuse this image and
+# run a different module by overriding `command:` in compose without
+# having to override the entrypoint as well. With the previous combined
+# `ENTRYPOINT ["python", "-m", "eveys_ocpp"]` shape, compose's
+# `command:` was silently appended as positional args and the entry
+# module ran regardless — the kind of misconfiguration the new
+# compose-smoke tier exists to catch (see ADR-0024).
+ENTRYPOINT ["/usr/local/bin/python3.13"]
+CMD ["-m", "eveys_ocpp"]

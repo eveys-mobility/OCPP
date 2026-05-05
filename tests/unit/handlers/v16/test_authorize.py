@@ -206,3 +206,122 @@ async def test_fallback_accept_offline_returns_accepted_with_expiry(
     assert expiry is not None
     assert "T" in expiry
     assert expiry.endswith("+00:00")
+
+
+# ---- Cache integration (E3-4) -------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_cache_hit_skips_backend_call(fake_cp: Any) -> None:
+    """Cache hit → forward the cached `IdTagInfo` directly; the
+    backend client is never invoked. This is the latency-budget
+    win the cache exists for."""
+    fake_cp.backend_client = AsyncMock()
+    fake_cp.backend_client.authorize = AsyncMock(
+        side_effect=AssertionError("backend must not be called on cache hit"),
+    )
+    fake_cp.authorize_cache = AsyncMock()
+    fake_cp.authorize_cache.get = AsyncMock(
+        return_value=IdTagInfo(status="Accepted", parent_id_tag="FAMILY"),
+    )
+
+    result = await authorize.handle(fake_cp, id_tag="RFID_VIP")
+
+    assert result.id_tag_info.status == AuthorizationStatus.accepted
+    assert result.id_tag_info.parent_id_tag == "FAMILY"
+    fake_cp.authorize_cache.get.assert_awaited_once_with(cp_id="TEST_CP_001", id_tag="RFID_VIP")
+    fake_cp.backend_client.authorize.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_cache_miss_falls_through_to_backend_and_caches_result(
+    fake_cp: Any,
+) -> None:
+    """Cache miss → backend round-trip → cache.set() with the result."""
+    fake_cp.backend_client = AsyncMock()
+    fake_cp.backend_client.authorize = AsyncMock(
+        return_value=_result("Accepted", parent_id_tag="FAMILY"),
+    )
+    fake_cp.authorize_cache = AsyncMock()
+    fake_cp.authorize_cache.get = AsyncMock(return_value=None)
+    fake_cp.authorize_cache.set = AsyncMock()
+
+    result = await authorize.handle(fake_cp, id_tag="RFID_VIP")
+
+    assert result.id_tag_info.status == AuthorizationStatus.accepted
+    fake_cp.backend_client.authorize.assert_awaited_once()
+    # Cache populated with the freshly-resolved result.
+    fake_cp.authorize_cache.set.assert_awaited_once()
+    set_kwargs = fake_cp.authorize_cache.set.await_args.kwargs
+    assert set_kwargs["cp_id"] == "TEST_CP_001"
+    assert set_kwargs["id_tag"] == "RFID_VIP"
+    assert set_kwargs["info"].status == "Accepted"
+
+
+@pytest.mark.asyncio
+async def test_cache_caches_blocked_outcome_too(fake_cp: Any) -> None:
+    """Caching `Blocked` is just as valuable as caching `Accepted` —
+    refuses repeated taps from a known-bad tag without a backend
+    round-trip per tap."""
+    fake_cp.backend_client = AsyncMock()
+    fake_cp.backend_client.authorize = AsyncMock(return_value=_result("Blocked"))
+    fake_cp.authorize_cache = AsyncMock()
+    fake_cp.authorize_cache.get = AsyncMock(return_value=None)
+    fake_cp.authorize_cache.set = AsyncMock()
+
+    result = await authorize.handle(fake_cp, id_tag="RFID_BAD")
+    assert result.id_tag_info.status == AuthorizationStatus.blocked
+    fake_cp.authorize_cache.set.assert_awaited_once()
+    set_kwargs = fake_cp.authorize_cache.set.await_args.kwargs
+    assert set_kwargs["info"].status == "Blocked"
+
+
+@pytest.mark.asyncio
+async def test_business_error_is_not_cached(fake_cp: Any) -> None:
+    """`BackendBusinessError` (e.g. UNKNOWN_ID_TAG) → returns Invalid
+    to the charger but does NOT poison the cache. A backend fix
+    landing for the id_tag should be visible on the next tap, not
+    after the cache TTL."""
+    fake_cp.backend_client = AsyncMock()
+    fake_cp.backend_client.authorize = AsyncMock(
+        side_effect=BackendBusinessError("unknown", error_code="UNKNOWN_ID_TAG"),
+    )
+    fake_cp.authorize_cache = AsyncMock()
+    fake_cp.authorize_cache.get = AsyncMock(return_value=None)
+    fake_cp.authorize_cache.set = AsyncMock()
+
+    result = await authorize.handle(fake_cp, id_tag="RFID_X")
+    assert result.id_tag_info.status == AuthorizationStatus.invalid
+    fake_cp.authorize_cache.set.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_unavailable_fallback_is_not_cached(fake_cp: Any) -> None:
+    """Fallback policy depends on current settings, not a stale call.
+    The cache must not store a Backend*Error outcome — let the next
+    tap re-roundtrip and re-evaluate."""
+    fake_cp.backend_client = AsyncMock()
+    fake_cp.backend_client.authorize = AsyncMock(
+        side_effect=BackendTimeoutError("timed out"),
+    )
+    fake_cp.authorize_cache = AsyncMock()
+    fake_cp.authorize_cache.get = AsyncMock(return_value=None)
+    fake_cp.authorize_cache.set = AsyncMock()
+
+    result = await authorize.handle(fake_cp, id_tag="RFID_X")
+    assert result.id_tag_info.status == AuthorizationStatus.invalid
+    fake_cp.authorize_cache.set.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_no_cache_wired_falls_through_directly(fake_cp: Any) -> None:
+    """`authorize_cache=None` (Redis not wired) → handler does the
+    backend round-trip but doesn't try to cache. Same shape as the
+    happy-path forward test, just confirming we don't try to call
+    `.set()` on a missing cache."""
+    fake_cp.backend_client = AsyncMock()
+    fake_cp.backend_client.authorize = AsyncMock(return_value=_result("Accepted"))
+    fake_cp.authorize_cache = None  # explicit
+
+    result = await authorize.handle(fake_cp, id_tag="RFID_X")
+    assert result.id_tag_info.status == AuthorizationStatus.accepted
