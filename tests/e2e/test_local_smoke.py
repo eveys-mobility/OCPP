@@ -854,3 +854,178 @@ async def test_local_auth_list_get_version_reads_from_charger(
 
         assert response.list_version == -1
         loop_task.cancel()
+
+
+# --------------------------------------------------------------------------
+# E2-1C — Reservations round-trip (ADR-0021)
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_reserve_now_full_lifecycle(
+    running_service: None, db_engine: sa.ext.asyncio.AsyncEngine
+) -> None:
+    """E2-1C — gRPC ReserveNow(Accepted) → charger receives the
+    gateway-assigned reservation_id → `reservations` row flips
+    Pending → Active. Then CancelReservation(Accepted) → row is
+    Cancelled."""
+    from grpclib.client import Channel as _Channel
+    from ocpp.routing import on as _on
+    from ocpp.v16 import call_result as _call_result
+    from ocpp.v16.enums import Action as _Action
+
+    from eveys_ocpp._generated.ocpp_gw.v1 import gateway_grpc as _gateway_grpc
+    from eveys_ocpp._generated.ocpp_gw.v1 import gateway_pb2 as _gateway_pb2
+
+    captured: dict[str, object] = {}
+
+    class _Sim(_SimChargePoint):
+        @_on(_Action.reserve_now)
+        async def _on_reserve_now(
+            self,
+            connector_id: int,
+            expiry_date: str,
+            id_tag: str,
+            reservation_id: int,
+            parent_id_tag: str | None = None,
+            **_kw: object,
+        ) -> _call_result.ReserveNow:
+            captured["connector_id"] = connector_id
+            captured["expiry_date"] = expiry_date
+            captured["id_tag"] = id_tag
+            captured["reservation_id"] = reservation_id
+            captured["parent_id_tag"] = parent_id_tag
+            return _call_result.ReserveNow(status="Accepted")
+
+        @_on(_Action.cancel_reservation)
+        async def _on_cancel(
+            self, reservation_id: int, **_kw: object
+        ) -> _call_result.CancelReservation:
+            captured["cancel_reservation_id"] = reservation_id
+            return _call_result.CancelReservation(status="Accepted")
+
+    cp_id = "SMOKE_E2_1C_001"
+    async with connect(f"ws://localhost:{_TEST_WS_PORT}/{cp_id}", subprotocols=["ocpp1.6"]) as ws:
+        sim = _Sim(cp_id, ws)
+        loop_task = asyncio.create_task(sim.start())
+        await sim.call(call.BootNotification(charge_point_vendor="ACME", charge_point_model="X1"))
+
+        async with _Channel("127.0.0.1", _TEST_GRPC_PORT) as ch:
+            stub = _gateway_grpc.OcppGatewayStub(ch)
+            reserve_resp = await stub.ReserveNow(
+                _gateway_pb2.ReserveNowRequest(
+                    cp_id=cp_id,
+                    connector_id=1,
+                    expiry_date="2026-12-31T23:59:59+00:00",
+                    id_tag="TAG_VIP",
+                    parent_id_tag="FAMILY_1",
+                )
+            )
+
+        assert reserve_resp.status == _gateway_pb2.RESERVE_NOW_STATUS_ACCEPTED
+        assert reserve_resp.reservation_id > 0
+        rid = reserve_resp.reservation_id
+
+        # Charger received the gateway-assigned reservation_id.
+        assert captured["reservation_id"] == rid
+        assert captured["id_tag"] == "TAG_VIP"
+        assert captured["parent_id_tag"] == "FAMILY_1"
+
+        # Tiny sleep to let the post-charger Active flip commit.
+        await asyncio.sleep(0.1)
+
+        async with db_engine.connect() as conn:
+            row = (
+                await conn.execute(
+                    sa.text(
+                        "SELECT r.status, r.id_tag, r.parent_id_tag, r.connector_id "
+                        "FROM reservations r "
+                        "JOIN charge_points cp ON cp.id = r.charge_point_id "
+                        "WHERE cp.cp_id = :cp_id AND r.id = :rid"
+                    ),
+                    {"cp_id": cp_id, "rid": rid},
+                )
+            ).one()
+
+        assert row.status == "Active"
+        assert row.id_tag == "TAG_VIP"
+        assert row.parent_id_tag == "FAMILY_1"
+        assert row.connector_id == 1
+
+        async with _Channel("127.0.0.1", _TEST_GRPC_PORT) as ch:
+            stub = _gateway_grpc.OcppGatewayStub(ch)
+            cancel_resp = await stub.CancelReservation(
+                _gateway_pb2.CancelReservationRequest(cp_id=cp_id, reservation_id=rid)
+            )
+
+        assert cancel_resp.status == _gateway_pb2.CANCEL_RESERVATION_STATUS_ACCEPTED
+        assert captured["cancel_reservation_id"] == rid
+
+        await asyncio.sleep(0.1)
+        async with db_engine.connect() as conn:
+            cancel_row = (
+                await conn.execute(
+                    sa.text("SELECT status FROM reservations WHERE id = :rid"),
+                    {"rid": rid},
+                )
+            ).one()
+        assert cancel_row.status == "Cancelled"
+
+        loop_task.cancel()
+
+
+@pytest.mark.asyncio
+async def test_reserve_now_charger_occupied_drops_pending_row(
+    running_service: None, db_engine: sa.ext.asyncio.AsyncEngine
+) -> None:
+    """E2-1C — charger reports Occupied → no `reservations` row
+    survives (Pending was inserted to allocate the ID, then deleted
+    when the charger refused). Mirrors ADR-0021 §"persist only on
+    Accepted"."""
+    from grpclib.client import Channel as _Channel
+    from ocpp.routing import on as _on
+    from ocpp.v16 import call_result as _call_result
+    from ocpp.v16.enums import Action as _Action
+
+    from eveys_ocpp._generated.ocpp_gw.v1 import gateway_grpc as _gateway_grpc
+    from eveys_ocpp._generated.ocpp_gw.v1 import gateway_pb2 as _gateway_pb2
+
+    class _Sim(_SimChargePoint):
+        @_on(_Action.reserve_now)
+        async def _on_reserve_now(self, **_kw: object) -> _call_result.ReserveNow:
+            return _call_result.ReserveNow(status="Occupied")
+
+    cp_id = "SMOKE_E2_1C_002"
+    async with connect(f"ws://localhost:{_TEST_WS_PORT}/{cp_id}", subprotocols=["ocpp1.6"]) as ws:
+        sim = _Sim(cp_id, ws)
+        loop_task = asyncio.create_task(sim.start())
+        await sim.call(call.BootNotification(charge_point_vendor="ACME", charge_point_model="X1"))
+
+        async with _Channel("127.0.0.1", _TEST_GRPC_PORT) as ch:
+            stub = _gateway_grpc.OcppGatewayStub(ch)
+            response = await stub.ReserveNow(
+                _gateway_pb2.ReserveNowRequest(
+                    cp_id=cp_id,
+                    connector_id=1,
+                    expiry_date="2026-12-31T23:59:59+00:00",
+                    id_tag="TAG_LOSE",
+                )
+            )
+
+        assert response.status == _gateway_pb2.RESERVE_NOW_STATUS_OCCUPIED
+        rid = response.reservation_id
+        assert rid > 0  # ID was still allocated by the gateway
+
+        await asyncio.sleep(0.1)
+
+        # No row survives — the Pending allocation was rolled back.
+        async with db_engine.connect() as conn:
+            count = (
+                await conn.execute(
+                    sa.text("SELECT count(*) AS n FROM reservations WHERE id = :rid"),
+                    {"rid": rid},
+                )
+            ).scalar()
+        assert count == 0
+
+        loop_task.cancel()
