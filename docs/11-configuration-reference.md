@@ -1,15 +1,14 @@
 # Configuration reference
 
 > **Source of truth:** `src/eveys_ocpp/settings.py`. Per [ADR-0025](./adr/0025-generated-config-reference.md),
-> this page will be **regenerated** from that file by
-> `scripts/render_config_reference.py` once E0-12 lands. Until then,
-> this is a hand-written seed — review the source if a setting feels
-> stale.
+> this page is **regenerated** from that file by
+> `scripts/render_config_reference.py`. Do not hand-edit — change the
+> Pydantic field instead and run `make config-export`.
 
 Every variable below is read from the environment with prefix
 `EVEYS_OCPP_` (e.g. `EVEYS_OCPP_LOG_LEVEL`). Defaults match
 `Settings()` field defaults. Ranges come from the field's Pydantic
-constraints (`ge=`, `le=`, `pattern=`).
+constraints (`ge=`, `le=`, `pattern=`) or `Literal[...]` alternatives.
 
 **Stability column** answers "what happens if I change this":
 
@@ -31,83 +30,83 @@ sensitivity.
 
 | Variable | Default | Range | Stability | Secret | What it does | Impact of changing |
 |---|---|---|---|---|---|---|
-| `EVEYS_OCPP_WS_HOST` | `0.0.0.0` | any IP / `0.0.0.0` / hostname | structural | no | Bind address for the OCPP WebSocket server. | Restricting from `0.0.0.0` (all interfaces) to a specific NIC limits which network reaches chargers. |
-| `EVEYS_OCPP_WS_PORT` | `9000` | 1–65535 | structural | no | Port the WS server listens on. | Must match `deploy/compose/docker-compose.yml`'s container port mapping and the charger's CSMS URL. Container exposes 9000 internally; host port may be remapped (e.g. 19000). |
+| `EVEYS_OCPP_WS_HOST` | `0.0.0.0` | string | structural | no | Bind address for the OCPP WebSocket server. | Restricting from `0.0.0.0` (all interfaces) to a specific NIC limits which network reaches chargers. |
+| `EVEYS_OCPP_WS_PORT` | `9000` | 1–65535 | structural | no | Port the WS server listens on. | Must match the docker-compose container port mapping and the charger's CSMS URL. Container exposes 9000 internally; host port may be remapped (e.g. 19000). |
 
 ## gRPC server
 
 | Variable | Default | Range | Stability | Secret | What it does | Impact of changing |
 |---|---|---|---|---|---|---|
-| `EVEYS_OCPP_GRPC_HOST` | `0.0.0.0` | any IP / `0.0.0.0` / hostname | structural | no | Bind address for the inbound gRPC server (sibling services call into it for `RemoteStart`, `Reset`, etc.). | Same as WS_HOST: which NIC accepts gRPC. |
+| `EVEYS_OCPP_GRPC_HOST` | `0.0.0.0` | string | structural | no | Bind address for the inbound gRPC server (sibling services call into it for `RemoteStart`, `Reset`, etc.). | Same as WS_HOST: which NIC accepts gRPC. |
 | `EVEYS_OCPP_GRPC_PORT` | `50051` | 1–65535 | structural | no | Port the gRPC server listens on. | All sibling services must agree on this; changing it requires a coordinated rollout. |
 
 ## Kafka producer (ADR-0019)
 
 | Variable | Default | Range | Stability | Secret | What it does | Impact of changing |
 |---|---|---|---|---|---|---|
-| `EVEYS_OCPP_KAFKA_BROKERS` | `localhost:9092` | comma-sep host:port list | structural | no | Bootstrap servers for the producer. | Wrong broker → producer cannot start, gateway exits at boot. Inside the compose network use the INTERNAL listener (`kafka:29092`); from a laptop use `localhost:9092`. |
-| `EVEYS_OCPP_KAFKA_ACKS` | `all` | `all` / `1` / `0` | tunable | no | Producer ack mode. `all` waits for the full ISR (durable to leader crash); `1` only the leader; `0` fire-and-forget. | Lowering trades durability for latency. `tx.started` is on the financial path — never lower this in production. ADR-0019. |
+| `EVEYS_OCPP_KAFKA_BROKERS` | `localhost:9092` | string | structural | no | Kafka bootstrap servers (comma-separated host:port). | Wrong broker → producer cannot start, gateway exits at boot. Inside the compose network use the INTERNAL listener (`kafka:29092`); from a laptop use `localhost:9092`. |
+| `EVEYS_OCPP_KAFKA_ACKS` | `all` | `all` / `1` / `0` | tunable | no | Producer ack mode. `all` waits for full ISR (durable to leader crash); `1` only the leader; `0` fire-and-forget. | Lowering trades durability for latency. `tx.started` is on the financial path — never lower in production. ADR-0019. |
 | `EVEYS_OCPP_KAFKA_ENABLE_IDEMPOTENCE` | `true` | bool | tunable | no | aiokafka producer-side dedup on retry. | Disabling lets a retried-after-lost-ack request duplicate. Pairs with E2-11's inbound replay dedup; both layers exist for defence in depth. |
-| `EVEYS_OCPP_KAFKA_LINGER_MS` | `5` | 0–1000 (ms) | tunable | no | How long the producer waits to batch before sending. | Lower → tighter `cp.meter` end-to-end latency, smaller batches, higher per-message overhead. Higher → bigger batches, more delay before billing-relevant `tx.started` lands. |
-| `EVEYS_OCPP_KAFKA_REQUEST_TIMEOUT_MS` | `30000` | 1000–120000 (ms) | tunable | no | How long a single produce request waits for the broker. | Tighter than aiokafka's 40 s default so a stuck broker trips the handler's publish-failed log path quickly. Raising hides broker-stall incidents from observability. |
-| `EVEYS_OCPP_KAFKA_RETRY_BACKOFF_MS` | `200` | 10–10000 (ms) | tunable | no | Wait between aiokafka retries on a recoverable error. | Lower → faster recovery from transient broker blips, more load on a struggling broker. Higher → opposite. |
+| `EVEYS_OCPP_KAFKA_LINGER_MS` | `5` | 0–1000 | tunable | no | How long the producer waits to batch before sending (ms). | Lower → tighter `cp.meter` end-to-end latency, smaller batches, higher per-message overhead. Higher → bigger batches, more delay before billing-relevant `tx.started` lands. ADR-0019 § 'Per-topic linger'. |
+| `EVEYS_OCPP_KAFKA_REQUEST_TIMEOUT_MS` | `30000` | 1000–120000 | tunable | no | How long a single produce request waits for the broker (ms). | Tighter than aiokafka's 40 s default so a stuck broker trips the handler's publish-failed log path quickly. Raising hides broker-stall incidents from observability. |
+| `EVEYS_OCPP_KAFKA_RETRY_BACKOFF_MS` | `200` | 10–10000 | tunable | no | Wait between aiokafka retries on a recoverable error (ms). | Lower → faster recovery from transient broker blips, more load on a struggling broker. Higher → opposite. |
 
 ## Kafka topics
 
 > The four topic names are part of the **frozen v1 contract** with downstream consumers (per `proto/events/v1/events.proto` and ADR-0018). Treat them as structural — renaming is an externally visible breaking change.
 
-| Variable | Default | Stability | Secret | What it does | Impact of changing |
-|---|---|---|---|---|---|
-| `EVEYS_OCPP_KAFKA_TOPIC_CP_METER` | `cp.meter` | structural | no | Firehose topic for `MeterValues`. ClickHouse ingestor consumes from here (E2-14). | Renaming detaches every existing consumer (ClickHouse ingestor, billing pipeline). |
-| `EVEYS_OCPP_KAFKA_TOPIC_CP_BOOT` | `cp.boot` | structural | no | `BootNotification` events. | Same as above; downstream subscribers break. |
-| `EVEYS_OCPP_KAFKA_TOPIC_CP_STATUS` | `cp.status` | structural | no | `StatusNotification` events. | Same. |
-| `EVEYS_OCPP_KAFKA_TOPIC_TX_STARTED` | `tx.started` | structural | no | `StartTransaction` events (financial path). | Same. |
+| Variable | Default | Range | Stability | Secret | What it does | Impact of changing |
+|---|---|---|---|---|---|---|
+| `EVEYS_OCPP_KAFKA_TOPIC_CP_METER` | `cp.meter` | string | structural | no | Firehose topic for `MeterValues`. ClickHouse ingestor consumes from here (E2-14). | Renaming detaches every existing consumer (ClickHouse ingestor, billing pipeline). |
+| `EVEYS_OCPP_KAFKA_TOPIC_CP_BOOT` | `cp.boot` | string | structural | no | `BootNotification` events. | Renaming detaches every existing consumer. |
+| `EVEYS_OCPP_KAFKA_TOPIC_CP_STATUS` | `cp.status` | string | structural | no | `StatusNotification` events. | Renaming detaches every existing consumer. |
+| `EVEYS_OCPP_KAFKA_TOPIC_TX_STARTED` | `tx.started` | string | structural | no | `StartTransaction` events (financial path). | Renaming detaches every existing consumer. |
 
 ## Redis (online registry + pub/sub bus, ADR-0016)
 
 | Variable | Default | Range | Stability | Secret | What it does | Impact of changing |
 |---|---|---|---|---|---|---|
-| `EVEYS_OCPP_REDIS_URL` | `redis://localhost:6379/0` | DSN string | structural | no | Single Redis client shared by registry, command bus, idempotency cache, Authorize cache. | Wrong DSN → gateway exits at boot. Compose uses `redis://redis:6379/0`. |
-| `EVEYS_OCPP_REDIS_ONLINE_TTL_SECONDS` | `120` | 30–600 (s) | tunable | no | TTL on `cp:online:{cp_id}` keys. Heartbeat refreshes the key; if charger goes silent the key expires and the charger is "offline." | 120 s aligns with OCPP 1.6 default heartbeat 60 s — gives ~2 missed heartbeats before declaring offline. Lower → quicker offline detection but more false positives on flaky links. |
+| `EVEYS_OCPP_REDIS_URL` | `redis://localhost:6379/0` | string | structural | no | Single Redis client shared by registry, command bus, idempotency cache, Authorize cache. | Wrong DSN → gateway exits at boot. Compose uses `redis://redis:6379/0`. |
+| `EVEYS_OCPP_REDIS_ONLINE_TTL_SECONDS` | `120` | 30–600 | tunable | no | TTL on `cp:online:{cp_id}` keys. Heartbeat refreshes the key; if the charger goes silent the key expires and the charger is considered offline. | 120 s aligns with OCPP 1.6 default heartbeat 60 s — gives ~2 missed heartbeats before declaring offline. Lower → quicker offline detection but more false positives on flaky links. |
 
 ## Postgres
 
 | Variable | Default | Range | Stability | Secret | What it does | Impact of changing |
 |---|---|---|---|---|---|---|
-| `EVEYS_OCPP_DB_URL` | `postgresql+asyncpg://eveys:eveys@localhost:5432/eveys_ocpp` | SQLAlchemy async DSN | structural | yes (contains password) | Where the gateway's relational state lives (charge points, transactions, reservations, profiles). | Wrong DSN → gateway exits at boot. Schema changes go through Alembic — never edit the DB directly. |
-| `EVEYS_OCPP_DB_POOL_SIZE` | `10` | 1–100 | tunable | no | SQLAlchemy connection-pool size per gateway pod. | Higher → more concurrent DB load capacity per pod, more idle connections. Total DB connections = `pool_size + max_overflow` × number of pods. |
+| `EVEYS_OCPP_DB_URL` | `postgresql+asyncpg://eveys:eveys@localhost:5432/eveys_ocpp` | string | structural | **yes** | SQLAlchemy async DSN for the gateway's relational state (charge points, transactions, reservations, profiles). | Wrong DSN → gateway exits at boot. Schema changes go through Alembic — never edit the DB directly. The default carries the dev password; production DSNs always carry a real password and must be handled as a secret. |
+| `EVEYS_OCPP_DB_POOL_SIZE` | `10` | 1–100 | tunable | no | SQLAlchemy connection-pool size per gateway pod. | Higher → more concurrent DB load capacity per pod, more idle connections. Total DB connections = `pool_size + max_overflow` x number of pods. |
 | `EVEYS_OCPP_DB_MAX_OVERFLOW` | `20` | 0–200 | tunable | no | Extra connections allowed beyond pool size during bursts. | Set together with `DB_POOL_SIZE`. Postgres' `max_connections` ceiling is the hard limit. |
 
 ## Identity (Kubernetes downward-API)
 
-| Variable | Default | Stability | Secret | What it does | Impact of changing |
-|---|---|---|---|---|---|
-| `EVEYS_OCPP_POD_ID` | hostname | structural | no | Identity of this pod for cross-pod routing. The Redis registry records "charger X is held by pod Y." | In Kubernetes set this from the downward API: `valueFrom: { fieldRef: { fieldPath: metadata.name } }`. Two pods with the same `pod_id` will fight over charger ownership. |
+| Variable | Default | Range | Stability | Secret | What it does | Impact of changing |
+|---|---|---|---|---|---|---|
+| `EVEYS_OCPP_POD_ID` | hostname | string | structural | no | Identity of this pod for cross-pod routing. The Redis registry records 'charger X is held by pod Y'. | In Kubernetes set this from the downward API: `valueFrom: { fieldRef: { fieldPath: metadata.name } }`. Two pods with the same `pod_id` will fight over charger ownership. |
 
 ## Logging
 
 | Variable | Default | Range | Stability | Secret | What it does | Impact of changing |
 |---|---|---|---|---|---|---|
 | `EVEYS_OCPP_LOG_LEVEL` | `INFO` | `DEBUG` / `INFO` / `WARNING` / `ERROR` / `CRITICAL` | tunable | no | Minimum log level emitted. | `DEBUG` produces several per-message lines per charger — high volume on a real fleet; use only briefly to investigate an incident. |
-| `EVEYS_OCPP_LOG_JSON` | `true` | bool | tunable | no | Emit JSON logs (machine-readable) vs console (developer-readable). | Production sets `true` so logs aggregator parses fields. Local dev sets `false` for readability. |
+| `EVEYS_OCPP_LOG_JSON` | `true` | bool | tunable | no | Emit JSON logs (machine-readable) vs console (developer-readable). | Production sets `true` so the log aggregator parses fields. Local dev sets `false` for readability. |
 
 ## OCPP defaults
 
 | Variable | Default | Range | Stability | Secret | What it does | Impact of changing |
 |---|---|---|---|---|---|---|
-| `EVEYS_OCPP_HEARTBEAT_INTERVAL_SECONDS` | `300` | 30–86400 (s) | tunable | no | Sent back in `BootNotification.interval`; the charger pings us this often. | Lower → quicker offline detection at the cost of fleet-wide heartbeat traffic. Coordinate with `REDIS_ONLINE_TTL_SECONDS` (rule of thumb: TTL ≈ 2 × heartbeat). 300 s is the OCPP-recommended default. |
+| `EVEYS_OCPP_HEARTBEAT_INTERVAL_SECONDS` | `300` | 30–86400 | tunable | no | Sent back in `BootNotification.interval`; the charger pings us this often. | Lower → quicker offline detection at the cost of fleet-wide heartbeat traffic. Coordinate with `REDIS_ONLINE_TTL_SECONDS` (rule of thumb: TTL ~= 2x heartbeat). 300 s is the OCPP-recommended default. |
 
 ## Cross-pod command bus (ADR-0016)
 
 | Variable | Default | Range | Stability | Secret | What it does | Impact of changing |
 |---|---|---|---|---|---|---|
-| `EVEYS_OCPP_BUS_REQUEST_TIMEOUT_SECONDS` | `30` | 1–120 (s) | tunable | no | How long a requesting pod waits for a cross-pod reply. | Defaults to the 30 s OCPP request ceiling — the bus shouldn't add headroom over the underlying call. Raising risks letting an OCPP RPC outlive the charger's own timeout. |
+| `EVEYS_OCPP_BUS_REQUEST_TIMEOUT_SECONDS` | `30` | 1–120 | tunable | no | How long a requesting pod waits for a cross-pod reply. | Defaults to the 30 s OCPP request ceiling — the bus shouldn't add headroom over the underlying call. Raising risks letting an OCPP RPC outlive the charger's own timeout. |
 
 ## Idempotency cache (E2-11)
 
 | Variable | Default | Range | Stability | Secret | What it does | Impact of changing |
 |---|---|---|---|---|---|---|
-| `EVEYS_OCPP_IDEMPOTENCY_TTL_SECONDS` | `300` | 30–3600 (s) | tunable | no | Window for treating a repeat `(cp_id, message_id)` as a replay. | OCPP retry storms resolve within seconds; 5 min gives ample margin. Longer windows accumulate keys without benefit; OCPP message_ids are UUIDs and never reused across power cycles. |
+| `EVEYS_OCPP_IDEMPOTENCY_TTL_SECONDS` | `300` | 30–3600 | tunable | no | Window for treating a repeat `(cp_id, message_id)` as a replay. | OCPP retry storms resolve within seconds; 5 min gives ample margin. Longer windows accumulate keys without benefit; OCPP message_ids are UUIDs and never reused across power cycles. |
 
 ## ClickHouse ingestion sidecar (ADR-0020)
 
@@ -115,36 +114,36 @@ sensitivity.
 
 | Variable | Default | Range | Stability | Secret | What it does | Impact of changing |
 |---|---|---|---|---|---|---|
-| `EVEYS_OCPP_CLICKHOUSE_HOST` | `localhost` | hostname | structural | no | Where the ingestor + migrator find ClickHouse. | Compose uses `clickhouse`. |
+| `EVEYS_OCPP_CLICKHOUSE_HOST` | `localhost` | string | structural | no | Where the ingestor + migrator find ClickHouse. | Compose uses `clickhouse`. |
 | `EVEYS_OCPP_CLICKHOUSE_PORT` | `9000` | 1–65535 | structural | no | Native protocol port (8123 is HTTP, 9000 is native). The ingestor uses native; the migrator uses HTTP. | If you change this you must also update the migrator's `--port` if it differs from 8123. |
 | `EVEYS_OCPP_CLICKHOUSE_DB` | `eveys_ocpp` | string | structural | no | ClickHouse database name. | Schema migrations target this DB; the migrator creates it on first run. |
 | `EVEYS_OCPP_CLICKHOUSE_INGESTOR_GROUP` | `eveys-ocpp-clickhouse-ingestor` | string | structural | no | Kafka consumer-group ID for the ingestor. Multiple replicas share this group; Kafka rebalances partitions across them. | Renaming forces all consumers to re-read from the configured offset (typically earliest). |
-| `EVEYS_OCPP_CLICKHOUSE_INGESTOR_BATCH_SIZE` | `500` | 1–10000 (rows) | tunable | no | Flush threshold in rows. | Lower → smaller batches, more INSERT round-trips, lower tail latency. Higher → opposite. ADR-0020 § "Batch size vs latency". |
-| `EVEYS_OCPP_CLICKHOUSE_INGESTOR_BATCH_MAX_SECONDS` | `5.0` | 0.1–60.0 (s) | tunable | no | Flush threshold in seconds (whichever-comes-first with `BATCH_SIZE`). | Lower → less worst-case ingestion delay; ClickHouse handles many small batches less efficiently than a few large ones. |
+| `EVEYS_OCPP_CLICKHOUSE_INGESTOR_BATCH_SIZE` | `500` | 1–10000 | tunable | no | Flush threshold in rows. | Lower → smaller batches, more INSERT round-trips, lower tail latency. Higher → opposite. ADR-0020 § 'Batch size vs latency'. |
+| `EVEYS_OCPP_CLICKHOUSE_INGESTOR_BATCH_MAX_SECONDS` | `5.0` | 0.1–60.0 | tunable | no | Flush threshold in seconds (whichever-comes-first with `BATCH_SIZE`). | Lower → less worst-case ingestion delay; ClickHouse handles many small batches less efficiently than a few large ones. |
 
 ## Backend integration (ADR-0023, E3-2..E3-6)
 
 | Variable | Default | Range | Stability | Secret | What it does | Impact of changing |
 |---|---|---|---|---|---|---|
-| `EVEYS_OCPP_BACKEND_BASE_URL` | (empty) | URL | structural | no | Base URL the gateway calls into. **Empty disables the backend client entirely** — handlers fall back to their offline policies (Authorize → Accepted, etc.). | Empty in dev. Production must set this; an empty value silently degrades to offline mode. |
-| `EVEYS_OCPP_BACKEND_TOKEN` | (empty) | bearer-token string | tunable | **yes** | Token used in `Authorization: Bearer ...` against the backend. | Move to vault in Phase 5 (E5-7). Until then handle as a secret. |
-| `EVEYS_OCPP_BACKEND_TIMEOUT_AUTHORIZE_SECONDS` | `5.0` | 0.1–30.0 (s) | tunable | no | HTTP timeout for the Authorize call. | Tighter values trip the gateway's offline fallback faster. The 30 s OCPP outer timeout is the hard ceiling. |
-| `EVEYS_OCPP_BACKEND_TIMEOUT_SESSIONS_OPEN_SECONDS` | `8.0` | 0.1–30.0 (s) | tunable | no | HTTP timeout for `POST /api/eveys/sessions/open` (StartTransaction). | Same shape as Authorize. |
-| `EVEYS_OCPP_BACKEND_TIMEOUT_SESSIONS_CLOSE_SECONDS` | `10.0` | 0.1–30.0 (s) | tunable | no | HTTP timeout for `POST /api/eveys/sessions/close` (StopTransaction). | StopTransaction tolerates a longer wait — closing a session is less time-critical than opening one. |
-| `EVEYS_OCPP_BACKEND_TIMEOUT_DEFAULT_SECONDS` | `5.0` | 0.1–30.0 (s) | tunable | no | Fallback timeout for any backend call without an explicit per-endpoint setting. | Used by `charge-points/register` and any future endpoint. |
+| `EVEYS_OCPP_BACKEND_BASE_URL` | (empty) | string | structural | no | Base URL the gateway calls into. **Empty disables the backend client entirely** — handlers fall back to their offline policies (Authorize → Accepted, etc.). | Empty in dev. Production must set this; an empty value silently degrades to offline mode. |
+| `EVEYS_OCPP_BACKEND_TOKEN` | (empty) | string | tunable | **yes** | Token used in `Authorization: Bearer ...` against the backend. | Move to vault in Phase 5 (E5-7). Until then handle as a secret and never commit a real value to .env or values.yaml. |
+| `EVEYS_OCPP_BACKEND_TIMEOUT_AUTHORIZE_SECONDS` | `5.0` | 0.1–30.0 | tunable | no | HTTP timeout for the Authorize call (seconds). | Tighter values trip the gateway's offline fallback faster. The 30 s OCPP outer timeout is the hard ceiling. |
+| `EVEYS_OCPP_BACKEND_TIMEOUT_SESSIONS_OPEN_SECONDS` | `8.0` | 0.1–30.0 | tunable | no | HTTP timeout for `POST /api/eveys/sessions/open` (StartTransaction). | Same shape as Authorize. |
+| `EVEYS_OCPP_BACKEND_TIMEOUT_SESSIONS_CLOSE_SECONDS` | `10.0` | 0.1–30.0 | tunable | no | HTTP timeout for `POST /api/eveys/sessions/close` (StopTransaction). | StopTransaction tolerates a longer wait — closing a session is less time-critical than opening one. |
+| `EVEYS_OCPP_BACKEND_TIMEOUT_DEFAULT_SECONDS` | `5.0` | 0.1–30.0 | tunable | no | Fallback timeout for any backend call without an explicit per-endpoint setting. | Used by `charge-points/register` and any future endpoint. |
 | `EVEYS_OCPP_BACKEND_RETRY_ATTEMPTS_AUTHORIZE` | `1` | 0–5 | tunable | no | Retry attempts (excluding the first try) for Authorize. | Higher → resilience to transient blips, more latency on persistent outages. Authorize is on the OCPP hot path — keep low. |
-| `EVEYS_OCPP_BACKEND_RETRY_ATTEMPTS_SESSIONS_OPEN` | `2` | 0–5 | tunable | no | Same shape, for sessions/open. | StartTransaction is billing-critical; spending more retries here is the right trade. |
-| `EVEYS_OCPP_BACKEND_RETRY_ATTEMPTS_SESSIONS_CLOSE` | `3` | 0–5 | tunable | no | Same shape, for sessions/close. | The most important: a missed Close = a session that never billed. |
+| `EVEYS_OCPP_BACKEND_RETRY_ATTEMPTS_SESSIONS_OPEN` | `2` | 0–5 | tunable | no | Retry attempts for sessions/open. | StartTransaction is billing-critical; spending more retries here is the right trade. |
+| `EVEYS_OCPP_BACKEND_RETRY_ATTEMPTS_SESSIONS_CLOSE` | `3` | 0–5 | tunable | no | Retry attempts for sessions/close. | The most important: a missed Close = a session that never billed. |
 | `EVEYS_OCPP_BACKEND_CIRCUIT_BREAKER_THRESHOLD` | `5` | 1–100 | tunable | no | Open the breaker after this many consecutive failures. | Lower → quicker degradation to offline mode under outage, more flapping during transient incidents. |
-| `EVEYS_OCPP_BACKEND_CIRCUIT_BREAKER_COOLDOWN_SECONDS` | `30.0` | 1.0–600.0 (s) | tunable | no | How long the breaker stays open before letting one probe through (half-open). | Lower → faster recovery test but more load on a still-broken backend. |
-| `EVEYS_OCPP_BACKEND_AUTHORIZE_FALLBACK` | `reject` | `reject` / `accept_offline` | tunable | no | What the Authorize handler returns when the backend is unreachable past the retry budget. `reject` → `Invalid` (safe). `accept_offline` → `Accepted` with a 5-min expiry (operator opt-in to un-billable risk). | ADR-0023 § "Fallback policy". Default `reject` is the safe billing-relevant choice. |
+| `EVEYS_OCPP_BACKEND_CIRCUIT_BREAKER_COOLDOWN_SECONDS` | `30.0` | 1.0–600.0 | tunable | no | How long the breaker stays open before letting one probe through (half-open). | Lower → faster recovery test but more load on a still-broken backend. |
+| `EVEYS_OCPP_BACKEND_AUTHORIZE_FALLBACK` | `reject` | `reject` / `accept_offline` | tunable | no | What the Authorize handler returns when the backend is unreachable past the retry budget. `reject` → `Invalid` (safe). `accept_offline` → `Accepted` with a 5-min expiry (operator opt-in to un-billable risk). | ADR-0023 § 'Fallback policy'. Default `reject` is the safe billing-relevant choice. |
 
 ## Authorize cache (E3-4)
 
 | Variable | Default | Range | Stability | Secret | What it does | Impact of changing |
 |---|---|---|---|---|---|---|
 | `EVEYS_OCPP_BACKEND_AUTHORIZE_CACHE_ENABLED` | `true` | bool | tunable | no | Enable Redis caching of the Authorize result keyed on `(cp_id, id_tag)`. Cache hits short-circuit the backend round-trip on the OCPP hot path. | Disabling pushes every Authorize through the backend — useful for ops debugging when a stale cached `Blocked` is suspected. Re-enable as soon as the issue is understood. |
-| `EVEYS_OCPP_BACKEND_AUTHORIZE_CACHE_TTL_SECONDS` | `30` | 1–3600 (s) | tunable | no | TTL on cached Authorize entries. | Short enough that `Blocked`/`Expired` decisions propagate within ~30 s; long enough to absorb depot-shift bursts (a fleet returning at once = same-tag taps within a minute). Drop toward 1 s for ops debugging. |
+| `EVEYS_OCPP_BACKEND_AUTHORIZE_CACHE_TTL_SECONDS` | `30` | 1–3600 | tunable | no | TTL on cached Authorize entries. | Short enough that `Blocked`/`Expired` decisions propagate within ~30 s; long enough to absorb depot-shift bursts (a fleet returning at once = same-tag taps within a minute). Drop toward 1 s for ops debugging. |
 
 ---
 
@@ -158,9 +157,8 @@ docker exec eveys-ocpp env | grep '^EVEYS_OCPP_'
 
 ### "I want a starter `.env`."
 
-Once the implementation MR (E0-12) lands, `make config-export` will
-generate `.env.example` from `Settings`. Until then, copy the table
-above and edit.
+`make config-export` regenerates `.env.example` alongside this file;
+`cp .env.example .env` and edit. Secrets are blank in the example.
 
 ### "I changed a variable; do I need to redeploy?"
 
