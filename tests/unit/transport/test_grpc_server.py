@@ -74,6 +74,8 @@ def test_service_class_implements_every_rpc(fake_session_factory: Any, settings:
         "SendLocalList",
         "ReserveNow",
         "CancelReservation",
+        "GetDiagnostics",
+        "UpdateFirmware",
     }
     for rpc in expected:
         method = getattr(service, rpc, None)
@@ -1614,6 +1616,185 @@ async def test_cancel_reservation_zero_id_returns_invalid_argument(
             with pytest.raises(GRPCError) as exc:
                 await stub.CancelReservation(
                     gateway_pb2.CancelReservationRequest(cp_id="CP_001", reservation_id=0)
+                )
+        assert exc.value.status == Status.INVALID_ARGUMENT
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+# ---- E2-1F GetDiagnostics / UpdateFirmware ---------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_diagnostics_returns_charger_filename(
+    fake_session_factory: Any, settings: Settings
+) -> None:
+    """Charger replies with a chosen `file_name`; gateway forwards verbatim."""
+    cp = MagicMock()
+    cp.id = "CP_001"
+    response = MagicMock()
+    response.file_name = "diag-2026-05-05.tar.gz"
+    cp.call = AsyncMock(return_value=response)
+    cm = ConnectionMap()
+    cm.add(cp)
+    service = OcppGatewayService(
+        session_factory=fake_session_factory, settings=settings, connections=cm
+    )
+    server, port = await _spawn_server(service)
+    try:
+        async with Channel("127.0.0.1", port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            response_grpc = await stub.GetDiagnostics(
+                gateway_pb2.GetDiagnosticsRequest(
+                    cp_id="CP_001",
+                    location="https://logs.eveys.example/incoming",
+                )
+            )
+        assert response_grpc.file_name == "diag-2026-05-05.tar.gz"
+        # Optional fields default-zero on the proto side flow through
+        # as `None` to the OCPP dataclass (charger then uses defaults).
+        sent = cp.call.await_args.args[0]
+        assert sent.location == "https://logs.eveys.example/incoming"
+        assert sent.retries is None
+        assert sent.start_time is None
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_get_diagnostics_handles_optional_filename_missing(
+    fake_session_factory: Any, settings: Settings
+) -> None:
+    """OCPP marks `file_name` optional; an absent value coerces to ''."""
+    cp = MagicMock()
+    cp.id = "CP_001"
+    response = MagicMock()
+    response.file_name = None
+    cp.call = AsyncMock(return_value=response)
+    cm = ConnectionMap()
+    cm.add(cp)
+    service = OcppGatewayService(
+        session_factory=fake_session_factory, settings=settings, connections=cm
+    )
+    server, port = await _spawn_server(service)
+    try:
+        async with Channel("127.0.0.1", port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            response_grpc = await stub.GetDiagnostics(
+                gateway_pb2.GetDiagnosticsRequest(cp_id="CP_001", location="ftp://logs/")
+            )
+        assert response_grpc.file_name == ""
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_get_diagnostics_empty_location_returns_invalid_argument(
+    fake_session_factory: Any, settings: Settings
+) -> None:
+    _, cm = _connected_cp("CP_001", "Accepted")
+    service = OcppGatewayService(
+        session_factory=fake_session_factory, settings=settings, connections=cm
+    )
+    server, port = await _spawn_server(service)
+    try:
+        async with Channel("127.0.0.1", port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            with pytest.raises(GRPCError) as exc:
+                await stub.GetDiagnostics(
+                    gateway_pb2.GetDiagnosticsRequest(cp_id="CP_001", location="")
+                )
+        assert exc.value.status == Status.INVALID_ARGUMENT
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_update_firmware_returns_empty_response(
+    fake_session_factory: Any, settings: Settings
+) -> None:
+    """OCPP UpdateFirmware.conf carries no fields; the gRPC response
+    is empty too. Verify the OCPP request was assembled correctly."""
+    cp = MagicMock()
+    cp.id = "CP_001"
+    response = MagicMock()  # empty response — no fields to set
+    cp.call = AsyncMock(return_value=response)
+    cm = ConnectionMap()
+    cm.add(cp)
+    service = OcppGatewayService(
+        session_factory=fake_session_factory, settings=settings, connections=cm
+    )
+    server, port = await _spawn_server(service)
+    try:
+        async with Channel("127.0.0.1", port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            response_grpc = await stub.UpdateFirmware(
+                gateway_pb2.UpdateFirmwareRequest(
+                    cp_id="CP_001",
+                    location="https://firmware.eveys.example/2026.05.bin",
+                    retrieve_date="2026-05-05T03:00:00+00:00",
+                )
+            )
+        # Empty proto message — no fields to assert beyond the type.
+        assert isinstance(response_grpc, gateway_pb2.UpdateFirmwareResponse)
+        sent = cp.call.await_args.args[0]
+        assert sent.location == "https://firmware.eveys.example/2026.05.bin"
+        assert sent.retrieve_date == "2026-05-05T03:00:00+00:00"
+        assert sent.retries is None
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_update_firmware_empty_location_returns_invalid_argument(
+    fake_session_factory: Any, settings: Settings
+) -> None:
+    _, cm = _connected_cp("CP_001", "Accepted")
+    service = OcppGatewayService(
+        session_factory=fake_session_factory, settings=settings, connections=cm
+    )
+    server, port = await _spawn_server(service)
+    try:
+        async with Channel("127.0.0.1", port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            with pytest.raises(GRPCError) as exc:
+                await stub.UpdateFirmware(
+                    gateway_pb2.UpdateFirmwareRequest(
+                        cp_id="CP_001",
+                        location="",
+                        retrieve_date="2026-05-05T03:00:00+00:00",
+                    )
+                )
+        assert exc.value.status == Status.INVALID_ARGUMENT
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_update_firmware_empty_retrieve_date_returns_invalid_argument(
+    fake_session_factory: Any, settings: Settings
+) -> None:
+    _, cm = _connected_cp("CP_001", "Accepted")
+    service = OcppGatewayService(
+        session_factory=fake_session_factory, settings=settings, connections=cm
+    )
+    server, port = await _spawn_server(service)
+    try:
+        async with Channel("127.0.0.1", port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            with pytest.raises(GRPCError) as exc:
+                await stub.UpdateFirmware(
+                    gateway_pb2.UpdateFirmwareRequest(
+                        cp_id="CP_001",
+                        location="https://firmware/",
+                        retrieve_date="",
+                    )
                 )
         assert exc.value.status == Status.INVALID_ARGUMENT
     finally:

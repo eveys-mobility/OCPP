@@ -72,6 +72,20 @@ async def update_status(session: AsyncSession, *, cp_id: str, status: str) -> No
     )
 
 
+async def update_diagnostics_status(session: AsyncSession, *, cp_id: str, status: str) -> None:
+    """Record the latest DiagnosticsStatusNotification (E2-1F)."""
+    await session.execute(
+        update(ChargePoint).where(ChargePoint.cp_id == cp_id).values(last_diagnostics_status=status)
+    )
+
+
+async def update_firmware_status(session: AsyncSession, *, cp_id: str, status: str) -> None:
+    """Record the latest FirmwareStatusNotification (E2-1F)."""
+    await session.execute(
+        update(ChargePoint).where(ChargePoint.cp_id == cp_id).values(last_firmware_status=status)
+    )
+
+
 async def get_charge_point_pk(session: AsyncSession, *, cp_id: str) -> int | None:
     """Look up the surrogate `id` for a charger by its `cp_id`."""
     result = await session.execute(select(ChargePoint.id).where(ChargePoint.cp_id == cp_id))
