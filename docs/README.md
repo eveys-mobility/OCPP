@@ -2,7 +2,7 @@
 
 Documentation for **eveys/ocpp**, the OCPP gateway service of the Eveys EV-charging platform.
 
-> **Scope of this document set**: foundations only — *roadmap, tasks, rules, coding standards*. Implementation plan and code follow after these are reviewed and approved.
+> **Scope of this document set**: full — roadmap, tasks, coding standards, ADRs, implementation plan, conformance matrix, certification readiness, testing strategy, and the generated configuration reference. Code is shipped under `src/` and tested per the four-tier ladder in [10-testing-strategy.md](./10-testing-strategy.md).
 
 ## Contents
 
@@ -18,6 +18,9 @@ Documentation for **eveys/ocpp**, the OCPP gateway service of the Eveys EV-charg
 | 07 | [Local development setup](./07-local-dev-setup.md) | Bring the full stack up on a laptop (docker-compose + k3d/kind) | Engineers (day 1) |
 | 08 | [OCPP conformance matrix](./08-ocpp-conformance.md) | Per-test-case (Appendix C TC ID) → handler → status; the cert-grade record | Engineers, QA, OCTT examiners, auditors |
 | 09 | [Certification readiness](./09-certification-readiness.md) | Cert-program playbook: streams, PICS prep, lab engagement, exit gate | TL, manager, QA |
+| 10 | [Testing strategy](./10-testing-strategy.md) | The four-tier test trust ladder — what each CI job guarantees and what bug class it catches (see ADR-0024) | Engineers, anyone debugging a CI failure |
+| 11 | [Configuration reference](./11-configuration-reference.md) | Every env var: category, default, range, stability, secret-flag, what it does, what changes if you change it (see ADR-0025) | Operators, SREs, anyone tuning the service |
+| 12 | [Connecting a real charger](./12-connecting-real-charger.md) | Operator/integrator guide: install, connect a real OCPP 1.6 device, watch activity in logs/Postgres/ClickHouse/Kafka, use the REST API from `curl` or Postman | Operators, integrators, anyone connecting a charger for the first time |
 
 ## Related project files
 
@@ -47,7 +50,7 @@ Current:
 | Field | Value |
 |---|---|
 | Project | `eveys/ocpp` |
-| Phase | Foundations — pre-implementation |
+| Phase | Phase 3 (platform integration) — Phase 0 + 2 closed; long-tail E2-1 + Phase 3 in progress |
 | Tech lead | TBD |
 | Source of architecture truth | The ADRs (see [Architecture decisions](./05-architecture-decisions.md)) |
 | License | Proprietary — Eveys |
@@ -150,6 +153,9 @@ The two hidden `{toctree}` directives below this section define the navigation. 
 07-local-dev-setup
 08-ocpp-conformance
 09-certification-readiness
+10-testing-strategy
+11-configuration-reference
+12-connecting-real-charger
 ```
 
 ```{toctree}
@@ -158,4 +164,14 @@ The two hidden `{toctree}` directives below this section define the navigation. 
 :glob:
 
 adr/*
+```
+
+```{toctree}
+:hidden:
+:caption: Backend integration
+
+integration/README
+integration/01-backend-rest-contract
+integration/02-gateway-rest-api
+integration/03-webhooks
 ```

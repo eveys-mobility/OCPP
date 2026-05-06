@@ -162,11 +162,11 @@ async def handle(
             charger_reported_at=charger_reported_at,
         )
         envelope_bytes = _build_envelope(cp_id=cp.id, payload=payload)
-        # Broker errors (down, leader election, network) must NOT crash
-        # the WS — the charger isn't waiting on Kafka, and a flaky broker
-        # would otherwise DoS the gateway. Log + drop the sample; the
-        # charger gets a clean MeterValuesResponse and keeps streaming.
-        # Reconnect/retry tuning lives in E2-7.
+        # Best-effort publish — a Kafka broker drop must not crash the
+        # OCPP handler. Without this guard, a flaky broker would DoS the
+        # gateway: the OCPP library treats handler exceptions as crashes,
+        # the charger gets no MeterValuesResponse, and chargers retry
+        # aggressively. Same pattern the other E2-8 emitters use.
         try:
             await cp.event_producer.publish(
                 topic=cp.settings.kafka_topic_cp_meter,

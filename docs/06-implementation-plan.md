@@ -93,7 +93,7 @@ The rollout ramp (Phase 7) is **gate-driven** — moving from W1 → W5 only hap
 | E1-5: handler `BootNotification` | SB1 | E1-4, E1-10 |
 | E1-6: handler `Heartbeat` | SB1 | E1-5 |
 | E1-7: handler `StatusNotification` | SB2 | E1-5 |
-| E1-8: handler `Authorize` (auth-service mocked) | SB2 | E1-5 |
+| E1-8: handler `Authorize` (stub: replies `Accepted` until backend is wired in E3-3) | SB2 | E1-5 |
 | E1-9: handler `StartTransaction` / `StopTransaction` | SB1 | E1-8 |
 | E1-13: smoke test (sim → service → DB assertions) | QA | E1-9 |
 
@@ -109,6 +109,8 @@ The rollout ramp (Phase 7) is **gate-driven** — moving from W1 → W5 only hap
 ## W2-W3 — Full OCPP 1.6 Core + gRPC + Kafka (Phase 2)
 
 **Goal**: full protocol coverage, multi-pod-aware, internal API contracts in place.
+
+> **Phase 2 exit gate met 2026-05-04** — E2-2..E2-14 all ✅; long-tail E2-1 (remaining ~20 1.6 Core handlers) continues alongside Phase 3 since the infrastructure (Kafka producer hardening, ClickHouse landing, gRPC backward-compat CI, idempotency cache, cross-pod bus) is in place. New handlers plug into the existing pipeline without further platform work.
 
 ### W2
 
@@ -130,13 +132,13 @@ The rollout ramp (Phase 7) is **gate-driven** — moving from W1 → W5 only hap
 | E2-4: gRPC server scaffolding (`grpclib`) | SB1 | E2-2 |
 | E2-5: gRPC `RemoteStart` end-to-end | SB1 | E2-4, E2-9 |
 | E2-6: remaining gRPC commands (`RemoteStop`, `Reset`, `ChangeConfiguration`, `TriggerMessage`, `UnlockConnector`, `GetChargerStatus`) [P] | SB1, SB2 | E2-5 |
-| E2-7: Kafka producer (`aiokafka`) [P] | SB2 | E2-3 |
-| E2-8: wire each handler to publish its event | SB2 | E2-7 |
-| E2-10: cross-pod command bus (Redis pub/sub) | SB1 | E2-9 |
-| E2-11: idempotency cache (`BootNotification`, `StopTransaction`) [P] | SB2 | E2-9 |
-| E2-12: gRPC backward-compat tests (CI fails on field rename) [P] | QA | E2-6 |
-| E2-13: ClickHouse table schemas for `MeterValues` / `Heartbeats` / `StatusNotifications` [P] | SRE + SB2 | E2-3 |
-| E2-14: Kafka → ClickHouse ingestion (Kafka engine or sidecar consumer) | SRE + SB2 | E2-13, E2-8 |
+| E2-7: Kafka producer (`aiokafka`) ✅ [P] | SB2 | E2-3 |
+| E2-8: wire each handler to publish its event ✅ | SB2 | E2-7 |
+| E2-10: cross-pod command bus (Redis pub/sub) ✅ | SB1 | E2-9 |
+| E2-11: idempotency cache (`BootNotification`, `StopTransaction`) ✅ [P] | SB2 | E2-9 |
+| E2-12: gRPC backward-compat tests (CI fails on field rename) ✅ [P] | QA | E2-6 |
+| E2-13: ClickHouse table schemas for `MeterValues` / `StatusNotifications` / `BootNotifications` / `StartTransactions` ✅ [P] | SRE + SB2 | E2-3 |
+| E2-14: Kafka → ClickHouse ingestion (sidecar consumer, see ADR-0020) ✅ | SRE + SB2 | E2-13, E2-8 |
 | C-3a: wire OCTT Smart Charging subset into CI (after Smart Charging handlers exist) [P] | QA | E2-1 (Smart Charging slice), C-3 |
 | C-3b: wire OCTT Reservations + LocalAuthList + RemoteTrigger subsets into CI [P] | QA | C-3 |
 
@@ -145,7 +147,7 @@ The rollout ramp (Phase 7) is **gate-driven** — moving from W1 → W5 only hap
 - ✅ All ~25 OCPP 1.6 Core actions handled with tests
 - ✅ Two-pod local cluster: command issued via gRPC reaches the right pod (cross-pod routing works)
 - ✅ Events visible via `kcat`
-- ✅ Telemetry events (`MeterValues`, `Heartbeats`, `StatusNotifications`) visible in ClickHouse within seconds of being published to Kafka
+- ✅ Telemetry events (`MeterValues`, `StatusNotifications`, `BootNotifications`, `StartTransactions`) visible in ClickHouse within seconds of being published to Kafka. Heartbeats are deliberately not in ClickHouse — they're absorbed by the Redis online registry (E2-9) per ADR-0020.
 - ✅ Conformance matrix in [`08-ocpp-conformance.md`](./08-ocpp-conformance.md): all six W1 handler rows promoted to ✅; OCTT 1.6 Core subset green in CI
 - ✅ Idempotency: replay test produces zero double-effects
 - ✅ Coverage ≥ 80% maintained
@@ -155,35 +157,38 @@ The rollout ramp (Phase 7) is **gate-driven** — moving from W1 → W5 only hap
 
 ## W4-W5 — Platform integration (Phase 3) + start OCPP 2.0.1 parallel track
 
-**Goal**: stop being an island; wire into existing Eveys platform.
+**Goal**: wire the gateway to the Eveys backend.
+
+Integration shape: REST in both directions plus async webhooks. Specced in [`docs/integration/`](./integration/README.md); decisions in [ADR-0023](./adr/0023-backend-rest-integration.md).
 
 ### W4
 
 | Task | Owner | Depends on |
 |---|---|---|
-| E3-1: define gRPC contracts with platform services (`auth`, `session`, `device`) | TL + SB1 | sync with platform team |
-| E3-2: implement gRPC clients (`platform/auth.py`, `platform/session.py`, `platform/device.py`) | SB1 | E3-1 |
-| E3-3: wire `Authorize` → `auth-service.CheckAuthorization` [P] | SB1 | E3-2 |
+| E3-1: backend REST contract finalised + ADR-0023 merged | TL + SB1 | sync with backend dev |
+| E3-2: implement `eveys_ocpp.platform.client` (httpx, bearer auth, retry, circuit breaker) | SB1 | E3-1 |
+| E3-3: wire `Authorize` handler → `POST /api/eveys/authorize` [P] | SB1 | E3-2 |
 | E3-4: cache `Authorize` in Redis (TTL 30s) [P] | SB2 | E3-3 |
+| E3-10: publish mock backend (FastAPI, in-repo) for gateway tests [P] | SB2 | E3-1 |
 | **Parallel track starts**: P-1 (OCPP 2.0.1 handler scaffolding) | SB2 (50% time) | W2 |
 
 ### W5
 
 | Task | Owner | Depends on |
 |---|---|---|
-| E3-5: wire `StartTransaction` → `session-service.OpenSession` | SB1 | E3-2 |
-| E3-6: wire `StopTransaction` → `session-service.CloseSession` | SB1 | E3-5 |
-| E3-7: mobile BFF subscribes to `cp.status` (mobile team) [P] | SB2 + mobile dev | E2-7 |
-| E3-9: publish mock `eveys-ocpp` server (Python package) [P] | SB1 | E3-1 |
-| E3-10: ADR-0010 — gRPC versioning + deprecation policy [P] | TL | E3-1 |
+| E3-5: wire `StartTransaction` → `POST /api/eveys/sessions/open`; wire `BootNotification` → `POST /api/eveys/charge-points/register` | SB1 | E3-2 |
+| E3-6: wire `StopTransaction` → `POST /api/eveys/sessions/close` | SB1 | E3-5 |
+| E3-7: gateway-side REST API (read endpoints `/api/v1/...`) [P] | SB2 | E3-1 |
+| E3-8: gateway-side REST command endpoints (19 HTTP wrappers) [P] | SB2 | E3-7 |
+| E3-9: webhook delivery infrastructure (HMAC-signed, retried) [P] | SB1 | E3-2 |
 | Continue P-1: 2.0.1 scaffolding | SB2 (50%) | P-1 (W4) |
 
 **Exit gate**:
 
-- ✅ Real `Authorize` against `auth-service` works (charger sees real RFID/idTag check)
-- ✅ Mobile app shows live charger status (sourced from Kafka)
-- ✅ Mock server published; downstream teams can develop independently
-- ✅ ADR-0010 merged
+- ✅ Charger RFID tap → backend `/authorize` → backend reply forwarded to charger end-to-end.
+- ✅ Backend can read MeterValues / status history / transactions via gateway `/api/v1/...`.
+- ✅ Backend receives webhook deliveries for `cp.boot` / `cp.status` / `tx.started` / `tx.stopped`.
+- ✅ Mock backend published; gateway integration tests run without a live backend.
 
 ---
 

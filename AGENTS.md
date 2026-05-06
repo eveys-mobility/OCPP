@@ -93,9 +93,16 @@ Always use the Makefile targets — don't invoke underlying tools directly unles
 | `make lint`   | Run `ruff check` |
 | `make types`  | Run `mypy --strict src/` |
 | `make tests`  | Full pre-commit gate: ruff, mypy, pytest with coverage |
-| `make build`  | Build wheel + container image |
+| `make build-image` | Build the `eveys-ocpp:dev` container image |
+| `make compose-up` / `compose-down` / `compose-status` | Bring the data plane up / down / inspect |
+| `make e2e` | Tier-2 e2e: compose-up + alembic + ch-migrate + tests/e2e + compose-down |
+| `make compose-smoke` | Tier-3 smoke: real built image in real compose stack (ADR-0024). Requires Docker. |
+| `make config-export` | Regenerate `docs/11-configuration-reference.md` and `.env.example` from `Settings` (ADR-0025) |
+| `make config-export-check` | Mirrors the E0-14 CI gate; fails if either generated file drifts from `Settings` |
+| `make config-schema` | Print `Settings.model_json_schema()` for downstream surfaces (Helm validators, operator UIs) |
+| `make docs` | Build the docs site (delegates to `docs/Makefile`) |
 
-The documentation site is built separately from `docs/` using its own `Makefile` (Sphinx + MyST). See [`docs/README.md`](./docs/README.md#building-this-site) — typical flow is `cd docs && make install && make html`. Once the top-level Makefile lands (task E0-2), `make docs` at the project root will delegate to it.
+The documentation site is built from `docs/` using its own `Makefile` (Sphinx + MyST). See [`docs/README.md`](./docs/README.md#building-this-site). The repo-root `make docs` target delegates to it.
 
 **Before declaring a task done, run `make tests`.** It is the same gate CI runs.
 

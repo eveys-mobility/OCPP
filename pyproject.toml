@@ -23,6 +23,10 @@ dependencies = [
     "protobuf>=5.28",              # runtime for grpclib-generated stubs
     "redis>=5.2",                  # async Redis client for online registry + pub/sub bus (E2-9, E2-10)
     "aiokafka>=0.12",              # async Kafka producer for event firehose (E2-7, E2-8); first use is MeterValues
+    "asynch>=0.2",                 # async ClickHouse driver for the Kafka→CH ingestor (E2-14, ADR-0020). Sync drivers (clickhouse-driver) would block the asyncio loop on every insert, which AGENTS.md §"Async patterns" prohibits.
+    "httpx>=0.28",                 # async HTTP client for the backend integration (E3-2, ADR-0023). Sync clients (`requests`) would block the asyncio loop on every Authorize / sessions/open / sessions/close call, which AGENTS.md §"Async patterns" prohibits.
+    "fastapi>=0.115",              # ASGI framework for the inbound gateway REST API (E3-7, ADR-0026); also used by the dev-only mock backend (E3-10).
+    "uvicorn[standard]>=0.32",     # ASGI server. Run programmatically (not the CLI) inside the existing TaskGroup so the WS/gRPC/REST servers share one event loop and structured-logging context (ADR-0026).
 ]
 
 [project.optional-dependencies]
@@ -134,6 +138,13 @@ module = [
     "eveys_ocpp.transport.ws_server",
     "eveys_ocpp.transport.grpc_server",
     "eveys_ocpp.handlers.v16.meter_values",
+    # E2-8 emitters touch the same generated `events_pb2` types — same
+    # untyped-stub story as meter_values.
+    "eveys_ocpp.handlers.v16.boot_notification",
+    "eveys_ocpp.handlers.v16.status_notification",
+    "eveys_ocpp.handlers.v16.start_transaction",
+    # E2-14 ClickHouse ingestor — same generated `events_pb2` opaqueness.
+    "eveys_ocpp.clickhouse.ingestor",
 ]
 disallow_untyped_decorators = false
 disallow_untyped_calls = false

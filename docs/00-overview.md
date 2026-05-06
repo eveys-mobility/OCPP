@@ -21,7 +21,7 @@ Built on:
 - **`websockets`** for transport
 - **gRPC** (`grpclib` async) for internal API
 - **Postgres** (state), **Redis** (registry / cache / pub-sub), **Kafka** (event firehose)
-- **ClickHouse** (time-series store for `MeterValues`, `Heartbeats`, `StatusNotifications`)
+- **ClickHouse** (time-series store for `MeterValues`, `StatusNotifications`, `BootNotifications`, `StartTransactions`; Heartbeats are absorbed by the Redis online registry per ADR-0020 rather than persisted as time-series rows)
 - **Kubernetes** for orchestration
 
 ## Where it fits in the Eveys platform
@@ -35,28 +35,24 @@ Built on:
                           │  (the gateway)   │
                           └────┬───────┬─────┘
                                │       │
-                  gRPC commands│       │Kafka events
+              REST + webhooks  │       │ Kafka events (firehose)
                                │       ▼
                                │   ┌──────────────────────────────┐
-                               │   │ eveys platform               │
-                               │   │  payment · auth · session    │
-                               │   │  CPO · station · device      │
-                               └──►│  mobile BFF                  │
+                               │   │ Eveys backend                │
+                               └──►│  (auth · sessions · billing) │
                                    └──────────────────────────────┘
 ```
 
-`eveys/ocpp` is **the only service that holds charger sockets**. Other Eveys services reach chargers through `eveys/ocpp`'s gRPC; they learn about charger events by subscribing to Kafka topics.
+`eveys/ocpp` is **the only service that holds charger sockets**. The Eveys backend reaches chargers through `eveys/ocpp`'s REST API (or gRPC for the lower-overhead path); it learns about charger events by webhook delivery and / or by subscribing to Kafka topics.
 
 ## What `eveys/ocpp` does **not** own
 
-- ❌ Drivers, accounts, RFID tokens (owned by the `auth` service)
-- ❌ Mobile-app API surface (owned by `mobile-bff`)
-- ❌ Station / location metadata (owned by `station` / `cpo` services)
-- ❌ Payment processing (owned by `payment-gateway`)
-- ❌ Operator UI (owned by `admin`)
-- ❌ ISO 15118, OCPI roaming (future, separate services)
+- ❌ Drivers, accounts, RFID tokens — the backend owns user / authorization state.
+- ❌ Billing, session-cost calculation — the backend owns the billing record; `eveys/ocpp` reports start/stop meter readings.
+- ❌ Operator UI — separate concern; the backend or a downstream UI consumes the gateway's REST surface.
+- ❌ ISO 15118, OCPI roaming — future, separate concerns.
 
-When `eveys/ocpp` needs a decision (e.g. "is `id_tag=ABC123` authorized?"), it **calls out** via gRPC to the relevant service. It never imports their database.
+When `eveys/ocpp` needs a decision (e.g. "is `id_tag=ABC123` authorized?"), it **calls out** to the backend over REST per the contract in [`docs/integration/`](./integration/README.md). It never imports the backend's database.
 
 ## What this project must do
 
@@ -65,7 +61,7 @@ OCPP at fleet scale has workload characteristics that justify a dedicated servic
 - **Long-lived stateful WebSocket connections** — one per charger, 24/7. Each pod holds thousands of sockets simultaneously.
 - **Strict per-charger message ordering** — out-of-order delivery silently breaks transaction state.
 - **Bursty reconnect traffic** — pod restarts must not cascade into fleet-wide reconnect storms.
-- **Time-series telemetry firehose** — `MeterValues` / `Heartbeats` / `StatusNotifications` belong in Kafka, not a relational store.
+- **Time-series telemetry firehose** — `MeterValues` / `StatusNotifications` / `BootNotifications` / `StartTransactions` belong in Kafka and ClickHouse, not a relational store. (Heartbeats are presence pings handled in-memory by the Redis online registry — no time-series row written; see ADR-0020.)
 - **Observable at per-charger granularity** — any incident must be localizable to a single `cp_id` in seconds.
 
 These constraints don't fit a typical request/response service. `eveys/ocpp` is built specifically for them.
@@ -83,7 +79,7 @@ These constraints don't fit a typical request/response service. `eveys/ocpp` is 
 
 - Replacing the rest of the Eveys platform.
 - Writing new payment / auth / session logic.
-- Building a new mobile app or admin UI.
+- Building consumer-facing UIs (mobile, web, admin) — those live in the Eveys backend / its downstream apps.
 - Migrating chargers to OCPP 2.0.1 firmware (separate program).
 - Building OCPI roaming or ISO 15118 plug-and-charge (future projects).
 

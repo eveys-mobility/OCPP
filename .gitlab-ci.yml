@@ -57,7 +57,7 @@ lint:
   <<: *python-job
   stage: quality
   script:
-    - .venv/bin/ruff check src tests
+    - .venv/bin/ruff check src tests scripts
 
 types:
   <<: *python-job
@@ -65,13 +65,113 @@ types:
   script:
     - .venv/bin/mypy
 
+# ---- E0-14 config-reference staleness gate (ADR-0025) ----------------------
+#
+# `Settings` is the source of truth for `docs/11-configuration-reference.md`
+# and `.env.example`. The generator at `scripts/render_config_reference.py`
+# produces both files deterministically. This job runs the generator with
+# `--check`, which exits non-zero if the produced output differs from the
+# committed files — i.e., a `Settings` change without a matching
+# `make config-export` regenerate.
+#
+# Hard-fails by design (no bypass label). Re-running `make config-export`
+# locally and committing the result is the fix.
+config-reference-fresh:
+  <<: *python-job
+  stage: quality
+  script:
+    - .venv/bin/python scripts/render_config_reference.py --check
+
+# ---- E2-12 proto backward-compat gate (ADR-0018) ---------------------------
+#
+# Runs `buf breaking` against `main` so a field rename / removal /
+# renumbering / oneof-shape change in `proto/ocpp_gw/v1/` or
+# `proto/events/v1/` fails the MR before it can land. Hard-fails by
+# design — the proto contracts are explicitly frozen at v1
+# (`proto/README.md`); this gate enforces what the docs already promise.
+#
+# Only runs on MR pipelines (where there's a `main` to compare against).
+# On pushes to `main` itself there's nothing to compare.
+#
+# Bypass: an intentional v1→v2 break adds the `bypass-breaking-change`
+# label to the MR. The job exits 0 with a loud WARNING but the policy
+# (per ADR-0018) requires a tech-lead approval and a same-MR package
+# version bump.
+proto-breaking:
+  image: alpine:3.20
+  stage: quality
+  rules:
+    # MR pipelines only. On main push pipelines the gate is a no-op.
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+  variables:
+    # Pinned in line with ADR-0018 § Risks. Bump deliberately.
+    BUF_VERSION: "1.45.0"
+  before_script:
+    - apk add --no-cache curl git ca-certificates
+    # Install pinned `buf` binary. One static Go binary, ~25 MB.
+    - curl -sSL "https://github.com/bufbuild/buf/releases/download/v${BUF_VERSION}/buf-Linux-x86_64"
+        -o /usr/local/bin/buf
+    - chmod +x /usr/local/bin/buf
+    - buf --version
+    # MR pipelines fetch only the source branch by default. Fetch `main`
+    # explicitly so `buf breaking --against '.git#branch=main'` has a
+    # baseline to compare against.
+    - git fetch --depth=50 origin "${CI_DEFAULT_BRANCH}:${CI_DEFAULT_BRANCH}" || true
+  script:
+    # Bypass for intentional v1→v2 breaks. Per ADR-0018 the policy is
+    # tech-lead approval + same-MR version bump; this script just lets
+    # the pipeline pass — it does not enforce the policy itself.
+    - |
+      if echo "${CI_MERGE_REQUEST_LABELS}" | tr ',' '\n' | grep -Fxq "bypass-breaking-change"; then
+        echo "WARNING: bypass-breaking-change label present — proto-breaking gate skipped."
+        echo "Per ADR-0018, this requires tech-lead approval and a same-MR package version bump."
+        exit 0
+      fi
+    # `buf breaking` with a v2 multi-module workspace needs to be
+    # invoked per module; comparing the whole workspace against a
+    # whole-workspace baseline conflates the two modules' image counts.
+    # Loop over each module and compare it to its own subdir on main.
+    - |
+      for module in proto/ocpp_gw/v1 proto/events/v1; do
+        echo "=== buf breaking: $module ==="
+        buf breaking "$module" --against ".git#branch=${CI_DEFAULT_BRANCH},subdir=$module"
+      done
+
 tests:
   <<: *python-job
   stage: test
+  # Redis is the only data-plane dep the unit suite needs. Without it,
+  # `tests/unit/test_bus.py` skips its 6 tests and the bus module drops
+  # to ~18% coverage, which breaks the 80% gate (E2-10). Postgres /
+  # Kafka / ClickHouse stay over in `tests:e2e` — the unit suite mocks
+  # them at the boundary.
+  services:
+    - name: redis:7-alpine
+      alias: redis
+  variables:
+    DEBIAN_FRONTEND: noninteractive
+    UV_CACHE_DIR: $CI_PROJECT_DIR/.uv-cache
+    UV_PROJECT_ENVIRONMENT: $CI_PROJECT_DIR/.venv
+    E2E_REDIS_HOST: redis
+    # Refuse to silently skip the bus tests if Redis isn't reachable.
+    # A green-but-skipped pipeline would let coverage rot.
+    E2E_REQUIRE: "1"
   script:
+    # Wait for Redis to accept TCP connections; the service container
+    # boots in parallel with the job. Without this the first test's
+    # connection attempt may race the broker.
+    - apt-get install -y --no-install-recommends netcat-openbsd >/dev/null
+    - |
+      for i in $(seq 1 60); do
+        if nc -z redis 6379 2>/dev/null; then
+          echo "redis:6379 reachable after ${i}s"
+          break
+        fi
+        sleep 1
+      done
     # Unit tests only. E2E tests skip themselves when the data plane
     # isn't reachable — they run in `tests:e2e` below, which provides
-    # the data plane via GitLab `services:` sidecars.
+    # the full data plane via GitLab `services:` sidecars.
     - .venv/bin/pytest tests/unit tests/test_package.py --cov-report=xml --cov-report=term
   coverage: '/Total coverage: (\d+\.\d+)%/'
   artifacts:
@@ -83,6 +183,38 @@ tests:
     paths:
       - coverage.xml
     expire_in: 14 days
+
+# ---- E3-10 mock backend pipeline -------------------------------------------
+#
+# The mock implementing docs/integration/01-backend-rest-contract.md is
+# tested at two layers:
+#
+# 1. In-process ASGI tests in `tests/unit/mock_backend/` — already part
+#    of the `tests` job above (collected via `pytest tests/unit/`).
+#    Fast, no subprocess, no socket, ~14 cases.
+#
+# 2. Standalone-process smoke in `tests/smoke/test_mock_backend_standalone.py`
+#    — boots `python -m tests.mock_backend` as a real subprocess on a
+#    free local port and exercises every endpoint over real HTTP. Catches
+#    issues the in-process tests miss: uvicorn startup, CLI flag
+#    handling, port binding, header pass-through across the actual HTTP
+#    stack. ~9 cases.
+#
+# Smoke tests are split out so they don't slow down the main unit
+# pipeline (subprocess fork + uvicorn boot is ~1 s) and so a mock-backend
+# regression shows up as its own red job in the pipeline view rather
+# than buried in the unit-test output.
+#
+# No `services:` sidecars — the mock has no external deps. Pure Python
+# subprocess + httpx; the test runner just needs the dev venv.
+tests:mock-backend:
+  <<: *python-job
+  stage: test
+  # `--no-cov` disables the project's 80% coverage gate (which targets
+  # `src/eveys_ocpp/` — the smoke tests don't import the gateway, they
+  # exercise the mock).
+  script:
+    - .venv/bin/pytest tests/smoke/test_mock_backend_standalone.py --no-cov -v
 
 tests:e2e:
   <<: *python-job
@@ -135,6 +267,21 @@ tests:e2e:
     E2E_REDIS_HOST: redis
     E2E_KAFKA_HOST: kafka
     E2E_CH_HOST: clickhouse
+    # ClickHouse listens on 8123 (HTTP) and 9000 (native protocol)
+    # inside its container. GitLab `services:` expose the container
+    # ports directly on the shared network — no host-side remap, so
+    # the in-job hostname:port pair is `clickhouse:8123` and
+    # `clickhouse:9000`. Local-dev compose remaps 9000→9001 on the
+    # host to dodge IDE conflicts (see deploy/compose/docker-compose.yml);
+    # CI doesn't have that issue. Set both explicitly so a future
+    # change to compose's host-port mapping can't silently break CI.
+    E2E_CH_HTTP_PORT: "8123"
+    E2E_CH_NATIVE_PORT: "9000"
+    # The Kafka→ClickHouse e2e test reads this directly to point its
+    # in-process ingestor at the right ClickHouse.
+    EVEYS_OCPP_CLICKHOUSE_HOST: clickhouse
+    EVEYS_OCPP_CLICKHOUSE_PORT: "9000"
+    EVEYS_OCPP_CLICKHOUSE_DB: eveys_ocpp
     # In CI, refuse to silently skip the e2e tests if a service isn't
     # reachable — a green-but-skipped pipeline is worse than a red one.
     E2E_REQUIRE: "1"
@@ -161,9 +308,121 @@ tests:e2e:
       wait_tcp postgres 5432 60
       wait_tcp redis 6379 60
       wait_tcp clickhouse 8123 60
+      wait_tcp clickhouse 9000 60
       wait_tcp kafka 9092 90
     - .venv/bin/alembic upgrade head
+    # Apply the ClickHouse schema before pytest so the e2e schema
+    # checks find the tables they expect. Idempotent.
+    - .venv/bin/python -m eveys_ocpp.clickhouse.migrate
+        --host "${E2E_CH_HOST}"
+        --port "${E2E_CH_HTTP_PORT}"
+        --db "${EVEYS_OCPP_CLICKHOUSE_DB}"
     - .venv/bin/pytest tests/e2e -v --no-cov
+
+# ---- Tier-3 compose smoke (ADR-0024, docs/10-testing-strategy.md) ----------
+# Builds the production-shaped image from `deploy/Dockerfile`, brings the
+# entire `deploy/compose/docker-compose.yml` stack up via Docker-in-Docker,
+# asserts every container reaches a stable Running state with no restart
+# count, and drives a real OCPP charger flow through the published WS
+# port.  This is the layer that catches deploy-time wiring bugs (env vars,
+# Kafka listener layout, ENTRYPOINT/CMD shape, healthchecks) — bugs that
+# Tier-1 unit and Tier-2 integration tests cannot see.
+tests:compose-smoke:
+  stage: test
+  # Glibc-based image (NOT alpine `docker:27`). Several transitive deps
+  # — `lz4` chief among them — ship manylinux wheels but no musllinux
+  # wheels for cp313. On alpine the install would fall back to compiling
+  # from source, which needs a C toolchain we don't carry. python:3.13-slim
+  # is debian-slim with cpython 3.13 already on PATH; we add the Docker
+  # CLI + compose plugin via apt so this job can drive the dind sidecar.
+  image: python:3.13-slim
+  services:
+    - name: docker:27-dind
+      alias: docker
+      command: ["--tls=false"]
+  variables:
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_TLS_CERTDIR: ""
+    DEBIAN_FRONTEND: noninteractive
+    # `COMPOSE_SMOKE_REQUIRE=1` flips the conftest's "skip if Docker
+    # missing" into a hard failure — a green-but-skipped pipeline is
+    # the original class of bug this layer was added to prevent.
+    COMPOSE_SMOKE: "1"
+    COMPOSE_SMOKE_REQUIRE: "1"
+    # In dind, compose publishes ports on the dind sidecar's network
+    # (alias `docker`), NOT on the job container. The conftest reads
+    # this env var to know where to dial WS / Postgres / ClickHouse.
+    # On a laptop this defaults to `localhost`.
+    COMPOSE_SMOKE_PUBLISHED_HOST: docker
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes:
+        - deploy/**/*
+        - tests/compose_smoke/**/*
+        - pyproject.toml
+        - src/eveys_ocpp/__main__.py
+        - src/eveys_ocpp/clickhouse/ingestor.py
+        - .gitlab-ci.yml
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  before_script:
+    # We need `docker compose` (subcommand form) which is shipped only by
+    # Docker Inc's `docker-compose-plugin`, not by Debian's standalone
+    # `docker-compose` package. Add Docker's apt repo so the plugin
+    # resolves. The dind sidecar already provides the daemon — we install
+    # the CLI + plugin only. `make` runs the `compose-smoke` target;
+    # `git` is needed by `make install` (pre-commit hook setup).
+    - apt-get update -qq
+    - apt-get install -y --no-install-recommends ca-certificates curl gnupg make git >/dev/null
+    - install -m 0755 -d /etc/apt/keyrings
+    - curl -fsSL https://download.docker.com/linux/debian/gpg
+        | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+    - chmod a+r /etc/apt/keyrings/docker.gpg
+    - echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg]
+        https://download.docker.com/linux/debian $(. /etc/os-release && echo $VERSION_CODENAME) stable"
+        > /etc/apt/sources.list.d/docker.list
+    - apt-get update -qq
+    - apt-get install -y --no-install-recommends docker-ce-cli docker-compose-plugin >/dev/null
+    # Install uv so we can build a venv for pytest itself (the tests
+    # are Python; only the stack-under-test is in Docker).
+    - curl -LsSf https://astral.sh/uv/install.sh | sh
+    - export PATH="$HOME/.local/bin:$PATH"
+    - uv venv --clear .venv
+    - uv pip install --python .venv/bin/python -e ".[dev]"
+    # Generate gRPC stubs that alembic + the test suite import
+    # transitively. (Same incantation as the other test jobs.)
+    - .venv/bin/python -m grpc_tools.protoc
+        --plugin=protoc-gen-grpclib_python=.venv/bin/protoc-gen-grpclib_python
+        --proto_path=proto
+        --python_out=src/eveys_ocpp/_generated
+        --grpclib_python_out=src/eveys_ocpp/_generated
+        proto/ocpp_gw/v1/gateway.proto
+        proto/events/v1/events.proto
+    - find src/eveys_ocpp/_generated -mindepth 1 -type d -exec touch {}/__init__.py \;
+  script:
+    # Wait for the dind daemon. `docker info` blocks until the daemon
+    # is reachable; this is the standard dind warm-up dance.
+    - until docker info >/dev/null 2>&1; do echo "  waiting for dockerd..."; sleep 1; done
+    # Build the image referenced by the compose file. `make compose-smoke`
+    # would also build, but we split it so a build failure is a
+    # distinct, faster signal than a stack-startup failure.
+    - docker compose -f deploy/compose/docker-compose.yml build
+    # Bring the stack up, run the smoke suite, tear down. The Make
+    # target captures container logs into `.compose-smoke-logs/` even
+    # on failure — those are surfaced as job artifacts below.
+    - make compose-smoke
+  after_script:
+    # Even on failure, surface container logs so a remote-runner crash
+    # produces the same debug signal as a laptop crash.
+    - mkdir -p .compose-smoke-logs
+    - for c in eveys-ocpp eveys-ocpp-clickhouse-ingestor eveys-ocpp-postgres eveys-ocpp-redis eveys-ocpp-kafka eveys-ocpp-clickhouse; do
+        docker logs "$c" > ".compose-smoke-logs/$c.log" 2>&1 || true;
+      done
+  artifacts:
+    name: "compose-smoke-logs-$CI_JOB_ID"
+    when: always
+    paths:
+      - .compose-smoke-logs/
+    expire_in: 7 days
 
 # ---- docs (tagged-release artifact, unchanged) -----------------------------
 
