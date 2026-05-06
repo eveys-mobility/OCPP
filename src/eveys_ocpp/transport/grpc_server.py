@@ -1480,20 +1480,15 @@ def _build_get_composite_schedule_response(
 
 async def serve_forever(
     *,
-    session_factory: async_sessionmaker[AsyncSession],
     settings: Settings,
-    connections: ConnectionMap | None = None,
-    registry: Registry | None = None,
-    bus: CommandBus | None = None,
+    service: OcppGatewayService,
 ) -> None:
-    """Start the gRPC server and block until cancelled."""
-    service = OcppGatewayService(
-        session_factory=session_factory,
-        settings=settings,
-        connections=connections,
-        registry=registry,
-        bus=bus,
-    )
+    """Start the gRPC server and block until cancelled.
+
+    The service instance is built by the caller (typically `__main__.py`)
+    and shared with the REST command surface (E3-8) so both transports
+    dispatch through the same `ConnectionMap` / `Registry` / `CommandBus`.
+    """
     server = Server([service])
     await server.start(host=settings.grpc_host, port=settings.grpc_port)
     log.info("grpc.listening", host=settings.grpc_host, port=settings.grpc_port)
