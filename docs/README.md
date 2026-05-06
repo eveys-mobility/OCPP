@@ -22,10 +22,6 @@ Documentation for **eveys/ocpp**, the OCPP gateway service of the Eveys EV-charg
 | 11 | [Configuration reference](./11-configuration-reference.md) | Every env var: category, default, range, stability, secret-flag, what it does, what changes if you change it (see ADR-0025) | Operators, SREs, anyone tuning the service |
 | 12 | [Connecting a real charger](./12-connecting-real-charger.md) | Operator/integrator guide: install, connect a real OCPP 1.6 device, watch activity in logs/Postgres/ClickHouse/Kafka, use the REST API from `curl` or Postman | Operators, integrators, anyone connecting a charger for the first time |
 
-## Related project files
-
-- `AGENTS.md` (in repo root) — AI-assistant instructions (the canonical source for all AI tooling)
-
 ## ADRs
 
 Architecture Decision Records live in the [`adr/` directory](./05-architecture-decisions.md). Each ADR records *one* significant decision, *why* it was made, and *what was rejected*. ADRs are append-only — superseded ones are marked, not deleted.
@@ -41,7 +37,6 @@ Current:
 - **First time?** Read `00-overview.md`, then `01-roadmap.md`, then skim the rest.
 - **Planning a sprint?** Read `06-implementation-plan.md` for the weekly schedule and `02-tasks.md` for the IDs.
 - **Contributing code?** Read `03-coding-standards.md` and `04-contributing.md`.
-- **Working with AI?** Read `AGENTS.md` in the repo root before opening your AI editor.
 - **Making a significant decision?** Add an ADR. Don't bury it in code or chat.
 
 ## Status & ownership

@@ -15,7 +15,6 @@
 | E0-3 | CI pipeline (GitHub Actions): lint + test on Python 3.13 | ✅ done — `.github/workflows/quality.yml` + `tests.yml` run `lint` + `types` + `tests` (with coverage XML artifact) on every PR + every `main` push; venv cached by pyproject hash |
 | E0-4 | Pre-commit config (ruff lint + format, mypy --strict on `src/`, stock hygiene, conventional-commit message check) | ✅ done — `.pre-commit-config.yaml` runs on every commit; `make install` activates hooks; `make precommit` runs against all files |
 | E0-5 | Dockerfile (distroless Python 3.13 base, multi-stage) | Image < 200 MB, runs `eveys-ocpp --version` | ✅ done — `eveys-ocpp:dev` is 168 MB, runs `--version` correctly, ships in compose stack |
-| E0-6 | `AGENTS.md` and `CLAUDE.md` at repo root | Project conventions cheat-sheet picked up by every IDE | 0.5d |
 | E0-7 | `.editorconfig`, `.gitignore`, `.gitattributes` | Standard project hygiene | ✅ done |
 | E0-8 | Implementation plan written and reviewed | `docs/06-implementation-plan.md` merged | 1d |
 | E0-9 | `make doctor` target — checks versions of Python, Docker, kubectl, helm, k3d/kind against `docs/07-local-dev-setup.md` and prints what's missing | New engineers run one command and learn what to install | ✅ done |

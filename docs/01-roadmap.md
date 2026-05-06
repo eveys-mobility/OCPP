@@ -30,8 +30,7 @@
 | Repo scaffolded: `pyproject.toml`, `Makefile`, `src/`, `tests/`, `proto/` | Senior backend | `make install && make tests` is green on empty package |
 | CI on GitHub Actions (Python 3.13) | Senior backend | First PR runs lint + tests automatically |
 | Container image builds | Platform / SRE | `docker build` succeeds; image is < 200 MB |
-| `AGENTS.md` + `CLAUDE.md` reviewed | Tech lead | AI assistants pick up rules in any IDE |
-| Implementation plan written | Tech lead (this assistant) | Plan doc merged after docs are approved |
+| Implementation plan written | Tech lead | Plan doc merged after docs are approved |
 
 **Exit**: a clone-able repo where `make tests` works and CI is green.
 

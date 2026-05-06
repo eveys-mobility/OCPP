@@ -51,8 +51,8 @@ Cert readiness has four parallel streams. Each has an owner and gates the cert r
 | Implement Local Authorization List profile actions | SB1, SB2 | 🟡 done (E2-1B) | TC_042, TC_043, TC_008 in Appendix C. `local_auth_lists` + `local_auth_list_entries` tables via Alembic `0002`. Promotion to ✅ blocked on OCTT. |
 | Implement Remote Trigger profile actions | SB1 | 🟡 done (E2-6) | TC_054, TC_055 in Appendix C. `TriggerMessage` shipped E2-6 covering all six message kinds. Promotion to ✅ blocked on OCTT. |
 | Implement FirmwareManagement profile actions | SB1, SB2 | 🟡 done (E2-1F) | `GetDiagnostics`, `UpdateFirmware` outbound + `DiagnosticsStatusNotification`, `FirmwareStatusNotification` inbound. Two latest-wins columns on `charge_points` via Alembic `0004`; per-transition history through structured logs only. Promotion to ✅ blocked on OCTT. (Secure variants TC_080/TC_081 ship in Phase 5 alongside mTLS.) |
-| Every handler MR cites Appendix C TC IDs in the conformance matrix | All engineers | 🟡 in progress | Required by AGENTS.md OCPP rule 8. |
-| Every handler MR ships unit tests covering every status return code the spec allows | All engineers | 🟡 partial | Tightened in Phase 2 reviews. |
+| Every handler PR cites Appendix C TC IDs in the conformance matrix | All engineers | 🟡 in progress | Required by `docs/03-coding-standards.md` (§ OCPP-specific rules). |
+| Every handler PR ships unit tests covering every status return code the spec allows | All engineers | 🟡 partial | Tightened in Phase 2 reviews. |
 
 ### Stream 3 — OCTT in CI (continuous conformance)
 

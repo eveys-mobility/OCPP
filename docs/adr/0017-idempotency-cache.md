@@ -79,7 +79,7 @@ Reversible. The cache is a thin module behind a single dependency-injected attri
 
 ## References
 
-- AGENTS.md hard rule 3 — "Idempotent inbound `BootNotification` and `StopTransaction`."
+- `docs/03-coding-standards.md` — "Idempotent inbound `BootNotification` and `StopTransaction`."
 - E2-11 in `docs/02-tasks.md`.
 - ADR-0016 — sets the precedent of "use the existing Redis for new short-TTL state."
 - `src/eveys_ocpp/idempotency.py` — implementation.

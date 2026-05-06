@@ -32,8 +32,6 @@ eveys/ocpp/
 ├── pyproject.toml
 ├── Makefile
 ├── README.md
-├── AGENTS.md             # AI-assistant rules
-├── CLAUDE.md             # thin pointer to AGENTS.md
 ├── docs/                 # this directory — markdown source + Sphinx build (conf.py, Makefile, requirements.txt)
 ├── proto/                # gRPC + event protobuf definitions (versioned)
 │   ├── ocpp_gw/v1/

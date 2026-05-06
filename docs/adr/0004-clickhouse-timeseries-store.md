@@ -76,7 +76,7 @@ Postgres remains for **transactional** state (`charge_points`, `transactions`, c
 
 ## Project conventions implied by this decision
 
-- `MeterValues`, `Heartbeats`, and `StatusNotifications` go to **Kafka**, never to Postgres. (Already encoded in `AGENTS.md` at the repo root, rule 4.)
+- `MeterValues`, `Heartbeats`, and `StatusNotifications` go to **Kafka**, never to Postgres. (Encoded in `docs/03-coding-standards.md`.)
 - `eveys/ocpp` does **not** read from or write to ClickHouse directly. The Kafka boundary is the contract.
 - ClickHouse table schemas are versioned alongside the Kafka event protobufs in `proto/events/`.
 

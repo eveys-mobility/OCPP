@@ -61,8 +61,8 @@ Constraints:
 
 - **Five topics, five Kafka consumer offsets per consumer.** Operationally a little more to monitor than one topic. The split is justified by the consumer-isolation argument above.
 - **`oneof` discriminator carries a small per-record overhead** — one extra varint tag. Negligible at our volumes.
-- **Protobuf codegen is required everywhere.** `make protoc` is now part of `make install`, and CI's `before_script` runs it (see `.gitlab-ci.yml`). New consumers in other repos must mirror this.
-- **Proto stubs are generated, not committed.** Means engineers running unfamiliar IDEs need to know to run `make protoc` first. Documented in `AGENTS.md` and `docs/03-coding-standards.md`.
+- **Protobuf codegen is required everywhere.** `make protoc` is now part of `make install`, and the CI workflows run it via the shared `setup-python-venv` action (`.github/actions/setup-python-venv/action.yml`). New consumers in other repos must mirror this.
+- **Proto stubs are generated, not committed.** Means engineers running unfamiliar IDEs need to know to run `make protoc` first. Documented in `docs/03-coding-standards.md`.
 
 ### Risks
 
@@ -88,5 +88,5 @@ Constraints:
 - [`proto/events/v1/events.proto`](../../proto/events/v1/events.proto) — the canonical schema this ADR formalizes.
 - [ADR-0004 — ClickHouse as the time-series store](./0004-clickhouse-timeseries-store.md) — the storage end of the same data path.
 - ADR-0014 (planned) — Schema Registry choice for Kafka events. Will revisit "JSON / Avro / protobuf" if a registry materially changes the trade-offs.
-- `AGENTS.md` (at the repo root) — hard rule 4 (`MeterValues` to Kafka, never Postgres) and the per-charger-ordering rule.
+- [`docs/03-coding-standards.md`](../03-coding-standards.md) — `MeterValues` go to Kafka never Postgres, and the per-charger-ordering rule.
 - [`docs/02-tasks.md`](../02-tasks.md) — E2-3 (proto frozen end of W3), E2-7 (producer), E2-8 (per-handler wiring).
