@@ -67,11 +67,28 @@ def fake_registry() -> MagicMock:
     return registry
 
 
+@pytest.fixture
+def fake_command_service() -> MagicMock:
+    """Stub `OcppGatewayService` — only `_dispatch_ocpp_call` is called
+    by the command routes (E3-8). Tests override its return value or
+    `side_effect` per-case to inject GRPCError for the offline / timeout
+    paths.
+
+    Default: dispatches return a SimpleNamespace with `status="Accepted"`
+    so a route called without per-test setup gets a sensible no-op."""
+    from types import SimpleNamespace
+
+    service = MagicMock()
+    service._dispatch_ocpp_call = AsyncMock(return_value=SimpleNamespace(status="Accepted"))
+    return service
+
+
 @pytest_asyncio.fixture
 async def client(
     settings: Settings,
     fake_session_factory: Any,
     fake_registry: MagicMock,
+    fake_command_service: MagicMock,
 ) -> AsyncIterator[httpx.AsyncClient]:
     """In-process REST client. ASGITransport routes calls to the app
     without booting a socket."""
@@ -80,6 +97,7 @@ async def client(
         settings=settings,
         registry=fake_registry,
         redis=None,
+        command_service=fake_command_service,
     )
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app),
