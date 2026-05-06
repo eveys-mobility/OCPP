@@ -39,4 +39,4 @@ A `make protoc` target lands with task **E2-4** (gRPC server scaffolding).
 
 ## Conformance pointer
 
-Each gRPC command maps to one or more OCA Appendix C test IDs in [`docs/08-ocpp-conformance.md`](../docs/08-ocpp-conformance.md). Adding an RPC also requires a 🟡 row in the conformance matrix for the OCPP message it sends to the charger (AGENTS rule 8).
+Each gRPC command maps to one or more OCA Appendix C test IDs. Adding an RPC requires updating the conformance matrix entry for the OCPP message it sends to the charger.
