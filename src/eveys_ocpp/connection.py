@@ -47,7 +47,7 @@ class EveysChargePoint(Cpv16):
     - Redis registry handle (None in unit tests + Kafka-less stacks)
     - Kafka event producer (None in unit tests + Kafka-less stacks)
     - Backend HTTP client (None in unit tests / when backend_base_url is empty)
-    - Authorize cache (None when no Redis is wired)
+    - Authorize cache (None when Redis is unavailable or `backend_authorize_cache_enabled=False`)
     - per-charger logging context
     """
 
