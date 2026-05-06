@@ -4,13 +4,13 @@ version = "0.0.0"
 description = "OCPP gateway service for the Eveys EV-charging platform"
 readme = "README.md"
 requires-python = ">=3.13"
-license = { text = "Proprietary" }
+license = { text = "Apache-2.0" }
 authors = [{ name = "Eveys engineering" }]
 
 # Runtime dependencies are intentionally minimal. Each addition needs a
 # justification in the PR description.
 dependencies = [
-    "ocpp>=2.1,<2.2",              # mobilityhouse/ocpp — pinned minor; bumps need a conformance re-run (see docs/08-ocpp-conformance.md). Library + bundled schemas authoritative per ADR-0002
+    "ocpp>=2.1,<2.2",              # mobilityhouse/ocpp — pinned minor; bumps need a conformance re-run. Library + bundled schemas authoritative.
     "websockets>=13.1",            # WS server transport
     "asyncpg>=0.30",               # async Postgres driver (hot path)
     "sqlalchemy[asyncio]>=2.0.36", # ORM for admin/CRUD paths
