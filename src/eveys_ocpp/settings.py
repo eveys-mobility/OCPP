@@ -94,6 +94,123 @@ class Settings(BaseSettings):
         },
     )
 
+    # ---- REST server (ADR-0026, E3-7..E3-8) -----------------------------
+    rest_enabled: bool = Field(
+        default=True,
+        description=(
+            "Whether to start the in-process REST server alongside WS "
+            "and gRPC. Set to False in shapes that share this image but "
+            "should not serve HTTP (e.g. the clickhouse-ingestor sidecar)."
+        ),
+        json_schema_extra={
+            "category": "rest_server",
+            "impact": (
+                "When False the gateway pod has no `/api/v1/*` surface; "
+                "the backend cannot poll read state."
+            ),
+            "secret": False,
+            "stability": "structural",
+        },
+    )
+    rest_host: str = Field(
+        default="0.0.0.0",
+        description="Bind address for the inbound REST API (ADR-0026).",
+        json_schema_extra={
+            "category": "rest_server",
+            "impact": (
+                "Restricting from `0.0.0.0` to a specific NIC limits which "
+                "network reaches the backend-facing REST surface."
+            ),
+            "secret": False,
+            "stability": "structural",
+        },
+    )
+    rest_port: int = Field(
+        default=8080,
+        ge=1,
+        le=65535,
+        description="Port the REST server listens on.",
+        json_schema_extra={
+            "category": "rest_server",
+            "impact": (
+                "Production network policy must allow only the backend / "
+                "operator UI to reach this port — distinct from the WS "
+                "(9000) charger-facing port."
+            ),
+            "secret": False,
+            "stability": "structural",
+        },
+    )
+    rest_inbound_tokens: str = Field(
+        default="",
+        description=(
+            "Comma-separated bearer tokens accepted on inbound REST "
+            "requests. Multi-value to support rotation across consumers "
+            "(eveys-backend, billing back-fill, operator UI). Each token "
+            "must match exactly; whitespace is stripped."
+        ),
+        json_schema_extra={
+            "category": "rest_server",
+            "impact": (
+                "Empty allowlist + `rest_auth_disabled=False` (the "
+                "default) → all inbound requests are rejected with 401. "
+                "Phase 5 vault work (E5-7) moves this to a SecretStr "
+                "fetched at boot."
+            ),
+            "secret": True,
+            "stability": "tunable",
+        },
+    )
+    rest_auth_disabled: bool = Field(
+        default=False,
+        description=(
+            "Disable bearer-token validation entirely. Dev / laptop / "
+            "unit-test convenience only — never set in production."
+        ),
+        json_schema_extra={
+            "category": "rest_server",
+            "impact": (
+                "When True the gateway accepts any (or no) Authorization "
+                "header on `/api/v1/*`. The boot-time log line "
+                "`rest_auth.disabled=True` makes a forgotten flip "
+                "obvious in any log review."
+            ),
+            "secret": False,
+            "stability": "dev-only",
+        },
+    )
+    rest_default_page_size: int = Field(
+        default=100,
+        ge=1,
+        le=10_000,
+        description="Default `limit` for cursor-paginated read endpoints.",
+        json_schema_extra={
+            "category": "rest_server",
+            "impact": (
+                "Higher → fewer round-trips for the backend, more rows "
+                "per response and per query. Lower → opposite."
+            ),
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+    rest_max_page_size: int = Field(
+        default=500,
+        ge=1,
+        le=10_000,
+        description="Hard cap on `limit` for cursor-paginated read endpoints.",
+        json_schema_extra={
+            "category": "rest_server",
+            "impact": (
+                "Operators can lower this to defend against a misbehaving "
+                "client requesting huge pages. The contract spec promises "
+                "1..500; raising past 500 is a contract change."
+            ),
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+
     # ---- Kafka producer (ADR-0019) --------------------------------------
     kafka_brokers: str = Field(
         default="localhost:9092",
@@ -693,6 +810,29 @@ class Settings(BaseSettings):
             "impact": (
                 "ADR-0023 § 'Fallback policy'. Default `reject` is the "
                 "safe billing-relevant choice."
+            ),
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+    backend_register_fallback: Literal["reject", "accept_offline"] = Field(
+        default="accept_offline",
+        description=(
+            "What BootNotification returns when the backend's "
+            "`/charge-points/register` endpoint is unreachable past the "
+            "retry budget. `accept_offline` → `Accepted` with the "
+            "configured heartbeat interval (the local DB row anchors "
+            "reconciliation when the backend recovers). `reject` → "
+            "`Rejected`, charger stops calling."
+        ),
+        json_schema_extra={
+            "category": "backend_integration",
+            "impact": (
+                "Default `accept_offline` matches the contract's "
+                "fail-soft model: a backend outage must not prevent "
+                "chargers from booting and serving Authorize-cached "
+                "sessions. Flip to `reject` only if the operator "
+                "wants chargers offline during a backend incident."
             ),
             "secret": False,
             "stability": "tunable",
