@@ -13,7 +13,7 @@ COMPOSE    := docker compose -f deploy/compose/docker-compose.yml
 
 .PHONY: help doctor install format lint types tests e2e smoke compose-smoke precommit clean distclean \
         compose-up compose-down compose-status compose-down-volumes compose-wait \
-        build-image protoc ch-migrate docs docs-clean config-export config-export-check
+        build-image protoc ch-migrate docs docs-clean config-export config-export-check config-schema
 
 # ---- meta -------------------------------------------------------------------
 
@@ -47,6 +47,7 @@ help:
 	@echo "Config reference (ADR-0025):"
 	@echo "  make config-export       regenerate docs/11-configuration-reference.md + .env.example"
 	@echo "  make config-export-check fail if either file is out of date with src/eveys_ocpp/settings.py"
+	@echo "  make config-schema       print Settings as JSON Schema (for Helm validators, operator UIs)"
 	@echo ""
 	@echo "Cleanup:"
 	@echo "  make clean              remove build/test caches"
@@ -76,7 +77,7 @@ install: $(VENV)/bin/python
 	@if [ -f .pre-commit-config.yaml ] && [ -d .git ]; then \
 		$(VENV)/bin/pre-commit install --install-hooks >/dev/null 2>&1 && \
 		$(VENV)/bin/pre-commit install --hook-type commit-msg >/dev/null 2>&1 && \
-		echo "pre-commit hooks installed"; \
+		echo "pre-commit hooks installed" >&2; \
 	fi
 
 # Regenerate Python stubs from proto/ into src/eveys_ocpp/_generated/.
@@ -236,6 +237,14 @@ config-export: install
 
 config-export-check: install
 	$(VENV)/bin/python scripts/render_config_reference.py --check
+
+# Print Settings as JSON Schema. Plumbing for downstream surfaces
+# (Helm values validators, operator UIs, CLI --help) that want the
+# metadata in a machine-consumable shape rather than re-parsing the
+# Markdown reference. No file is written; pipe to a file when needed
+# (`make config-schema > settings.schema.json`). Per ADR-0025.
+config-schema: install
+	@$(VENV)/bin/python -c "import json; from eveys_ocpp.settings import Settings; print(json.dumps(Settings.model_json_schema(), indent=2))"
 
 # ---- cleanup ----------------------------------------------------------------
 
