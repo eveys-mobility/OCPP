@@ -25,6 +25,8 @@ dependencies = [
     "aiokafka>=0.12",              # async Kafka producer for event firehose (E2-7, E2-8); first use is MeterValues
     "asynch>=0.2",                 # async ClickHouse driver for the Kafka→CH ingestor (E2-14, ADR-0020). Sync drivers (clickhouse-driver) would block the asyncio loop on every insert, which AGENTS.md §"Async patterns" prohibits.
     "httpx>=0.28",                 # async HTTP client for the backend integration (E3-2, ADR-0023). Sync clients (`requests`) would block the asyncio loop on every Authorize / sessions/open / sessions/close call, which AGENTS.md §"Async patterns" prohibits.
+    "fastapi>=0.115",              # ASGI framework for the inbound gateway REST API (E3-7, ADR-0026); also used by the dev-only mock backend (E3-10).
+    "uvicorn[standard]>=0.32",     # ASGI server. Run programmatically (not the CLI) inside the existing TaskGroup so the WS/gRPC/REST servers share one event loop and structured-logging context (ADR-0026).
 ]
 
 [project.optional-dependencies]
@@ -39,8 +41,6 @@ dev = [
     "pre-commit>=3.8",
     "freezegun>=1.5",              # deterministic timestamps in tests
     "grpcio-tools>=1.66",          # protoc + grpc_tools.protoc for codegen (dev only)
-    "fastapi>=0.115",              # E3-10 mock backend (dev / test only — never imported by gateway runtime)
-    "uvicorn[standard]>=0.32",     # E3-10 mock backend ASGI server
 ]
 
 [project.scripts]
