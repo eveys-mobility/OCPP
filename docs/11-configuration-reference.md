@@ -40,6 +40,18 @@ sensitivity.
 | `EVEYS_OCPP_GRPC_HOST` | `0.0.0.0` | string | structural | no | Bind address for the inbound gRPC server (sibling services call into it for `RemoteStart`, `Reset`, etc.). | Same as WS_HOST: which NIC accepts gRPC. |
 | `EVEYS_OCPP_GRPC_PORT` | `50051` | 1–65535 | structural | no | Port the gRPC server listens on. | All sibling services must agree on this; changing it requires a coordinated rollout. |
 
+## REST server (ADR-0026, E3-7..E3-8)
+
+| Variable | Default | Range | Stability | Secret | What it does | Impact of changing |
+|---|---|---|---|---|---|---|
+| `EVEYS_OCPP_REST_ENABLED` | `true` | bool | structural | no | Whether to start the in-process REST server alongside WS and gRPC. Set to False in shapes that share this image but should not serve HTTP (e.g. the clickhouse-ingestor sidecar). | When False the gateway pod has no `/api/v1/*` surface; the backend cannot poll read state. |
+| `EVEYS_OCPP_REST_HOST` | `0.0.0.0` | string | structural | no | Bind address for the inbound REST API (ADR-0026). | Restricting from `0.0.0.0` to a specific NIC limits which network reaches the backend-facing REST surface. |
+| `EVEYS_OCPP_REST_PORT` | `8080` | 1–65535 | structural | no | Port the REST server listens on. | Production network policy must allow only the backend / operator UI to reach this port — distinct from the WS (9000) charger-facing port. |
+| `EVEYS_OCPP_REST_INBOUND_TOKENS` | (empty) | string | tunable | **yes** | Comma-separated bearer tokens accepted on inbound REST requests. Multi-value to support rotation across consumers (eveys-backend, billing back-fill, operator UI). Each token must match exactly; whitespace is stripped. | Empty allowlist + `rest_auth_disabled=False` (the default) → all inbound requests are rejected with 401. Phase 5 vault work (E5-7) moves this to a SecretStr fetched at boot. |
+| `EVEYS_OCPP_REST_AUTH_DISABLED` | `false` | bool | dev-only | no | Disable bearer-token validation entirely. Dev / laptop / unit-test convenience only — never set in production. | When True the gateway accepts any (or no) Authorization header on `/api/v1/*`. The boot-time log line `rest_auth.disabled=True` makes a forgotten flip obvious in any log review. |
+| `EVEYS_OCPP_REST_DEFAULT_PAGE_SIZE` | `100` | 1–10000 | tunable | no | Default `limit` for cursor-paginated read endpoints. | Higher → fewer round-trips for the backend, more rows per response and per query. Lower → opposite. |
+| `EVEYS_OCPP_REST_MAX_PAGE_SIZE` | `500` | 1–10000 | tunable | no | Hard cap on `limit` for cursor-paginated read endpoints. | Operators can lower this to defend against a misbehaving client requesting huge pages. The contract spec promises 1..500; raising past 500 is a contract change. |
+
 ## Kafka producer (ADR-0019)
 
 | Variable | Default | Range | Stability | Secret | What it does | Impact of changing |

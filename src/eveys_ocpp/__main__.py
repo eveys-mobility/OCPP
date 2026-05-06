@@ -23,6 +23,7 @@ from eveys_ocpp.platform import AuthorizeCache, BackendHTTPClient
 from eveys_ocpp.registry import Registry
 from eveys_ocpp.settings import Settings, get_settings
 from eveys_ocpp.transport.grpc_server import serve_forever as serve_grpc_forever
+from eveys_ocpp.transport.rest_server import serve_forever as serve_rest_forever
 from eveys_ocpp.transport.ws_server import serve_forever as serve_ws_forever
 
 if TYPE_CHECKING:
@@ -54,6 +55,8 @@ async def _serve_all(
         "servers.starting",
         ws_port=settings.ws_port,
         grpc_port=settings.grpc_port,
+        rest_port=settings.rest_port,
+        rest_enabled=settings.rest_enabled,
         pod_id=settings.pod_id,
     )
 
@@ -84,6 +87,20 @@ async def _serve_all(
                 ),
                 name="grpc_server",
             )
+            # E3-7: gateway-side REST API for the backend's read needs.
+            # Gated on `rest_enabled` so shapes that share this image
+            # but don't serve HTTP (e.g. the clickhouse-ingestor
+            # sidecar) skip booting it. Per ADR-0026.
+            if settings.rest_enabled:
+                tg.create_task(
+                    serve_rest_forever(
+                        session_factory=session_factory,
+                        settings=settings,
+                        registry=registry,
+                        redis=redis,
+                    ),
+                    name="rest_server",
+                )
     finally:
         await bus.stop()
         await event_producer.stop()
