@@ -65,6 +65,23 @@ types:
   script:
     - .venv/bin/mypy
 
+# ---- E0-14 config-reference staleness gate (ADR-0025) ----------------------
+#
+# `Settings` is the source of truth for `docs/11-configuration-reference.md`
+# and `.env.example`. The generator at `scripts/render_config_reference.py`
+# produces both files deterministically. This job runs the generator with
+# `--check`, which exits non-zero if the produced output differs from the
+# committed files — i.e., a `Settings` change without a matching
+# `make config-export` regenerate.
+#
+# Hard-fails by design (no bypass label). Re-running `make config-export`
+# locally and committing the result is the fix.
+config-reference-fresh:
+  <<: *python-job
+  stage: quality
+  script:
+    - .venv/bin/python scripts/render_config_reference.py --check
+
 # ---- E2-12 proto backward-compat gate (ADR-0018) ---------------------------
 #
 # Runs `buf breaking` against `main` so a field rename / removal /
