@@ -166,6 +166,7 @@ async def running_service() -> AsyncIterator[None]:
     from eveys_ocpp.persistence.db import make_engine, make_session_factory
     from eveys_ocpp.registry import Registry
     from eveys_ocpp.settings import get_settings
+    from eveys_ocpp.transport.grpc_server import OcppGatewayService
     from eveys_ocpp.transport.grpc_server import serve_forever as serve_grpc_forever
     from eveys_ocpp.transport.ws_server import serve_forever as serve_ws_forever
 
@@ -186,14 +187,14 @@ async def running_service() -> AsyncIterator[None]:
             event_producer=event_producer,
         )
     )
-    grpc_task = asyncio.create_task(
-        serve_grpc_forever(
-            session_factory=session_factory,
-            settings=settings,
-            connections=connections,
-            registry=registry,
-        )
+    command_service = OcppGatewayService(
+        session_factory=session_factory,
+        settings=settings,
+        connections=connections,
+        registry=registry,
+        bus=None,
     )
+    grpc_task = asyncio.create_task(serve_grpc_forever(settings=settings, service=command_service))
     # Give both servers a beat to bind.
     await asyncio.sleep(0.2)
 

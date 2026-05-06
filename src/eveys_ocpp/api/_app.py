@@ -29,7 +29,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from eveys_ocpp.api import charge_points, health, transactions
+from eveys_ocpp.api import charge_points, commands, health, transactions
 from eveys_ocpp.api._auth import make_bearer_auth_middleware
 from eveys_ocpp.api._errors import (
     ApiError,
@@ -46,6 +46,7 @@ if TYPE_CHECKING:
 
     from eveys_ocpp.registry import Registry
     from eveys_ocpp.settings import Settings
+    from eveys_ocpp.transport.grpc_server import OcppGatewayService
 
 
 def make_app(
@@ -54,6 +55,7 @@ def make_app(
     settings: Settings,
     registry: Registry | None,
     redis: Redis | None,
+    command_service: OcppGatewayService | None = None,
 ) -> FastAPI:
     """Construct the gateway REST app.
 
@@ -75,6 +77,9 @@ def make_app(
     app.state.settings = settings
     app.state.registry = registry
     app.state.redis = redis
+    # E3-8: command surface dispatches through this service. None is
+    # acceptable in tests that exercise only the read API.
+    app.state.command_service = command_service
 
     # Order matters: request-id MUST run before auth so the auth-reject
     # response carries the correlation id. Middlewares run in reverse
@@ -95,6 +100,7 @@ def make_app(
     app.include_router(health.router, prefix="/api/v1")
     app.include_router(charge_points.router, prefix="/api/v1")
     app.include_router(transactions.router, prefix="/api/v1")
+    app.include_router(commands.router, prefix="/api/v1")
     # Reservations + profiles (commit 3) and meter-values + status-history
     # (commit 4) hook in here as their routers land.
 
