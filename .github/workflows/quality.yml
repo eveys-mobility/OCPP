@@ -1,0 +1,81 @@
+# Quality gate — lint + types + config-reference-fresh + proto-breaking.
+# Each job is independent so a single red gate doesn't mask another.
+name: quality
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-python-venv
+      - name: ruff check
+        run: .venv/bin/ruff check src tests scripts
+
+  types:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-python-venv
+      - name: mypy --strict
+        run: .venv/bin/mypy
+
+  # E0-14 — `Settings` is the source of truth for docs/11-configuration-reference.md
+  # and .env.example. The generator at scripts/render_config_reference.py produces
+  # both files deterministically; --check exits non-zero if the produced output
+  # differs from the committed files. Hard-fails by design (no bypass label).
+  config-reference-fresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-python-venv
+      - name: render --check
+        run: .venv/bin/python scripts/render_config_reference.py --check
+
+  # E2-12 — proto backward-compat gate (ADR-0018). Runs `buf breaking` against
+  # main so a field rename / removal / renumbering / oneof-shape change in
+  # proto/ocpp_gw/v1/ or proto/events/v1/ fails the PR before it can land.
+  # Only runs on PR events; on main pushes there's nothing to compare.
+  # Bypass: add the `bypass-breaking-change` label to the PR.
+  proto-breaking:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    env:
+      BUF_VERSION: "1.45.0"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # `buf breaking --against` needs the base branch as a git ref. Fetch
+          # depth 50 is enough for typical PRs without pulling full history.
+          fetch-depth: 50
+      - name: Fetch main as a baseline
+        run: git fetch --depth=50 origin main:main || true
+      - name: Install buf
+        run: |
+          curl -sSL "https://github.com/bufbuild/buf/releases/download/v${BUF_VERSION}/buf-Linux-x86_64" \
+            -o /usr/local/bin/buf
+          sudo chmod +x /usr/local/bin/buf
+          buf --version
+      - name: Check for bypass label
+        id: bypass
+        run: |
+          labels='${{ toJson(github.event.pull_request.labels.*.name) }}'
+          if echo "$labels" | grep -Fq '"bypass-breaking-change"'; then
+            echo "bypass=1" >> "$GITHUB_OUTPUT"
+            echo "WARNING: bypass-breaking-change label present — proto-breaking gate skipped."
+            echo "Per ADR-0018, this requires tech-lead approval and a same-PR package version bump."
+          fi
+      - name: buf breaking (per module)
+        if: steps.bypass.outputs.bypass != '1'
+        run: |
+          for module in proto/ocpp_gw/v1 proto/events/v1; do
+            echo "=== buf breaking: $module ==="
+            buf breaking "$module" --against ".git#branch=main,subdir=$module"
+          done

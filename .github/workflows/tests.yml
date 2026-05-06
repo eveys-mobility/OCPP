@@ -1,0 +1,66 @@
+# Unit tests + coverage gate (≥80%, defended by pytest-cov via pyproject.toml)
+# plus the standalone-process mock-backend smoke. Two distinct jobs because a
+# regression in either should be a separate red signal in the checks UI.
+name: tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    # Redis is the only data-plane dep the unit suite needs. Without it,
+    # tests/unit/test_bus.py skips its 6 tests and the bus module drops
+    # to ~18% coverage, which breaks the 80% gate (E2-10). Postgres /
+    # Kafka / ClickHouse stay over in the e2e workflow — the unit suite
+    # mocks them at the boundary.
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      E2E_REDIS_HOST: localhost
+      # Refuse to silently skip the bus tests if Redis isn't reachable —
+      # green-but-skipped pipelines let coverage rot.
+      E2E_REQUIRE: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-python-venv
+      - name: Run unit tests with coverage
+        run: |
+          .venv/bin/pytest tests/unit tests/test_package.py \
+            --cov-report=xml --cov-report=term
+      - name: Upload coverage XML
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage.xml
+          retention-days: 14
+
+  # E3-10 — the mock backend implements docs/integration/01-backend-rest-contract.md.
+  # In-process tests live in tests/unit/mock_backend/ (run in the unit job above).
+  # This job runs the standalone-process smoke that boots `python -m tests.mock_backend`
+  # as a real subprocess on a free port and exercises every endpoint over real HTTP.
+  # Catches issues the in-process tests miss: uvicorn startup, CLI flag handling,
+  # port binding, header pass-through across the actual HTTP stack.
+  mock-backend-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-python-venv
+      - name: Run mock-backend standalone smoke
+        # --no-cov disables the project's 80% coverage gate (which targets
+        # src/eveys_ocpp/ — these tests don't import the gateway).
+        run: .venv/bin/pytest tests/smoke/test_mock_backend_standalone.py --no-cov -v

@@ -64,9 +64,9 @@ exercised here.
 file, applies Alembic + ClickHouse migrations, runs `pytest tests/e2e`,
 tears down.
 
-**CI:** `tests:e2e` job. Uses GitLab `services:` sidecars instead of
-the dev compose file (faster, simpler runner topology). The image
-versions match `deploy/compose/docker-compose.yml`.
+**CI:** `e2e` workflow. Uses GitHub Actions `services:` containers
+instead of the dev compose file (faster, simpler runner topology).
+The image versions match `deploy/compose/docker-compose.yml`.
 
 ## Tier 3 — Container compose-smoke
 
@@ -102,8 +102,9 @@ Steps run by the target:
 6. `pytest tests/compose_smoke -v --no-cov`
 7. `docker compose ... down --volumes` (tear down on success or fail)
 
-**CI:** `tests:compose-smoke` job. Runs Docker-in-Docker. Triggered on
-default branch and on MRs that touch `deploy/`, `tests/compose_smoke/`,
+**CI:** `compose-smoke` workflow. Uses the runner's preinstalled Docker
+daemon directly — no DinD wrapping needed on GitHub Actions. Triggered
+on default branch and on PRs that touch `deploy/`, `tests/compose_smoke/`,
 or `pyproject.toml`. ~ 90 s.
 
 ### Why every tier exists, with bugs they catch
@@ -146,13 +147,13 @@ make compose-smoke
 ## How they map to CI jobs
 
 ```text
-.gitlab-ci.yml stages:
-  quality   ─►  lint, types, proto-breaking
-  test      ─►  tests              (Tier 1, every push)
-                tests:mock-backend  (subprocess smoke for the in-repo mock)
-                tests:e2e          (Tier 2, every push)
-                tests:compose-smoke (Tier 3, MRs touching deploy/* + main)
-  docs      ─►  docs:build         (tagged-release docs site)
+.github/workflows/:
+  quality.yml         ─►  lint, types, config-reference-fresh, proto-breaking
+  tests.yml           ─►  unit                (Tier 1, every push)
+                          mock-backend-smoke  (subprocess smoke for the in-repo mock)
+  e2e.yml             ─►  e2e                 (Tier 2, every push)
+  compose-smoke.yml   ─►  compose-smoke       (Tier 3, PRs touching deploy/* + main)
+  docs.yml            ─►  build               (tagged-release docs site)
 ```
 
 ## Adding a new test — which tier?

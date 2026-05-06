@@ -1,0 +1,77 @@
+# Tier-3 compose smoke (ADR-0024, docs/10-testing-strategy.md).
+# Builds the production-shaped image from deploy/Dockerfile, brings the
+# entire deploy/compose/docker-compose.yml stack up, asserts every container
+# reaches a stable Running state with no restart count, and drives a real
+# OCPP charger flow through the published WS port. This is the layer that
+# catches deploy-time wiring bugs (env vars, Kafka listener layout,
+# ENTRYPOINT/CMD shape, healthchecks).
+#
+# Path-filtered to the surfaces it can actually catch — running this on
+# every PR would burn ~5 minutes for changes that can't break it.
+name: compose-smoke
+
+on:
+  pull_request:
+    paths:
+      - "deploy/**"
+      - "tests/compose_smoke/**"
+      - "pyproject.toml"
+      - "src/eveys_ocpp/__main__.py"
+      - "src/eveys_ocpp/clickhouse/ingestor.py"
+      - ".github/workflows/compose-smoke.yml"
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  compose-smoke:
+    runs-on: ubuntu-latest
+    env:
+      # COMPOSE_SMOKE_REQUIRE=1 flips the conftest's "skip if Docker missing"
+      # into a hard failure — a green-but-skipped pipeline is the original
+      # class of bug this layer was added to prevent.
+      COMPOSE_SMOKE: "1"
+      COMPOSE_SMOKE_REQUIRE: "1"
+      # On GitHub-hosted runners docker compose publishes ports on `localhost`,
+      # not on a separate dind alias. The conftest reads this env var to know
+      # where to dial WS / Postgres / ClickHouse. (On GitLab dind it was `docker`.)
+      COMPOSE_SMOKE_PUBLISHED_HOST: localhost
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-python-venv
+
+      # GitHub-hosted ubuntu runners ship Docker + the compose plugin
+      # preinstalled, so no apt dance is needed (the GitLab job had to
+      # install docker-ce-cli + docker-compose-plugin onto python:3.13-slim).
+      - name: Show Docker versions
+        run: |
+          docker --version
+          docker compose version
+
+      - name: Build compose images
+        # Split from `make compose-smoke` so a build failure is a distinct,
+        # faster signal than a stack-startup failure.
+        run: docker compose -f deploy/compose/docker-compose.yml build
+
+      - name: Run compose smoke
+        # The Make target captures container logs into .compose-smoke-logs/
+        # even on failure — those are surfaced as a job artifact below.
+        run: make compose-smoke
+
+      - name: Capture container logs (always)
+        if: always()
+        run: |
+          mkdir -p .compose-smoke-logs
+          for c in eveys-ocpp eveys-ocpp-clickhouse-ingestor eveys-ocpp-postgres eveys-ocpp-redis eveys-ocpp-kafka eveys-ocpp-clickhouse; do
+            docker logs "$c" > ".compose-smoke-logs/$c.log" 2>&1 || true
+          done
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compose-smoke-logs-${{ github.run_id }}
+          path: .compose-smoke-logs/
+          retention-days: 7

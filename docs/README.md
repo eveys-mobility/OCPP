@@ -24,8 +24,7 @@ Documentation for **eveys/ocpp**, the OCPP gateway service of the Eveys EV-charg
 
 ## Related project files
 
-- `AGENTS.md` (in repo root) — AI-assistant instructions (Claude Code, Cursor, Copilot, Aider)
-- `CLAUDE.md` (in repo root) — thin pointer to AGENTS.md for Claude Code
+- `AGENTS.md` (in repo root) — AI-assistant instructions (the canonical source for all AI tooling)
 
 ## ADRs
 
@@ -42,7 +41,7 @@ Current:
 - **First time?** Read `00-overview.md`, then `01-roadmap.md`, then skim the rest.
 - **Planning a sprint?** Read `06-implementation-plan.md` for the weekly schedule and `02-tasks.md` for the IDs.
 - **Contributing code?** Read `03-coding-standards.md` and `04-contributing.md`.
-- **Working with AI?** Read `AGENTS.md` in the repo root before opening Claude Code / Cursor.
+- **Working with AI?** Read `AGENTS.md` in the repo root before opening your AI editor.
 - **Making a significant decision?** Add an ADR. Don't bury it in code or chat.
 
 ## Status & ownership
@@ -119,14 +118,14 @@ Use `make clean` between routine rebuilds. Use `make distclean` when upgrading `
 
 ### CI build
 
-The `docs:build` job in `.gitlab-ci.yml` runs on **tagged commits only** (`$CI_COMMIT_TAG`). It produces a 30-day artifact named `eveys-ocpp-docs-<tag>` containing `docs/_build/html`. To trigger a docs release:
+The `docs` workflow in `.github/workflows/docs.yml` runs on **tags matching `docs-v*`** only. It produces a 30-day artifact named `eveys-ocpp-docs-<tag>` containing `docs/_build/html`. To trigger a docs release:
 
 ```bash
 git tag docs-v<n>
 git push --tags
 ```
 
-The artifact is downloadable from the GitLab job page. The site is **not** auto-published — it is an internal-only artifact.
+The artifact is downloadable from the GitHub Actions run page. The site is **not** auto-published — it is an internal-only artifact.
 
 ### Build configuration
 

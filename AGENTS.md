@@ -1,10 +1,8 @@
 # AGENTS.md
 
-Instructions for AI coding assistants (Claude Code, Cursor, Copilot, Aider, Codex, Continue, …) working in `eveys/ocpp`.
+Project conventions for `eveys/ocpp` — the dense operational reference any contributor should keep open.
 
-This file is the **single source of truth** for AI behavior in this project. Tool-specific files (`CLAUDE.md`, `.cursor/rules/`, `.gitlab/copilot-instructions.md`) point here.
-
-> **Human contributors**: read [`docs/04-contributing.md`](./docs/04-contributing.md) and [`docs/03-coding-standards.md`](./docs/03-coding-standards.md) instead. This file is the AI-rules subset.
+> For the long-form contributor guide read [`docs/04-contributing.md`](./docs/04-contributing.md) and [`docs/03-coding-standards.md`](./docs/03-coding-standards.md). This file is the lossless cheat sheet.
 
 ---
 
@@ -23,11 +21,10 @@ For the full picture, read [`docs/00-overview.md`](./docs/00-overview.md). For t
 1. **Never cross-import between `ocpp.v16`, `ocpp.v201`, and `ocpp.v21`.** Each is a self-contained protocol surface; mixing them silently produces invalid messages on the wire. Same rule applies to our own `src/eveys_ocpp/handlers/v16/` vs `v201/`.
 2. **JSON Schemas in `mobilityhouse/ocpp` are authoritative.** Don't hand-edit dataclasses without consulting the schema. Don't disable validation under load — fix the underlying bug.
 3. **No opportunistic refactors.** Bug fix → fix the bug. Feature → add the feature. Don't reformat unrelated code, don't rename "while you're here," don't add type annotations as drive-by changes.
-4. **No new top-level dependencies without a justification in the MR description.** Runtime deps are intentionally minimal.
+4. **No new top-level dependencies without a justification in the PR description.** Runtime deps are intentionally minimal.
 5. **No cross-service imports.** `eveys/ocpp` does not `import` from other Eveys services. All inter-service communication is gRPC + Kafka events.
-6. **AI does not commit, push, deploy, or edit secrets/IAM/prod migrations.** Humans drive those.
-7. **No `--no-verify`.** Don't bypass pre-commit or CI hooks. If a hook fails, fix the underlying issue.
-8. **Tests ship with code.** An MR with implementation but no tests is not done.
+6. **No `--no-verify`.** Don't bypass pre-commit or CI hooks. If a hook fails, fix the underlying issue.
+7. **Tests ship with code.** A PR with implementation but no tests is not done.
 
 ---
 
@@ -38,17 +35,15 @@ eveys/ocpp/
 ├── pyproject.toml             # Python deps, tool configs
 ├── Makefile                   # install / format / tests / docs
 ├── README.md
-├── AGENTS.md                  # this file
-├── CLAUDE.md                  # pointer to AGENTS.md
 ├── docs/                      # roadmap, tasks, standards, ADRs
 ├── proto/                     # gRPC + event protobufs
 ├── src/eveys_ocpp/            # all importable code
-│   ├── transport/             # ws_server, grpc_server
+│   ├── transport/             # ws_server, grpc_server, rest_server
 │   ├── connection.py          # ChargePoint subclass
 │   ├── handlers/v16/          # OCPP 1.6 handlers (isolated!)
 │   ├── handlers/v201/         # OCPP 2.0.1 handlers (isolated!)
-│   ├── commands/              # gRPC → OCPP Call senders
-│   ├── platform/              # gRPC clients to auth/session/device
+│   ├── api/                   # FastAPI surface (read + command endpoints)
+│   ├── platform/              # backend HTTP client + Authorize cache
 │   ├── persistence/           # Postgres
 │   ├── registry.py            # Redis online registry
 │   ├── bus.py                 # Redis pub/sub (cross-pod commands)
@@ -142,39 +137,7 @@ These are domain-critical. Violating them is a P1 incident waiting to happen.
 5. **Message ordering is preserved per charger.** Use `cp_id` as the Kafka partition key.
 6. **Sanity-check meter values.** A charger reporting 100 MWh in one transaction is a bug or attack — quarantine, don't bill.
 7. **OCPP timestamps from chargers are untrusted.** Always also record server-receive timestamp.
-8. **Every handler MR updates [`docs/08-ocpp-conformance.md`](./docs/08-ocpp-conformance.md), keyed by Appendix C TC IDs** from the OCA OCPP 1.6 Certification Procedure (e.g., `TC_001` for Cold Boot Charge Point). New rows land at 🟡 (interim, non-certifiable). Promotion to ✅ requires the four-step process documented there: OCTT subset run, spec section reviewed, edge-case tests, declared deviations. **A 🟡 row may not be cited as "OCPP-conformant" in any external communication.** See also [`09-certification-readiness.md`](./docs/09-certification-readiness.md) for the program-level cert playbook.
-
----
-
-## Working agreements with AI
-
-| Rule | Why |
-|---|---|
-| AI writes — humans review every MR | Author is responsible for every line |
-| AI generates tests **alongside** code | Tests are not optional |
-| AI does NOT commit / push / deploy | Humans drive those steps |
-| AI does NOT touch secrets, IAM, or production migrations | Blast radius too large |
-| AI does NOT bypass hooks (`--no-verify`) | Hooks exist for a reason |
-| Architecture decisions live in human-authored ADRs | See [`docs/adr/`](./docs/adr/) |
-| Pair-programming model | Human drives intent, AI drives keystrokes |
-
-### What AI is great at
-
-- Boilerplate handlers — generated from `ocpp.v16.call` dataclasses
-- Test scaffolding — Given/When/Then case generation
-- gRPC client/server code from `.proto`
-- SQL migrations from a schema sketch
-- Helm / Envoy / k8s YAML
-- Documentation that mirrors code
-
-### What humans must own
-
-- Architecture decisions (write an ADR)
-- Race conditions (transaction state machines, reconnect storms)
-- OCPP-spec compliance — read the spec, don't trust the model
-- Charger-vendor interop quirks
-- Production incident response
-- Trust-and-safety reviews (auth, rate limits, validation)
+8. **Every handler PR updates [`docs/08-ocpp-conformance.md`](./docs/08-ocpp-conformance.md), keyed by Appendix C TC IDs** from the OCA OCPP 1.6 Certification Procedure (e.g., `TC_001` for Cold Boot Charge Point). New rows land at 🟡 (interim, non-certifiable). Promotion to ✅ requires the four-step process documented there: OCTT subset run, spec section reviewed, edge-case tests, declared deviations. **A 🟡 row may not be cited as "OCPP-conformant" in any external communication.** See also [`09-certification-readiness.md`](./docs/09-certification-readiness.md) for the program-level cert playbook.
 
 ---
 
@@ -193,14 +156,14 @@ These are domain-critical. Violating them is a P1 incident waiting to happen.
 
 ---
 
-## Git & MR conventions
+## Git & PR conventions
 
 - Branch off `main`. No long-lived feature branches.
 - Conventional Commits: `feat(scope): subject (E<phase>-<seq>)`.
-- MRs **< 400 lines** of diff (or include a checklist explaining why).
-- Tests + docs **must** ship in the same MR as code changes.
+- PRs **< 400 lines** of diff (or include a checklist explaining why).
+- Tests + docs **must** ship in the same PR as code changes.
 - Squash on merge. Linear history.
-- Reference task IDs from [`docs/02-tasks.md`](./docs/02-tasks.md) in MR titles.
+- Reference task IDs from [`docs/02-tasks.md`](./docs/02-tasks.md) in PR titles.
 
 ---
 

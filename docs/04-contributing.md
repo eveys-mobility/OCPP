@@ -1,8 +1,8 @@
 # 04 — Contributing & Workflow
 
-> How we ship code in `eveys/ocpp`. Read this before opening your first MR.
+> How we ship code in `eveys/ocpp`. Read this before opening your first PR.
 
-## Branching & MRs
+## Branching & PRs
 
 | | |
 |---|---|
@@ -13,14 +13,14 @@
 | **Force-push** | Never to shared branches. Local rebase is fine. |
 | **Direct push to `main`** | Forbidden. Even for tech leads. Even for hot-fixes. |
 
-## Merge request rules
+## Pull request rules
 
-Every MR must:
+Every PR must:
 
 - [ ] Reference at least one task ID from [`02-tasks.md`](./02-tasks.md) in the title (e.g. `feat(handlers): BootNotification handler (E1-5)`).
 - [ ] Be **< 400 lines of diff** — or include a checklist in the description explaining why it had to be larger.
 - [ ] Have a **green CI**: lint, types, unit + integration tests, coverage ≥ 80%.
-- [ ] Include **tests for new behavior**. MRs without tests are rejected on first review.
+- [ ] Include **tests for new behavior**. PRs without tests are rejected on first review.
 - [ ] Update **relevant docs** when behavior or contracts change. Stale docs are a bug.
 - [ ] Be reviewed by **at least one other engineer**. Tech-lead approval for: gRPC contract changes, ADRs, deploy/infra changes, security-sensitive code.
 - [ ] Pass **all pre-commit hooks** locally before pushing.
@@ -80,7 +80,7 @@ A commit body is optional but encouraged for non-trivial changes — explain *wh
 
 - Reviewers respond within **1 business day**.
 - Authors push fixes within **1 business day** of receiving review.
-- An MR sitting > 5 days without movement gets closed; reopen when ready to land.
+- A PR sitting > 5 days without movement gets closed; reopen when ready to land.
 
 ## Releases
 
@@ -88,7 +88,7 @@ A commit body is optional but encouraged for non-trivial changes — explain *wh
 - **Tagging**: `v0.5.3` from `main`. CI builds and publishes the container image.
 - **Changelog**: `CHANGELOG.md` updated as part of the release MR. Follow [Keep a Changelog](https://keepachangelog.com/) format.
 - **Deploy**: GitOps — merging the release tag to `deploy/prod` triggers ArgoCD to roll out.
-- **Docs site**: tag with the `docs-v<n>` prefix to trigger the `docs:build` CI job, which produces a 30-day HTML artifact. See [docs/README.md — Building this site](./README.md#building-this-site).
+- **Docs site**: tag with the `docs-v<n>` prefix to trigger the `docs` CI workflow, which produces a 30-day HTML artifact. See [docs/README.md — Building this site](./README.md#building-this-site).
 
 ## Hot-fixes
 
@@ -96,61 +96,26 @@ When prod is on fire:
 
 1. Branch off `main`: `fix/hotfix-<slug>`.
 2. Smallest possible change, focused tests.
-3. MR with **`HOTFIX`** prefix in title.
+3. PR with **`HOTFIX`** prefix in title.
 4. Tech-lead review only (skip second reviewer).
 5. Merge → tag → deploy.
-6. **Within 24h**, file a follow-up MR with the proper tests, docs, and post-mortem.
+6. **Within 24h**, file a follow-up PR with the proper tests, docs, and post-mortem.
 
-## AI-assisted development
+## Things that are easy to get wrong
 
-This project actively uses AI coding assistants (Claude Code, Cursor, Copilot, Aider). Rules apply equally to AI-generated and human-written code.
+A few footguns in this codebase that have bitten contributors. Read once.
 
-### Hard rules
-
-- **AI writes — humans review.** No auto-merge. Author is responsible for every line.
-- **AI must produce tests alongside code.** An MR with implementation but no tests is rejected.
-- **AI does not commit.** Humans run `git commit`.
-- **AI does not push.** Humans run `git push`.
-- **AI does not deploy.** Deploys are GitOps and require a tagged release.
-- **AI does not edit secrets, IAM, or production database migrations.**
-- **AI does not bypass hooks.** No `--no-verify`.
-
-### What AI is great at
-
-- Boilerplate handlers (each OCPP action has a shape — AI emits the shape; humans verify spec compliance).
-- Test scaffolding (Given/When/Then case generation; humans verify assertions).
-- gRPC client/server code from `.proto`.
-- SQL migrations from a schema sketch.
-- Helm / Envoy / k8s YAML.
-- Documentation that mirrors code.
-
-### What humans must own
-
-- Architecture decisions (write an ADR).
-- Race conditions, especially in transaction state machines.
-- OCPP-spec compliance — read the spec, don't trust the model.
-- Charger-vendor interop quirks — comes from real-world experience.
-- Production incident response.
-- Trust-and-safety (auth, rate limits, validation).
-
-### When AI is wrong
-
-- AI confidently generates wrong code regularly. Don't trust output without reading it.
-- AI generates plausible-looking JSON Schemas that don't match the actual OCPP spec. Always validate against `mobilityhouse/ocpp` schemas, not against the model's memory.
-- AI may suggest cross-importing `ocpp.v16` and `ocpp.v201`. **Reject this every time** (see `03-coding-standards.md`).
-
-### Pair-programming model
-
-> **Human drives intent. AI drives keystrokes.**
-
-The human decides *what* to build and *why*. The AI proposes *how*. The human verifies, edits, and signs.
-
-If you can't explain why a piece of AI-generated code is correct, **don't merge it**.
+- **OCPP-spec compliance** is non-negotiable. Read the actual spec; don't trust derived summaries. JSON Schemas in `mobilityhouse/ocpp` are authoritative — validate against them, not against memory.
+- **Never cross-import** between `ocpp.v16` and `ocpp.v201` (or between our own `handlers/v16/` and `handlers/v201/`). Mixing protocol versions silently produces invalid messages on the wire. See `03-coding-standards.md`.
+- **Race conditions** in transaction state machines are a recurring class of bug. Walk through the state diagram before changing handler order.
+- **Charger-vendor interop quirks** come from real-world experience. Vendors interpret the spec differently; what works against one firmware may not against another.
+- **Trust-and-safety code** (auth, rate limits, input validation) gets explicit review attention. Don't merge changes here without sign-off from someone who's familiar with the threat model.
+- **Production incident response** is a tech-lead call, not a freestyle. Follow the hot-fix flow above.
 
 ## Issue tracking
 
-- **Bugs**: GitLab Issues with `bug` label, severity (`p0`/`p1`/`p2`/`p3`).
-- **Features**: GitLab Issues with `feature` label, link to relevant task ID from `02-tasks.md`.
+- **Bugs**: GitHub Issues with `bug` label, severity (`p0`/`p1`/`p2`/`p3`).
+- **Features**: GitHub Issues with `feature` label, link to relevant task ID from `02-tasks.md`.
 - **Spikes / research**: `spike` label, time-boxed (max 3 days).
 - **Tech debt**: `debt` label, evaluated quarterly.
 
@@ -158,7 +123,7 @@ If you can't explain why a piece of AI-generated code is correct, **don't merge 
 
 A task is **done** when:
 
-1. ✅ Code is merged to `main` via MR.
+1. ✅ Code is merged to `main` via PR.
 2. ✅ CI is green.
 3. ✅ Coverage ≥ 80% maintained.
 4. ✅ Relevant docs updated.
@@ -171,7 +136,7 @@ A task is **done** when:
 ## Communication
 
 - **Architecture decisions** → ADR in `docs/adr/`.
-- **Multi-MR effort** → tracking issue with task IDs.
+- **Multi-PR effort** → tracking issue with task IDs.
 - **Cross-team contract change** → message in `#eveys-platform`, then MR.
 - **Production incident** → page on-call, PIR within 48h.
 - **Random ideas** → drop in `#eveys-ocpp-random` first, then issue if it sticks.
