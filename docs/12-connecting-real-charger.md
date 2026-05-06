@@ -737,4 +737,4 @@ When you change something that affects this flow:
 - Compose port published or unpublished → update §3, §7.2.
 - Backend fallback policy default changed → update §4.3 and §8.
 
-A drift between this doc and reality counts as a Sev-2 bug. File it in GitLab Issues with label `docs:drift`.
+A drift between this doc and reality counts as a Sev-2 bug. File it in GitHub Issues with label `docs:drift`.

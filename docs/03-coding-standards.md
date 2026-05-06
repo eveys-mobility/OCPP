@@ -32,8 +32,6 @@ eveys/ocpp/
 ├── pyproject.toml
 ├── Makefile
 ├── README.md
-├── AGENTS.md             # AI-assistant rules
-├── CLAUDE.md             # thin pointer to AGENTS.md
 ├── docs/                 # this directory — markdown source + Sphinx build (conf.py, Makefile, requirements.txt)
 ├── proto/                # gRPC + event protobuf definitions (versioned)
 │   ├── ocpp_gw/v1/
@@ -76,7 +74,8 @@ eveys/ocpp/
 │   ├── Dockerfile
 │   ├── helm/                    # Helm chart for k8s
 │   └── envoy/                   # Envoy config templates
-└── .gitlab-ci.yml             # GitLab CI pipeline definition
+└── .github/
+    └── workflows/             # GitHub Actions workflows (quality, tests, e2e, compose-smoke, docs)
 ```
 
 **Rules**:
@@ -176,7 +175,7 @@ eveys/ocpp/
   pipeline — false-green is a P1 risk. Every reachability check that gates
   test execution must honor the `E2E_REQUIRE=1` env var: skip on dev
   laptops (unset), `pytest.fail()` at collection in CI (set). Both the
-  `tests` and `tests:e2e` jobs in `.gitlab-ci.yml` set `E2E_REQUIRE=1`.
+  `tests` and `e2e` workflows in `.github/workflows/` set `E2E_REQUIRE=1`.
   Reference implementation: `tests/unit/test_bus.py` and
   `tests/e2e/test_two_pod_dispatch.py`.
 

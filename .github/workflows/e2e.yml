@@ -1,0 +1,133 @@
+# Tier-2 e2e tests — full data plane (Postgres + Redis + Kafka + ClickHouse)
+# stood up as service containers; tests/e2e/ exercises real round-trips.
+# Image versions mirror deploy/compose/docker-compose.yml so dev and CI match.
+name: e2e
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: eveys
+          POSTGRES_PASSWORD: eveys
+          POSTGRES_DB: eveys_ocpp
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U eveys"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+      kafka:
+        image: apache/kafka:3.7.0
+        ports:
+          - 9092:9092
+        env:
+          KAFKA_NODE_ID: "1"
+          KAFKA_PROCESS_ROLES: "broker,controller"
+          # Inside the service container, the alias `kafka` does NOT resolve
+          # to itself. Use `localhost:9093` for the controller quorum (the
+          # broker talks to its own controller process via loopback).
+          # Clients on the runner reach the broker through the host port.
+          KAFKA_CONTROLLER_QUORUM_VOTERS: "1@localhost:9093"
+          KAFKA_LISTENERS: "PLAINTEXT://:9092,CONTROLLER://:9093"
+          KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://localhost:9092"
+          KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT"
+          KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+          KAFKA_INTER_BROKER_LISTENER_NAME: "PLAINTEXT"
+          KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+          KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+          KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+          KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+          KAFKA_LOG_DIRS: "/tmp/kraft-combined-logs"
+          CLUSTER_ID: "MkU3OEVBNTcwNTJENDM2Qk"
+
+      clickhouse:
+        image: clickhouse/clickhouse-server:24
+        ports:
+          - 8123:8123
+          - 9000:9000
+        env:
+          CLICKHOUSE_DB: eveys_ocpp
+        options: >-
+          --health-cmd "wget --no-verbose --tries=1 --spider http://localhost:8123/ping || exit 1"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+
+    env:
+      # On GitHub Actions, service-container ports are published to localhost
+      # on the runner, so all hosts collapse to `localhost`. (Compare with
+      # GitLab CI services where each alias resolves to a peer container.)
+      E2E_PG_HOST: localhost
+      E2E_REDIS_HOST: localhost
+      E2E_KAFKA_HOST: localhost
+      E2E_CH_HOST: localhost
+      E2E_CH_HTTP_PORT: "8123"
+      E2E_CH_NATIVE_PORT: "9000"
+      EVEYS_OCPP_CLICKHOUSE_HOST: localhost
+      EVEYS_OCPP_CLICKHOUSE_PORT: "9000"
+      EVEYS_OCPP_CLICKHOUSE_DB: eveys_ocpp
+      EVEYS_OCPP_DB_URL: postgresql+asyncpg://eveys:eveys@localhost:5432/eveys_ocpp
+      # Refuse to silently skip the e2e tests if a service isn't reachable —
+      # a green-but-skipped pipeline is worse than a red one.
+      E2E_REQUIRE: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-python-venv
+
+      - name: Wait for services
+        run: |
+          wait_tcp() {
+            local host=$1 port=$2 timeout=${3:-90}
+            for i in $(seq 1 "$timeout"); do
+              if nc -z "$host" "$port" 2>/dev/null; then
+                echo "  $host:$port reachable after ${i}s"
+                return 0
+              fi
+              sleep 1
+            done
+            echo "ERROR: $host:$port not reachable after ${timeout}s"
+            return 1
+          }
+          wait_tcp localhost 5432 60
+          wait_tcp localhost 6379 60
+          wait_tcp localhost 8123 60
+          wait_tcp localhost 9000 60
+          wait_tcp localhost 9092 90
+
+      - name: Apply Postgres schema
+        run: .venv/bin/alembic upgrade head
+
+      - name: Apply ClickHouse schema
+        # Idempotent. Mirrors the local `make ch-migrate` target.
+        run: |
+          .venv/bin/python -m eveys_ocpp.clickhouse.migrate \
+            --host "${E2E_CH_HOST}" \
+            --port "${E2E_CH_HTTP_PORT}" \
+            --db "${EVEYS_OCPP_CLICKHOUSE_DB}"
+
+      - name: Run e2e tests
+        run: .venv/bin/pytest tests/e2e -v --no-cov

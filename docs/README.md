@@ -22,11 +22,6 @@ Documentation for **eveys/ocpp**, the OCPP gateway service of the Eveys EV-charg
 | 11 | [Configuration reference](./11-configuration-reference.md) | Every env var: category, default, range, stability, secret-flag, what it does, what changes if you change it (see ADR-0025) | Operators, SREs, anyone tuning the service |
 | 12 | [Connecting a real charger](./12-connecting-real-charger.md) | Operator/integrator guide: install, connect a real OCPP 1.6 device, watch activity in logs/Postgres/ClickHouse/Kafka, use the REST API from `curl` or Postman | Operators, integrators, anyone connecting a charger for the first time |
 
-## Related project files
-
-- `AGENTS.md` (in repo root) — AI-assistant instructions (Claude Code, Cursor, Copilot, Aider)
-- `CLAUDE.md` (in repo root) — thin pointer to AGENTS.md for Claude Code
-
 ## ADRs
 
 Architecture Decision Records live in the [`adr/` directory](./05-architecture-decisions.md). Each ADR records *one* significant decision, *why* it was made, and *what was rejected*. ADRs are append-only — superseded ones are marked, not deleted.
@@ -42,7 +37,6 @@ Current:
 - **First time?** Read `00-overview.md`, then `01-roadmap.md`, then skim the rest.
 - **Planning a sprint?** Read `06-implementation-plan.md` for the weekly schedule and `02-tasks.md` for the IDs.
 - **Contributing code?** Read `03-coding-standards.md` and `04-contributing.md`.
-- **Working with AI?** Read `AGENTS.md` in the repo root before opening Claude Code / Cursor.
 - **Making a significant decision?** Add an ADR. Don't bury it in code or chat.
 
 ## Status & ownership
@@ -119,14 +113,14 @@ Use `make clean` between routine rebuilds. Use `make distclean` when upgrading `
 
 ### CI build
 
-The `docs:build` job in `.gitlab-ci.yml` runs on **tagged commits only** (`$CI_COMMIT_TAG`). It produces a 30-day artifact named `eveys-ocpp-docs-<tag>` containing `docs/_build/html`. To trigger a docs release:
+The `docs` workflow in `.github/workflows/docs.yml` runs on **tags matching `docs-v*`** only. It produces a 30-day artifact named `eveys-ocpp-docs-<tag>` containing `docs/_build/html`. To trigger a docs release:
 
 ```bash
 git tag docs-v<n>
 git push --tags
 ```
 
-The artifact is downloadable from the GitLab job page. The site is **not** auto-published — it is an internal-only artifact.
+The artifact is downloadable from the GitHub Actions run page. The site is **not** auto-published — it is an internal-only artifact.
 
 ### Build configuration
 

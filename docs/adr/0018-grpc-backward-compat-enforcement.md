@@ -33,10 +33,10 @@ Forces:
 Concretely:
 
 - A repo-root `buf.yaml` declares the breaking-change rule set: `WIRE_JSON` (strictest of the practical sets — protects both binary protobuf and protobuf-JSON consumers).
-- A new `proto-breaking` job in the `quality` stage of `.gitlab-ci.yml` (alongside `lint` and `types`) installs the pinned `buf` binary, fetches `main`, and runs `buf breaking <module> --against '.git#branch=main,subdir=<module>'` once per module (the v2 multi-module workspace needs per-module invocation; comparing the whole workspace against itself conflates the two modules' image counts).
+- A new `proto-breaking` job in `.github/workflows/quality.yml` (alongside `lint` and `types`) installs the pinned `buf` binary, fetches `main`, and runs `buf breaking <module> --against '.git#branch=main,subdir=<module>'` once per module (the v2 multi-module workspace needs per-module invocation; comparing the whole workspace against itself conflates the two modules' image counts).
 - The job is hard-fail. No "warn-only" period. The proto contracts are already frozen at v1 (per `proto/README.md`); the gate only enforces what the docs already promise.
-- An intentional break (e.g. v1→v2 rollout) bypasses the gate by adding a `bypass-breaking-change` MR label. The job script reads `$CI_MERGE_REQUEST_LABELS` and exits 0 with a loud `WARNING` log if the label is present. Bypass is rare by design — every use will appear in the MR history.
-- The check runs only on MR pipelines (where there's a `main` to compare against). On `main` push pipelines it's a no-op (you can't "break against yourself").
+- An intentional break (e.g. v1→v2 rollout) bypasses the gate by adding a `bypass-breaking-change` PR label. The job inspects `${{ github.event.pull_request.labels.*.name }}` and exits 0 with a loud `WARNING` log if the label is present. Bypass is rare by design — every use will appear in the PR history.
+- The check runs only on PR events (where there's a `main` to compare against). On `main` push pipelines it's a no-op (you can't "break against yourself").
 
 Not implementing right now (deferred until they earn their keep):
 
@@ -80,7 +80,7 @@ Not implementing right now (deferred until they earn their keep):
 ### Risks
 
 - **`buf` binary version drift.** A point release changing default rule semantics could turn a green pipeline red. Mitigation: pin to a specific `vX.Y.Z` in the install step; bump in a deliberate MR with a regression sweep.
-- **`main` ref availability in CI.** GitLab's MR pipelines fetch only the source branch by default; the breaking check needs `main` as well. Mitigation: the job's `before_script` fetches `main` explicitly. If that ever fails, the breaking check skips with a clear error rather than silently passing.
+- **`main` ref availability in CI.** GitHub Actions PR checkouts default to a shallow clone; the breaking check needs `main` as well. Mitigation: the job runs `git fetch --depth=50 origin main:main` explicitly. If that ever fails, the breaking check skips with a clear error rather than silently passing.
 - **Bypass label misuse.** An engineer applies `bypass-breaking-change` to skip a check on a non-breaking-change MR. Reviewer responsibility: check the MR description's justification when the label is present. Tracked in the contributing checklist (follow-up).
 - **Future schema registry overlap.** ADR-0014 (planned, schema registry) might subsume part of this gate. Until then, `buf breaking` is the local source of truth. When the registry lands, this ADR is the precedent for what stays in CI vs what moves to the registry.
 - **False sense of completeness.** `buf breaking` checks the *protobuf* contract. It does NOT check (a) gRPC method semantics, (b) handler behavior changes, (c) Kafka topic-name changes (those live in our settings, not protos). Reviewers still own the semantic-compat call.
