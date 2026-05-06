@@ -158,7 +158,7 @@ print(' '.join(names))" 2>/dev/null); \
 	$(COMPOSE) ps; \
 	exit 1
 
-# Local equivalent of the GitLab `tests:e2e` job. Brings up the data
+# Local equivalent of the GitHub Actions `e2e` workflow. Brings up the data
 # plane, applies schema, runs the e2e tests, tears down. Idempotent —
 # safe to re-run.
 # ClickHouse schema migrator. Idempotent; reads SQL files from

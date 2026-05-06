@@ -54,7 +54,7 @@ The rollout ramp (Phase 7) is **gate-driven** — moving from W1 → W5 only hap
 |---|---|---|
 | E0-1: monorepo at `eveys/`, git init | TL | First commit lands docs already written |
 | E0-2: Python skeleton (`pyproject.toml`, `Makefile`, `src/eveys_ocpp/`, `tests/`) [P] | SB1 | Empty package; `make tests` green on no code |
-| E0-3: GitLab CI (Python 3.13) [P] | SRE | Lint + mypy + pytest on every MR |
+| E0-3: GitHub Actions (Python 3.13) [P] | SRE | Lint + mypy + pytest on every PR |
 | E0-4: pre-commit (black, isort, ruff, mypy --strict) [P] | SB1 | `pre-commit install` works |
 | E0-5: Dockerfile (distroless multi-stage) [P] | SRE | Image < 200 MB, runs `python -m eveys_ocpp --version` |
 | E0-7: `.editorconfig`, `.gitignore`, `.gitattributes` [P] (extend the root `.gitignore` that already covers docs build output) | SB2 | One quick MR |

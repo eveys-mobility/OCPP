@@ -34,7 +34,7 @@ Start here: [`docs/`](./docs/)
 | [`docs/08-ocpp-conformance.md`](./docs/08-ocpp-conformance.md) | OCPP conformance matrix (TC ID → handler → status) |
 | [`docs/09-certification-readiness.md`](./docs/09-certification-readiness.md) | Certification readiness playbook (PICS, OCTT, lab, exit gate) |
 
-For AI assistants (Claude Code, Cursor, Copilot, Aider): see [`AGENTS.md`](./AGENTS.md).
+For AI assistants: see [`AGENTS.md`](./AGENTS.md).
 
 ## Building the docs site
 

@@ -59,7 +59,7 @@ Cert readiness has four parallel streams. Each has an owner and gates the cert r
 | Step | Owner | Status | Notes |
 |---|---|---|---|
 | Stand up OCTT against `make compose-up` + running CSMS | QA | ⏳ Pending OCTT access | Task **C-2**. First test case to run: `TC_001` (Cold Boot Charge Point). |
-| Wire OCTT 1.6 Core subset into GitLab CI (non-blocking) | QA + SB2 | ⏳ Pending OCTT | Task **C-3**. Becomes blocking before W6. |
+| Wire OCTT 1.6 Core subset into GitHub Actions (non-blocking) | QA + SB2 | ⏳ Pending OCTT | Task **C-3**. Becomes blocking before W6. |
 | Wire OCTT Smart Charging subset into CI | QA | ⏳ Pending OCTT + E2-1E | Once Smart Charging handlers (E2-1E) exist AND OCTT access lands. |
 | Wire OCTT Reservations + LocalAuthList + RemoteTrigger subsets | QA | ⏳ Pending OCTT | Handlers shipped (E2-1B + E2-1C + E2-6); CI wiring blocked on OCTT access (task C-1a, deferred). |
 | Wire OCTT Advanced Security subset | QA | ⏳ Phase 5 | After mTLS work (E5-5). |

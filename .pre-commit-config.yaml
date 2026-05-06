@@ -4,8 +4,8 @@
 # Run on all files:  pre-commit run --all-files
 # Update versions:   pre-commit autoupdate
 #
-# CI runs `ruff check` and `mypy` directly via .gitlab-ci.yml. These hooks
-# catch the same problems before push, without waiting for CI feedback.
+# CI runs `ruff check` and `mypy` directly via .github/workflows/quality.yml.
+# These hooks catch the same problems before push, without waiting for CI feedback.
 
 default_language_version:
   python: python3.13
@@ -24,8 +24,6 @@ repos:
         exclude: \.md$
       - id: end-of-file-fixer
       - id: check-yaml
-        # GitLab CI uses anchors that PyYAML loads correctly; ruamel sometimes
-        # complains about them. Stick with PyYAML's strict mode.
       - id: check-toml
       - id: check-added-large-files
         args: ["--maxkb=500"]

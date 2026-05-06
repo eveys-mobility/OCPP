@@ -19,8 +19,8 @@ override as positional argv.
 Neither bug was in Python code. Both were in the deploy-time wiring:
 `docker-compose.yml` and `Dockerfile`. The entire test pyramid below
 the e2e job is incapable of seeing them, because the unit suite mocks the
-data plane and the e2e job uses GitLab `services:` sidecars that do not
-go through the Dockerfile or compose file at all.
+data plane and the e2e job uses GitHub Actions `services:` containers
+that do not go through the Dockerfile or compose file at all.
 
 This ADR defines the minimum number of test tiers we keep, and what each
 tier is **contractually responsible for catching**, so that "CI is green"
@@ -35,10 +35,10 @@ tier that was designed for something else.
 
 | Tier | Lives at | CI job | What it proves | What it does NOT prove |
 |---|---|---|---|---|
-| 1. Unit | `tests/unit/` | `tests` | Pure-Python logic. Handlers compute the right reply, repositories build the right SQL, the Authorize cache is defensive against malformed values, the bus serialises correctly. Imports parse. Coverage gate: ≥ 80 %. | Nothing about real Postgres / Redis / Kafka / ClickHouse. Nothing about the binary booting. Nothing about deploy-time wiring. |
-| 2. Integration with services | `tests/e2e/` (GitLab `services:`) | `tests:e2e` | The Python code talks to **real** Postgres / Redis / Kafka / ClickHouse correctly. Schemas migrate. The Kafka → ClickHouse pipeline materialises rows. Two-pod gRPC dispatch round-trips. The local pytest process drives a charger simulator against an in-process gateway. | Whether the **packaged container image** boots. Whether `docker-compose.yml` works. Whether the Dockerfile entrypoint does what its author thought. |
-| 3. Container compose-smoke | `tests/compose_smoke/` | `tests:compose-smoke` | The `eveys-ocpp:dev` image built by `deploy/Dockerfile` boots, opens its WS+gRPC sockets, and stays up under the **production-shaped** `docker-compose.yml`. The `clickhouse-ingestor` sidecar stays up under the same compose. A real OCPP charger can complete BootNotification → Authorize → StartTransaction → MeterValues → StopTransaction against the host port and the rows materialise in Postgres + ClickHouse. | Whether Helm charts are correct. Whether prod secrets are wired. (Tier 4, future: kind/k3d tier when Phase 4 lands `deploy/k8s/`.) |
-| 4. Production-shape (future) | `tests/k8s_smoke/` (TBD) | `tests:k8s-smoke` | Helm chart from `deploy/k8s/` deploys cleanly into a kind/k3d cluster, Pods reach Ready, charger simulator drives a session against the cluster ingress. | Real cloud secret managers / mTLS / IAM — out of scope for any local tier. |
+| 1. Unit | `tests/unit/` | `tests.yml::unit` | Pure-Python logic. Handlers compute the right reply, repositories build the right SQL, the Authorize cache is defensive against malformed values, the bus serialises correctly. Imports parse. Coverage gate: ≥ 80 %. | Nothing about real Postgres / Redis / Kafka / ClickHouse. Nothing about the binary booting. Nothing about deploy-time wiring. |
+| 2. Integration with services | `tests/e2e/` (GitHub Actions `services:`) | `e2e.yml` | The Python code talks to **real** Postgres / Redis / Kafka / ClickHouse correctly. Schemas migrate. The Kafka → ClickHouse pipeline materialises rows. Two-pod gRPC dispatch round-trips. The local pytest process drives a charger simulator against an in-process gateway. | Whether the **packaged container image** boots. Whether `docker-compose.yml` works. Whether the Dockerfile entrypoint does what its author thought. |
+| 3. Container compose-smoke | `tests/compose_smoke/` | `compose-smoke.yml` | The `eveys-ocpp:dev` image built by `deploy/Dockerfile` boots, opens its WS+gRPC sockets, and stays up under the **production-shaped** `docker-compose.yml`. The `clickhouse-ingestor` sidecar stays up under the same compose. A real OCPP charger can complete BootNotification → Authorize → StartTransaction → MeterValues → StopTransaction against the host port and the rows materialise in Postgres + ClickHouse. | Whether Helm charts are correct. Whether prod secrets are wired. (Tier 4, future: kind/k3d tier when Phase 4 lands `deploy/k8s/`.) |
+| 4. Production-shape (future) | `tests/k8s_smoke/` (TBD) | `k8s-smoke.yml` | Helm chart from `deploy/k8s/` deploys cleanly into a kind/k3d cluster, Pods reach Ready, charger simulator drives a session against the cluster ingress. | Real cloud secret managers / mTLS / IAM — out of scope for any local tier. |
 
 The **key invariant** this ladder enforces:
 
@@ -108,9 +108,9 @@ Without Tier 3 the first six rows ship green.
 
 ### Negative
 
-- Tier 3 needs Docker on the runner. GitLab shared runners support this
-  via the `docker:dind` services pattern — no infrastructure ask.
-- Adds ~ 90 s to MR pipelines that touch `deploy/`. Acceptable: the
+- Tier 3 needs Docker on the runner. GitHub-hosted ubuntu runners ship
+  Docker preinstalled — no infrastructure ask.
+- Adds ~ 90 s to PR pipelines that touch `deploy/`. Acceptable: the
   alternative is shipping a broken image.
 - Tier 3 is heavier to debug than a unit test. A failure shows up as
   "container exited", and the developer needs to read container logs.
