@@ -11,9 +11,10 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import and_, delete, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from .models import (
     ChargePoint,
@@ -554,3 +555,197 @@ def _coerce_optional_datetime(value: object) -> datetime | None:
     if isinstance(value, str):
         return datetime.fromisoformat(value)
     return None
+
+
+# ---- E3-7: REST API read functions -----------------------------------------
+#
+# Cursor-paginated lists + detail fetches for the gateway-side REST API.
+# Cursors are keyset-paginated on the surrogate `id` (BigInteger PK).
+# Caller (route handler) is responsible for translating typed values to
+# the REST envelope; these functions return plain dicts to keep the
+# repo↔handler boundary narrow per the existing pattern in this file.
+
+
+def _charge_point_to_dict(cp: ChargePoint) -> dict[str, Any]:
+    """Project a `ChargePoint` ORM row to the REST shape.
+
+    `online` and `pod_id` come from Redis (the Registry), NOT Postgres
+    — the route handler enriches the dict with those fields. This
+    function only returns Postgres-known data."""
+    return {
+        "id": cp.id,
+        "cp_id": cp.cp_id,
+        "vendor": cp.vendor,
+        "model": cp.model,
+        "firmware_version": cp.firmware_version,
+        "serial_number": cp.serial_number,
+        "last_boot_at": cp.last_boot_at,
+        "last_heartbeat_at": cp.last_heartbeat_at,
+        "last_status": cp.last_status,
+        "last_diagnostics_status": cp.last_diagnostics_status,
+        "last_firmware_status": cp.last_firmware_status,
+    }
+
+
+async def list_charge_points(
+    session: AsyncSession,
+    *,
+    after_id: int | None,
+    limit: int,
+    vendor: str | None = None,
+) -> list[dict[str, Any]]:
+    """Cursor-paginated list of chargers, ordered by surrogate `id`.
+
+    `after_id` is the keyset boundary (exclusive) — `None` means first
+    page. `vendor` filters by exact match. The `online` filter is NOT
+    applied here because presence lives in Redis; the route handler
+    filters the result post-hoc when the client passes `online=true`
+    or `online=false`.
+
+    Returns up to `limit + 1` rows so the caller can detect whether a
+    next page exists without an extra COUNT — the handler trims the
+    extra row and sets `next_cursor` from the last kept row.
+    """
+    stmt = select(ChargePoint).order_by(ChargePoint.id).limit(limit + 1)
+    if after_id is not None:
+        stmt = stmt.where(ChargePoint.id > after_id)
+    if vendor is not None:
+        stmt = stmt.where(ChargePoint.vendor == vendor)
+    result = await session.execute(stmt)
+    return [_charge_point_to_dict(cp) for cp in result.scalars().all()]
+
+
+async def get_charge_point_detail(session: AsyncSession, *, cp_id: str) -> dict[str, Any] | None:
+    """Single-charger detail, with active reservations + profiles eager-
+    loaded.
+
+    Returns `None` when the charger has never sent a BootNotification
+    (the route handler maps that to `404 UNKNOWN_CP_ID`).
+
+    "Active reservation" = `status='Active'`. "Active charging profile"
+    is everything in the table for v0; we don't have an end-time column
+    that lets us narrow further at the SQL layer. Operators reading
+    this list see what's currently registered with the gateway, which
+    matches the contract's "active" semantics for v0.
+    """
+    stmt = (
+        select(ChargePoint)
+        .where(ChargePoint.cp_id == cp_id)
+        .options(
+            selectinload(ChargePoint.reservations),
+            selectinload(ChargePoint.charging_profiles),
+        )
+    )
+    result = await session.execute(stmt)
+    cp = result.scalar_one_or_none()
+    if cp is None:
+        return None
+    base = _charge_point_to_dict(cp)
+    # Reservation's OCPP-visible id is the surrogate `id` itself
+    # (ADR-0021: gateway assigns reservation_id via INSERT ... RETURNING id).
+    base["active_reservations"] = [
+        {
+            "reservation_id": r.id,
+            "connector_id": r.connector_id,
+            "id_tag": r.id_tag,
+            "expiry_date": r.expiry_date,
+            "status": r.status,
+        }
+        for r in cp.reservations
+        if r.status == "Active"
+    ]
+    base["active_charging_profiles"] = [
+        {
+            "charging_profile_id": p.charging_profile_id,
+            "connector_id": p.connector_id,
+            "stack_level": p.stack_level,
+            "purpose": p.charging_profile_purpose,
+            "kind": p.charging_profile_kind,
+        }
+        for p in cp.charging_profiles
+        if p.status != "Cleared"
+    ]
+    return base
+
+
+def _transaction_to_dict(tx: Transaction) -> dict[str, Any]:
+    """Project a `Transaction` ORM row to the REST shape."""
+    consumed: int | None = None
+    if tx.meter_stop_wh is not None:
+        consumed = tx.meter_stop_wh - tx.meter_start_wh
+    return {
+        "id": tx.id,
+        "transaction_id": tx.transaction_id,
+        "charge_point_id": tx.charge_point_id,
+        "connector_id": tx.connector_id,
+        "id_tag": tx.id_tag,
+        "meter_start_wh": tx.meter_start_wh,
+        "meter_stop_wh": tx.meter_stop_wh,
+        "consumed_wh": consumed,
+        "started_reported_at": tx.started_reported_at,
+        "started_received_at": tx.started_received_at,
+        "stopped_reported_at": tx.stopped_reported_at,
+        "stopped_received_at": tx.stopped_received_at,
+        "stop_reason": tx.stop_reason,
+    }
+
+
+async def list_transactions_by_cp(
+    session: AsyncSession,
+    *,
+    cp_id: str,
+    after_id: int | None,
+    limit: int,
+    id_tag: str | None = None,
+    open_only: bool | None = None,
+    started_from: datetime | None = None,
+    started_to: datetime | None = None,
+) -> list[dict[str, Any]] | None:
+    """Cursor-paginated transactions for a charger.
+
+    Returns `None` when the charger is unknown (caller maps to
+    `UNKNOWN_CP_ID`); empty list = known charger with no matching txns.
+
+    Filters: `id_tag` exact match; `open_only=True` keeps txns whose
+    `stopped_reported_at IS NULL` (currently charging); `False` keeps
+    only stopped txns; `None` returns both. Time window matches on
+    `started_reported_at`. Returns up to `limit+1` rows for next-page
+    detection (same shape as `list_charge_points`).
+    """
+    cp_pk = await get_charge_point_pk(session, cp_id=cp_id)
+    if cp_pk is None:
+        return None
+
+    conditions = [Transaction.charge_point_id == cp_pk]
+    if id_tag is not None:
+        conditions.append(Transaction.id_tag == id_tag)
+    if open_only is True:
+        conditions.append(Transaction.stopped_reported_at.is_(None))
+    elif open_only is False:
+        conditions.append(Transaction.stopped_reported_at.is_not(None))
+    if started_from is not None:
+        conditions.append(Transaction.started_reported_at >= started_from)
+    if started_to is not None:
+        conditions.append(Transaction.started_reported_at <= started_to)
+    if after_id is not None:
+        conditions.append(Transaction.id > after_id)
+
+    stmt = select(Transaction).where(and_(*conditions)).order_by(Transaction.id).limit(limit + 1)
+    result = await session.execute(stmt)
+    return [_transaction_to_dict(tx) for tx in result.scalars().all()]
+
+
+async def get_transaction_by_id(
+    session: AsyncSession, *, transaction_id: int
+) -> dict[str, Any] | None:
+    """Single-transaction detail, looked up by `transaction_id` (the
+    OCPP-visible id, not the surrogate PK).
+
+    Returns `None` when no row exists (route handler → 404
+    `UNKNOWN_TRANSACTION_ID`)."""
+    stmt = select(Transaction).where(Transaction.transaction_id == transaction_id)
+    result = await session.execute(stmt)
+    tx = result.scalar_one_or_none()
+    if tx is None:
+        return None
+    return _transaction_to_dict(tx)

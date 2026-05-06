@@ -42,6 +42,7 @@ _EN_DASH: Final = "\u2013"
 _CATEGORY_ORDER: Final[tuple[str, ...]] = (
     "ws_server",
     "grpc_server",
+    "rest_server",
     "kafka_producer",
     "kafka_topics",
     "redis",
@@ -60,6 +61,7 @@ _CATEGORY_ORDER: Final[tuple[str, ...]] = (
 _SECTION_TITLES: Final[dict[str, str]] = {
     "ws_server": "WS server",
     "grpc_server": "gRPC server",
+    "rest_server": "REST server (ADR-0026, E3-7..E3-8)",
     "kafka_producer": "Kafka producer (ADR-0019)",
     "kafka_topics": "Kafka topics",
     "redis": "Redis (online registry + pub/sub bus, ADR-0016)",
