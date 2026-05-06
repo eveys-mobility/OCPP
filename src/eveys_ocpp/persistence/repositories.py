@@ -11,7 +11,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import and_, delete, select, update
+from sqlalchemy import and_, delete, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -749,3 +749,151 @@ async def get_transaction_by_id(
     if tx is None:
         return None
     return _transaction_to_dict(tx)
+
+
+def _reservation_to_dict(r: Reservation) -> dict[str, Any]:
+    """Project a `Reservation` ORM row to the REST shape.
+
+    `reservation_id` is the surrogate `id` per ADR-0021 — the gateway
+    assigns it via `INSERT ... RETURNING id` and forwards it to the
+    charger as the OCPP-visible identifier."""
+    return {
+        "id": r.id,
+        "reservation_id": r.id,
+        "connector_id": r.connector_id,
+        "id_tag": r.id_tag,
+        "parent_id_tag": r.parent_id_tag,
+        "expiry_date": r.expiry_date,
+        "status": r.status,
+        "created_at": r.created_at,
+        "updated_at": r.updated_at,
+    }
+
+
+async def list_reservations_by_cp(
+    session: AsyncSession,
+    *,
+    cp_id: str,
+    after_id: int | None,
+    limit: int,
+    status: str | None = None,
+    active: bool | None = None,
+    id_tag: str | None = None,
+    now: datetime | None = None,
+) -> list[dict[str, Any]] | None:
+    """Cursor-paginated reservations for a charger.
+
+    Returns `None` when the charger is unknown (caller maps to
+    `UNKNOWN_CP_ID`); empty list = known charger with no matching rows.
+
+    Filters: `status` exact match (e.g. `Active`, `Cancelled`); `active`
+    is a query-time computed flag — `True` keeps rows where
+    `status='Active'` and `expiry_date > now()` (effective-but-not-
+    expired), `False` is the inverse, `None` returns both. `id_tag`
+    exact match. `now` overrides the comparison clock for tests.
+    """
+    cp_pk = await get_charge_point_pk(session, cp_id=cp_id)
+    if cp_pk is None:
+        return None
+
+    conditions = [Reservation.charge_point_id == cp_pk]
+    if status is not None:
+        conditions.append(Reservation.status == status)
+    if id_tag is not None:
+        conditions.append(Reservation.id_tag == id_tag)
+    if active is not None:
+        from datetime import UTC
+
+        clock = now if now is not None else datetime.now(UTC)
+        if active:
+            conditions.append(Reservation.status == "Active")
+            conditions.append(Reservation.expiry_date > clock)
+        else:
+            conditions.append(or_(Reservation.status != "Active", Reservation.expiry_date <= clock))
+    if after_id is not None:
+        conditions.append(Reservation.id > after_id)
+
+    stmt = select(Reservation).where(and_(*conditions)).order_by(Reservation.id).limit(limit + 1)
+    result = await session.execute(stmt)
+    return [_reservation_to_dict(r) for r in result.scalars().all()]
+
+
+def _charging_profile_to_dict(p: ChargingProfile) -> dict[str, Any]:
+    """Project a `ChargingProfile` ORM row (with periods eager-loaded)
+    to the REST shape. Schedule periods are inlined; their order is
+    fixed by the relationship's `order_by=start_period`."""
+    return {
+        "id": p.id,
+        "charging_profile_id": p.charging_profile_id,
+        "connector_id": p.connector_id,
+        "stack_level": p.stack_level,
+        "purpose": p.charging_profile_purpose,
+        "kind": p.charging_profile_kind,
+        "recurrency_kind": p.recurrency_kind,
+        "valid_from": p.valid_from,
+        "valid_to": p.valid_to,
+        "transaction_id": p.transaction_id,
+        "charging_rate_unit": p.charging_rate_unit,
+        "min_charging_rate": (
+            float(p.min_charging_rate) if p.min_charging_rate is not None else None
+        ),
+        "schedule_duration": p.schedule_duration,
+        "start_schedule": p.start_schedule,
+        "status": p.status,
+        "schedule_periods": [
+            {
+                "start_period": sp.start_period,
+                "limit": float(sp.limit),
+                "number_phases": sp.number_phases,
+            }
+            for sp in p.schedule_periods
+        ],
+        "created_at": p.created_at,
+        "updated_at": p.updated_at,
+    }
+
+
+async def list_charging_profiles_by_cp(
+    session: AsyncSession,
+    *,
+    cp_id: str,
+    after_id: int | None,
+    limit: int,
+    purpose: str | None = None,
+    stack_level: int | None = None,
+    connector_id: int | None = None,
+) -> list[dict[str, Any]] | None:
+    """Cursor-paginated charging profiles for a charger, with their
+    schedule periods inlined.
+
+    Returns `None` when the charger is unknown; empty list = known
+    charger, no matching profiles.
+
+    Filters: `purpose` (e.g. `TxDefaultProfile`), `stack_level`,
+    `connector_id` (0 = whole-charger profile, positive = specific).
+    Cleared profiles are returned along with active ones; callers that
+    only want live ones should pass through the `status` field.
+    """
+    cp_pk = await get_charge_point_pk(session, cp_id=cp_id)
+    if cp_pk is None:
+        return None
+
+    conditions = [ChargingProfile.charge_point_id == cp_pk]
+    if purpose is not None:
+        conditions.append(ChargingProfile.charging_profile_purpose == purpose)
+    if stack_level is not None:
+        conditions.append(ChargingProfile.stack_level == stack_level)
+    if connector_id is not None:
+        conditions.append(ChargingProfile.connector_id == connector_id)
+    if after_id is not None:
+        conditions.append(ChargingProfile.id > after_id)
+
+    stmt = (
+        select(ChargingProfile)
+        .where(and_(*conditions))
+        .options(selectinload(ChargingProfile.schedule_periods))
+        .order_by(ChargingProfile.id)
+        .limit(limit + 1)
+    )
+    result = await session.execute(stmt)
+    return [_charging_profile_to_dict(p) for p in result.scalars().all()]

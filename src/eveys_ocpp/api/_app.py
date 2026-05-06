@@ -29,7 +29,14 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from eveys_ocpp.api import charge_points, commands, health, transactions
+from eveys_ocpp.api import (
+    charge_points,
+    charging_profiles,
+    commands,
+    health,
+    reservations,
+    transactions,
+)
 from eveys_ocpp.api._auth import make_bearer_auth_middleware
 from eveys_ocpp.api._errors import (
     ApiError,
@@ -100,9 +107,11 @@ def make_app(
     app.include_router(health.router, prefix="/api/v1")
     app.include_router(charge_points.router, prefix="/api/v1")
     app.include_router(transactions.router, prefix="/api/v1")
+    app.include_router(reservations.router, prefix="/api/v1")
+    app.include_router(charging_profiles.router, prefix="/api/v1")
     app.include_router(commands.router, prefix="/api/v1")
-    # Reservations + profiles (commit 3) and meter-values + status-history
-    # (commit 4) hook in here as their routers land.
+    # Meter-values + status-history (E3-7d) hook in here as their router
+    # lands; needs a ClickHouse async read client first.
 
     return app
 
