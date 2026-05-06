@@ -28,6 +28,7 @@ ALLOWED_CATEGORIES = {
     "clickhouse_ingest",
     "backend_integration",
     "authorize_cache",
+    "webhooks",
 }
 
 ALLOWED_STABILITY = {"tunable", "structural", "dev-only"}

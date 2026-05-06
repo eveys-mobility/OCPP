@@ -27,6 +27,7 @@ from eveys_ocpp.transport.grpc_server import OcppGatewayService
 from eveys_ocpp.transport.grpc_server import serve_forever as serve_grpc_forever
 from eveys_ocpp.transport.rest_server import serve_forever as serve_rest_forever
 from eveys_ocpp.transport.ws_server import serve_forever as serve_ws_forever
+from eveys_ocpp.webhooks import WebhookDispatcher
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -84,6 +85,18 @@ async def _serve_all(
         ch_client = ClickHouseReadClient(settings)
         await ch_client.start()
 
+    # E3-9: webhook dispatcher tails the Kafka event topics and POSTs
+    # signed deliveries at backend-configured URLs. Only constructed
+    # when `webhook_base_url` is set — empty disables the whole
+    # subsystem (dev runs without a backend skip it cleanly).
+    webhook_dispatcher: WebhookDispatcher | None = None
+    if settings.webhook_base_url:
+        webhook_dispatcher = WebhookDispatcher(settings)
+        await webhook_dispatcher.start()
+        log.info("webhook_dispatcher.configured", base_url=settings.webhook_base_url)
+    else:
+        log.info("webhook_dispatcher.disabled")
+
     await event_producer.start()
     await bus.start()
     try:
@@ -123,9 +136,16 @@ async def _serve_all(
                     ),
                     name="rest_server",
                 )
+            if webhook_dispatcher is not None:
+                tg.create_task(
+                    webhook_dispatcher.serve_forever(),
+                    name="webhook_dispatcher",
+                )
     finally:
         await bus.stop()
         await event_producer.stop()
+        if webhook_dispatcher is not None:
+            await webhook_dispatcher.stop()
         if backend_client is not None:
             await backend_client.aclose()
         if ch_client is not None:

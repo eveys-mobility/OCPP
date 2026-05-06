@@ -145,6 +145,8 @@ module = [
     "eveys_ocpp.handlers.v16.start_transaction",
     # E2-14 ClickHouse ingestor — same generated `events_pb2` opaqueness.
     "eveys_ocpp.clickhouse.ingestor",
+    # E3-9 webhook dispatcher — same generated `events_pb2` opaqueness.
+    "eveys_ocpp.webhooks.dispatcher",
 ]
 disallow_untyped_decorators = false
 disallow_untyped_calls = false

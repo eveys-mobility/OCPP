@@ -158,6 +158,24 @@ sensitivity.
 | `EVEYS_OCPP_BACKEND_AUTHORIZE_CACHE_ENABLED` | `true` | bool | tunable | no | Enable Redis caching of the Authorize result keyed on `(cp_id, id_tag)`. Cache hits short-circuit the backend round-trip on the OCPP hot path. | Disabling pushes every Authorize through the backend — useful for ops debugging when a stale cached `Blocked` is suspected. Re-enable as soon as the issue is understood. |
 | `EVEYS_OCPP_BACKEND_AUTHORIZE_CACHE_TTL_SECONDS` | `30` | 1–3600 | tunable | no | TTL on cached Authorize entries. | Short enough that `Blocked`/`Expired` decisions propagate within ~30 s; long enough to absorb depot-shift bursts (a fleet returning at once = same-tag taps within a minute). Drop toward 1 s for ops debugging. |
 
+## Outbound webhooks (E3-9)
+
+| Variable | Default | Range | Stability | Secret | What it does | Impact of changing |
+|---|---|---|---|---|---|---|
+| `EVEYS_OCPP_WEBHOOK_BASE_URL` | (empty) | string | tunable | no | Base URL the gateway POSTs webhook deliveries to. Empty disables the dispatcher entirely. Per-event URLs default to `<base>/<event-name>` and can be overridden individually. | Empty string = no webhook subsystem. Set to the backend's webhook receiver root URL to enable. |
+| `EVEYS_OCPP_WEBHOOK_SECRET` | (empty) | string | tunable | **yes** | Shared HMAC-SHA-256 secret used to sign every webhook delivery. The backend's receiver verifies the `X-Eveys-Signature` header against the same secret. | Holds in vault. A leak lets an attacker forge delivery requests against the backend. Rotate via coordinated update (gateway + backend in lockstep). |
+| `EVEYS_OCPP_WEBHOOK_URL_CP_BOOT` | (empty) | string | tunable | no | Override the URL for `cp.boot` events. Empty falls back to `<webhook_base_url>/cp-boot` when the base URL is set. | Per-event routing override. |
+| `EVEYS_OCPP_WEBHOOK_URL_CP_STATUS` | (empty) | string | tunable | no | Override the URL for `cp.status_changed` events. Empty falls back to `<webhook_base_url>/cp-status-changed`. | Per-event routing override. |
+| `EVEYS_OCPP_WEBHOOK_URL_CP_METER` | (empty) | string | tunable | no | Override the URL for `cp.meter` MeterValues events. Empty falls back to `<webhook_base_url>/cp-meter`. | MeterValues are high-volume — at 10k chargers this is ~333 webhooks/second. Off by default (see `webhook_enable_cp_meter`); prefer Kafka. |
+| `EVEYS_OCPP_WEBHOOK_URL_TX_STARTED` | (empty) | string | tunable | no | Override the URL for `tx.started` events. Empty falls back to `<webhook_base_url>/tx-started`. | Per-event routing override. |
+| `EVEYS_OCPP_WEBHOOK_ENABLE_CP_BOOT` | `true` | bool | tunable | no | Enable webhook delivery for `cp.boot` events. | Disable to silence boot-event pushes. |
+| `EVEYS_OCPP_WEBHOOK_ENABLE_CP_STATUS` | `true` | bool | tunable | no | Enable webhook delivery for `cp.status_changed` events. | Disable to silence status-change pushes. |
+| `EVEYS_OCPP_WEBHOOK_ENABLE_CP_METER` | `false` | bool | tunable | no | Enable webhook delivery for `cp.meter` MeterValues events. **Off by default** — high volume. | Enabling this on a fleet >100 chargers will saturate the dispatcher's HTTP pool. Subscribe to Kafka instead. |
+| `EVEYS_OCPP_WEBHOOK_ENABLE_TX_STARTED` | `true` | bool | tunable | no | Enable webhook delivery for `tx.started` events. | Disable to silence transaction-start pushes. |
+| `EVEYS_OCPP_WEBHOOK_CONSUMER_GROUP` | `eveys-ocpp-webhook-dispatcher` | string | structural | no | Kafka consumer group the webhook dispatcher uses to tail the four event topics. Distinct from the ClickHouse ingestor's group so the two pipelines run independently. | Changing this resets webhook consumer offsets. Keep stable unless intentionally replaying from earliest. |
+| `EVEYS_OCPP_WEBHOOK_REQUEST_TIMEOUT_SECONDS` | `10.0` | 1.0–120.0 | tunable | no | HTTP timeout for a single webhook delivery attempt. Backend must respond within this window or the gateway treats the attempt as a transient failure and retries. | Lower = faster failure detection; higher = tolerates slower backends. 10 s matches the backend's documented response budget per `docs/integration/03-webhooks.md`. |
+| `EVEYS_OCPP_WEBHOOK_MAX_ATTEMPTS` | `5` | 1–20 | tunable | no | Total delivery attempts before the gateway gives up and logs `webhook.delivery_failed`. Includes the first attempt. | Retries follow exponential backoff: 1 s, 5 s, 30 s, 2 min, 10 min for the default of 5. Lowering reduces the longest in-flight tail; raising tolerates longer backend outages. |
+
 ---
 
 ## Common operations
