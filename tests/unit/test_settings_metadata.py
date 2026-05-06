@@ -15,6 +15,7 @@ from eveys_ocpp.settings import Settings
 ALLOWED_CATEGORIES = {
     "ws_server",
     "grpc_server",
+    "rest_server",
     "kafka_producer",
     "kafka_topics",
     "redis",
