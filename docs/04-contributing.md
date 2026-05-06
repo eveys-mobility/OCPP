@@ -7,7 +7,7 @@
 | | |
 |---|---|
 | **Default branch** | `main` |
-| **Branch naming** | `<type>/<task-id>-<short-slug>` — e.g. `feat/E1-5-boot-notification-handler`, `fix/E2-9-redis-ttl-leak`, `chore/E0-3-ci-pipeline` |
+| **Branch naming** | `<type>/<task-id>-<short-slug>` — e.g. `feature/E1-5-boot-notification-handler`, `fix/E2-9-redis-ttl-leak`, `chore/E0-3-ci-pipeline` |
 | **Branch lifetime** | Hours to a few days. **No long-lived feature branches.** |
 | **Merge strategy** | Squash on merge. Linear history. |
 | **Force-push** | Never to shared branches. Local rebase is fine. |
@@ -17,7 +17,7 @@
 
 Every PR must:
 
-- [ ] Reference at least one task ID from [`02-tasks.md`](./02-tasks.md) in the title (e.g. `feat(handlers): BootNotification handler (E1-5)`).
+- [ ] Reference at least one task ID from [`02-tasks.md`](./02-tasks.md) in the title (e.g. `feature(handlers): BootNotification handler (E1-5)`).
 - [ ] Be **< 400 lines of diff** — or include a checklist in the description explaining why it had to be larger.
 - [ ] Have a **green CI**: lint, types, unit + integration tests, coverage ≥ 80%.
 - [ ] Include **tests for new behavior**. PRs without tests are rejected on first review.
@@ -51,13 +51,13 @@ If a hook auto-fixes something, re-stage and re-commit. **Never bypass hooks wit
 ```
 
 Examples:
-- `feat(handlers): implement BootNotification (E1-5)`
+- `feature(handlers): implement BootNotification (E1-5)`
 - `fix(registry): refresh TTL on every heartbeat (E2-9)`
 - `chore(ci): cache uv dependencies (E0-3)`
 - `docs(roadmap): adjust Phase 3 scope`
 - `refactor(commands): split v16 from v201`
 
-Types: `feat`, `fix`, `chore`, `docs`, `refactor`, `test`, `perf`, `ci`, `build`.
+Types: `feature`, `fix`, `chore`, `docs`, `refactor`, `test`, `perf`, `ci`, `build`.
 
 A commit body is optional but encouraged for non-trivial changes — explain *why*, not *what*.
 

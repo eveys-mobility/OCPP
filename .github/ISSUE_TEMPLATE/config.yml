@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question or discussion
+    url: https://github.com/eveys-mobility/OCPP/discussions
+    about: For questions, ideas, or anything that isn't a bug or a defined feature request, please open a Discussion instead.
