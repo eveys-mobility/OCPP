@@ -185,3 +185,139 @@ async def test_handler_survives_kafka_publish_exception(
     assert result.transaction_id == 999
     assert result.id_tag_info.status == AuthorizationStatus.accepted
     fake_producer.publish.assert_awaited_once()
+
+
+# ---- E3-5: backend `/sessions/open` wiring --------------------------------
+
+
+def _session_open_result(status: str = "Accepted", transaction_id: int = 999) -> Any:
+    from eveys_ocpp.platform import IdTagInfo as PlatformIdTagInfo
+    from eveys_ocpp.platform import SessionOpenResult
+
+    return SessionOpenResult(
+        transaction_id=transaction_id,
+        id_tag_info=PlatformIdTagInfo(status=status, parent_id_tag=None, expiry_date=None),
+        request_id="req-xyz",
+        command_id=8842,
+    )
+
+
+@pytest.mark.asyncio
+async def test_calls_backend_open_session_with_assigned_transaction_id(
+    fake_cp: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The DB-assigned transaction_id flows into the backend call and
+    becomes the Idempotency-Key per the contract."""
+    monkeypatch.setattr(start_transaction, "get_charge_point_pk", AsyncMock(return_value=42))
+    monkeypatch.setattr(start_transaction, "insert_transaction", AsyncMock(return_value=999))
+    fake_cp.backend_client = AsyncMock()
+    fake_cp.backend_client.open_session = AsyncMock(return_value=_session_open_result())
+
+    await start_transaction.handle(
+        fake_cp,
+        connector_id=1,
+        id_tag="VALID_RFID_001",
+        meter_start=4500000,
+        timestamp="2026-04-29T00:00:00+00:00",
+    )
+
+    fake_cp.backend_client.open_session.assert_awaited_once()
+    kwargs = fake_cp.backend_client.open_session.await_args.kwargs
+    assert kwargs["transaction_id"] == 999
+    assert kwargs["cp_id"] == "TEST_CP_001"
+    assert kwargs["connector_id"] == 1
+    assert kwargs["id_tag"] == "VALID_RFID_001"
+    assert kwargs["meter_start_wh"] == 4500000
+    assert kwargs["started_reported_at"] == "2026-04-29T00:00:00+00:00"
+    # Per docs/integration/01-backend-rest-contract.md.
+    assert kwargs["idempotency_key"] == "ocpp-session-open-999"
+
+
+@pytest.mark.asyncio
+async def test_business_error_returns_invalid_but_keeps_row_and_emits(
+    fake_cp: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A 4xx from the backend (e.g. quota exceeded between Authorize and
+    StartTransaction) maps to OCPP `Invalid`, but the local row is the
+    audit-of-record and Kafka still emits."""
+    from eveys_ocpp.platform import BackendBusinessError
+
+    monkeypatch.setattr(start_transaction, "get_charge_point_pk", AsyncMock(return_value=42))
+    insert = AsyncMock(return_value=999)
+    monkeypatch.setattr(start_transaction, "insert_transaction", insert)
+    producer = AsyncMock()
+    producer.publish = AsyncMock()
+    fake_cp.event_producer = producer
+    fake_cp.backend_client = AsyncMock()
+    fake_cp.backend_client.open_session = AsyncMock(
+        side_effect=BackendBusinessError("quota exceeded", error_code="QUOTA_EXCEEDED"),
+    )
+
+    result = await start_transaction.handle(
+        fake_cp,
+        connector_id=1,
+        id_tag="VALID_RFID_001",
+        meter_start=0,
+        timestamp="2026-04-29T00:00:00+00:00",
+    )
+
+    assert result.transaction_id == 999  # row kept
+    assert result.id_tag_info.status == AuthorizationStatus.invalid
+    insert.assert_awaited_once()
+    producer.publish.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_keeps_row_and_accepts_when_backend_unavailable(
+    fake_cp: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Backend network outage: the local row anchors reconciliation,
+    the charger continues to deliver energy, the reconciler heals."""
+    from eveys_ocpp.platform import BackendUnavailableError
+
+    monkeypatch.setattr(start_transaction, "get_charge_point_pk", AsyncMock(return_value=42))
+    insert = AsyncMock(return_value=999)
+    monkeypatch.setattr(start_transaction, "insert_transaction", insert)
+    producer = AsyncMock()
+    producer.publish = AsyncMock()
+    fake_cp.event_producer = producer
+    fake_cp.backend_client = AsyncMock()
+    fake_cp.backend_client.open_session = AsyncMock(
+        side_effect=BackendUnavailableError("network", error_code="NETWORK"),
+    )
+
+    result = await start_transaction.handle(
+        fake_cp,
+        connector_id=1,
+        id_tag="VALID_RFID_001",
+        meter_start=0,
+        timestamp="2026-04-29T00:00:00+00:00",
+    )
+
+    assert result.transaction_id == 999
+    assert result.id_tag_info.status == AuthorizationStatus.accepted
+    producer.publish.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_invalid_id_tag_does_not_call_backend(
+    fake_cp: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The `INVALID*` early-reject branch must short-circuit before the
+    DB write AND before the backend call."""
+    insert = AsyncMock()
+    monkeypatch.setattr(start_transaction, "insert_transaction", insert)
+    fake_cp.backend_client = AsyncMock()
+    fake_cp.backend_client.open_session = AsyncMock()
+
+    result = await start_transaction.handle(
+        fake_cp,
+        connector_id=1,
+        id_tag="INVALID_RFID",
+        meter_start=0,
+        timestamp="2026-04-29T00:00:00+00:00",
+    )
+
+    assert result.id_tag_info.status == AuthorizationStatus.invalid
+    fake_cp.backend_client.open_session.assert_not_awaited()
+    insert.assert_not_awaited()
