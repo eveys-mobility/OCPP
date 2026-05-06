@@ -76,22 +76,32 @@ ADRs are **never deleted**. They are append-only history.
 | [0004](./adr/0004-clickhouse-timeseries-store.md) | ClickHouse as the time-series store | Accepted | 2026-04-29 |
 | [0005](./adr/0005-certification-target.md) | Certification target: OCPP 1.6 CSMS, all profiles | Accepted | 2026-04-29 |
 | [0015](./adr/0015-kafka-event-envelope-format.md) | Kafka event envelope format (one envelope, five topics, `cp_id` partition key) | Accepted | 2026-04-30 |
+| [0016](./adr/0016-cross-pod-command-bus.md) | Cross-pod command bus over Redis pub/sub | Accepted | 2026-04-30 |
+| [0017](./adr/0017-idempotency-cache.md) | Idempotency cache for inbound OCPP replays | Accepted | 2026-04-30 |
+| [0018](./adr/0018-grpc-backward-compat-enforcement.md) | gRPC + Kafka-event backward-compat enforced in CI | Accepted | 2026-05-01 |
+| [0019](./adr/0019-kafka-producer-hardening.md) | Kafka producer hardening: durability over throughput | Accepted | 2026-05-01 |
+| [0020](./adr/0020-clickhouse-ingestion-sidecar.md) | ClickHouse ingestion: sidecar over Kafka Engine | Accepted | 2026-05-01 |
+| [0021](./adr/0021-reservations-charger-authority.md) | Reservations: charger-side authority + gateway-side mirror | Accepted | 2026-05-05 |
+| [0022](./adr/0022-smart-charging-charger-side-resolver.md) | Smart Charging: charger-side resolver, gateway-side profile mirror | Accepted | 2026-05-05 |
+| [0023](./adr/0023-backend-rest-integration.md) | Backend REST integration: two surfaces, asymmetric envelope | Accepted | 2026-05-05 |
 
 ## Pending / planned
 
 ADRs to be written as decisions become active:
 
-| Topic | Why |
-|---|---|
-| 0006 | Postgres + Redis + Kafka data plane (vs alternatives) |
-| 0007 | Envoy as the LB (vs Nginx / NLB) |
-| 0008 | gRPC for internal API (vs REST / GraphQL) |
-| 0009 | OCPP version isolation rule (no cross-import between v16/v201/v21) |
-| 0010 | Idempotency model |
-| 0011 | Authentication strategy (Basic Auth → mTLS path) |
-| 0012 | Rollout strategy: gated waves with per-`cp_id` allowlist |
-| 0013 | OCPP audit-log retention and archival |
-| 0014 | Schema Registry choice for Kafka events |
+| Topic | Why | Status |
+|---|---|---|
+| 0006 | Postgres + Redis + Kafka data plane (vs alternatives) | reserved |
+| 0007 | Envoy as the LB (vs Nginx / NLB) | reserved |
+| 0008 | gRPC for internal API (vs REST / GraphQL) | reserved |
+| 0009 | OCPP version isolation rule (no cross-import between v16/v201/v21) | reserved |
+| 0010 | Idempotency model | written as [ADR-0017](./adr/0017-idempotency-cache.md) |
+| 0011 | Authentication strategy (Basic Auth → mTLS path) | reserved |
+| 0012 | Rollout strategy: gated waves with per-`cp_id` allowlist | reserved |
+| 0013 | OCPP audit-log retention and archival | reserved |
+| 0014 | Schema Registry choice for Kafka events | reserved |
+
+Numbers are reserved up front so newcomers don't accidentally collide. When a reserved number's topic is picked up, write the ADR under that number rather than allocating a fresh one. (`0010` is the exception above — it was deferred until after E2-11 design crystallized, by which point the next-available slot was `0017`.)
 
 ## How to contribute an ADR
 

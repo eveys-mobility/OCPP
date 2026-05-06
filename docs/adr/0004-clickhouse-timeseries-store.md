@@ -30,7 +30,7 @@ Constraints:
 
 **ClickHouse is the time-series store for `MeterValues`, `Heartbeats`, `StatusNotifications`, and any future high-cardinality telemetry.**
 
-Data flow: charger → OCPP handler → Kafka → ClickHouse (downstream consumer). `eveys/ocpp` itself never writes to ClickHouse directly — it produces to Kafka, and a separate consumer (initially a sidecar, later possibly a `Kafka Engine` table on the ClickHouse side) lands the data.
+Data flow: charger → OCPP handler → Kafka → ClickHouse (downstream consumer). `eveys/ocpp` itself never writes to ClickHouse directly — it produces to Kafka, and a separate consumer (a sidecar — see [ADR-0020](./0020-clickhouse-ingestion-sidecar.md) for the choice over Kafka Engine) lands the data.
 
 Postgres remains for **transactional** state (`charge_points`, `transactions`, configuration). ClickHouse is **never** queried on the OCPP request path — only by analytics, billing, and operations dashboards.
 

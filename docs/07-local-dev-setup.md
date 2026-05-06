@@ -79,9 +79,9 @@ Slower (~5 minutes cold start). Not the default.
 | Redis 7 | `redis:7-alpine` | `6379` | Online registry, idempotency cache, pub/sub |
 | Kafka (KRaft mode) | `apache/kafka:3.7.0` | `9092` | Event firehose |
 | ClickHouse | `clickhouse/clickhouse-server:24` (Ubuntu base; the `:24-alpine` variant is broken on Apple Silicon) | `8123` (HTTP), `9000` (native) | Time-series store ([ADR-0004](./adr/0004-clickhouse-timeseries-store.md)) |
-| `eveys/ocpp` | built locally | `9000` (WS), `50051` (gRPC), `9100` (metrics) | This service |
+| `eveys/ocpp` | built locally | `19000` (WS, container 9000), `50051` (gRPC), `9100` (metrics) | This service |
 
-> **Note**: ClickHouse native protocol normally listens on `9000`. Our service also wants `9000` for the WebSocket port. The compose file remaps ClickHouse native to `9001` on the host to avoid the collision; HTTP (`8123`) is unchanged. Inside the compose network, ClickHouse remains on `9000` because containers have isolated ports.
+> **Note**: ClickHouse native protocol normally listens on `9000`. Our service also wants `9000` inside its container for the WebSocket port. The compose file remaps both onto host ports to avoid the collision: ClickHouse native to `9001`, gateway WS to **`19000`** (container `9000` for both, host published differently). HTTP (`8123`) is unchanged. So a charger or test client connects to `ws://<host>:19000/<cp_id>`.
 
 ### Bring it up
 
@@ -102,21 +102,28 @@ All five services should be `healthy`. If any is `unhealthy`, see [Troubleshooti
 
 ### Verify it works
 
-A scripted smoke test that exercises every component:
+Two scripted smoke tests exercise the stack at different trust levels (see [`10-testing-strategy.md`](./10-testing-strategy.md) and ADR-0024):
 
 ```bash
-make smoke           # runs tests/e2e/test_local_smoke.py
+make compose-smoke   # Tier-3 — production-shaped image against the full compose stack
+                     # (runs tests/compose_smoke/, owns compose up/down + schema apply)
 ```
 
-The smoke test:
+Or the e2e suite, which runs against an already-up compose stack:
 
-1. Connects to Postgres and creates a test row.
-2. Sets and reads a Redis key.
-3. Produces and consumes a message from a temp Kafka topic.
-4. Inserts and queries a row in ClickHouse.
-5. Opens a WebSocket to the `eveys/ocpp` container, sends a `BootNotification`, and asserts the response.
+```bash
+.venv/bin/pytest tests/e2e/ -v       # Tier-2 — uses the running stack
+```
 
-If `make smoke` passes, the stack is good.
+Between them, the smoke tests:
+
+1. Connect to Postgres and run a trivial query.
+2. Set and read a Redis key.
+3. Produce and consume a message from a Kafka topic.
+4. Insert and query a row in ClickHouse.
+5. Open a WebSocket to the `eveys/ocpp` container, send a `BootNotification`, and assert the response.
+
+If both pass, the stack is good.
 
 ### Manual checks
 
@@ -218,10 +225,12 @@ helm install kafka bitnami/kafka \
 
 # ClickHouse via Altinity operator (production-like)
 kubectl apply -f https://raw.githubusercontent.com/Altinity/clickhouse-operator/master/deploy/operator/clickhouse-operator-install-bundle.yaml
-kubectl apply -f deploy/k8s/clickhouse-dev.yaml
+# Skipped on Path B until Phase 4 lands `deploy/k8s/clickhouse-dev.yaml` —
+# see the note immediately below.
+# kubectl apply -f deploy/k8s/clickhouse-dev.yaml
 ```
 
-(`deploy/k8s/clickhouse-dev.yaml` lands with task E2-13.)
+(`deploy/k8s/clickhouse-dev.yaml` is **not** part of E2-13/E2-14 — that work was scoped to the compose stack and the in-cluster ingestion sidecar is per-pod independent. The K8s ClickHouse manifest lands in Phase 4 alongside the load test, when the single-node-vs-`ReplicatedMergeTree` decision is informed by real numbers; see ADR-0020 § "Project conventions implied". Until then, Path B operators get the operator installed but no ClickHouse instance — bring one up with `kubectl run` or use Path A's docker-compose stack for a local ClickHouse.)
 
 Wait for everything to be `Ready`:
 
@@ -247,7 +256,9 @@ helm install ocpp deploy/helm/eveys-ocpp \
 ```bash
 kubectl get pods -l app=eveys-ocpp
 kubectl logs -l app=eveys-ocpp -f
-make smoke-k8s                # smoke test against the k8s endpoint
+# Smoke against the cluster: port-forward the WS service and run the e2e suite.
+kubectl port-forward svc/eveys-ocpp 9000:9000 50051:50051 &
+.venv/bin/pytest tests/e2e/ -v
 ```
 
 ### Tear down
@@ -329,7 +340,7 @@ k3d image import eveys-ocpp:dev -c eveys-ocpp
 
 System Settings → Network → Firewall → Options → allow `Docker` to accept incoming connections. Affects only LAN sharing scenarios — purely-local development is unaffected.
 
-### `make smoke` fails on the WebSocket step
+### `make compose-smoke` (or `pytest tests/e2e/`) fails on the WebSocket step
 
 Two common causes:
 

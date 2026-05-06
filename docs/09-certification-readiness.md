@@ -44,12 +44,13 @@ Cert readiness has four parallel streams. Each has an owner and gates the cert r
 
 | Step | Owner | Status | Notes |
 |---|---|---|---|
-| Implement Core profile actions | SB1, SB2 | 🟡 partial (W1) | 5 of ~10 Core CSMS-side handlers shipped in W1. Remainder ships in E2-1. |
-| Implement Smart Charging profile actions | SB1, SB2 | ⏳ Phase 2/3 | TC_056..TC_072 in Appendix C. Charging profiles, schedules, stacking. |
+| Implement Core profile actions | SB1, SB2 | 🟡 done (E2-1A) | All Core handlers shipped: 7 from W1 + `DataTransfer`/`GetConfiguration`/`ClearCache` from E2-1A. Promotion to ✅ blocked on OCTT (C-1a, deferred). |
+| Implement Smart Charging profile actions | SB1, SB2 | 🟡 done (E2-1E) | TC_056..TC_072 in Appendix C. `SetChargingProfile`, `ClearChargingProfile`, `GetCompositeSchedule` shipped; `charging_profiles` + `charging_schedule_periods` tables via Alembic `0005`. Charger-side resolver per **ADR-0022** — gateway stores input profiles, GetCompositeSchedule round-trips to the charger. Promotion to ✅ blocked on OCTT. |
 | Implement Advanced Security profile actions | SRE, SB1 | ⏳ Phase 5 | TLS 1.2+ with client-side certs. Already on hardening roadmap (E5-5, E5-6). |
-| Implement Reservations profile actions | SB1, SB2 | ⏳ Phase 2 | TC_046..TC_053 in Appendix C. Adds Postgres `reservations` table. |
-| Implement Local Authorization List profile actions | SB1, SB2 | ⏳ Phase 3 | TC_042, TC_043, TC_008 in Appendix C. |
-| Implement Remote Trigger profile actions | SB1 | ⏳ Phase 2 | TC_054, TC_055 in Appendix C. |
+| Implement Reservations profile actions | SB1, SB2 | 🟡 done (E2-1C) | TC_046..TC_053 in Appendix C. `reservations` table via Alembic `0003`; charger-side authority + gateway-side mirror per ADR-0021. Promotion to ✅ blocked on OCTT. |
+| Implement Local Authorization List profile actions | SB1, SB2 | 🟡 done (E2-1B) | TC_042, TC_043, TC_008 in Appendix C. `local_auth_lists` + `local_auth_list_entries` tables via Alembic `0002`. Promotion to ✅ blocked on OCTT. |
+| Implement Remote Trigger profile actions | SB1 | 🟡 done (E2-6) | TC_054, TC_055 in Appendix C. `TriggerMessage` shipped E2-6 covering all six message kinds. Promotion to ✅ blocked on OCTT. |
+| Implement FirmwareManagement profile actions | SB1, SB2 | 🟡 done (E2-1F) | `GetDiagnostics`, `UpdateFirmware` outbound + `DiagnosticsStatusNotification`, `FirmwareStatusNotification` inbound. Two latest-wins columns on `charge_points` via Alembic `0004`; per-transition history through structured logs only. Promotion to ✅ blocked on OCTT. (Secure variants TC_080/TC_081 ship in Phase 5 alongside mTLS.) |
 | Every handler MR cites Appendix C TC IDs in the conformance matrix | All engineers | 🟡 in progress | Required by AGENTS.md OCPP rule 8. |
 | Every handler MR ships unit tests covering every status return code the spec allows | All engineers | 🟡 partial | Tightened in Phase 2 reviews. |
 
@@ -59,8 +60,8 @@ Cert readiness has four parallel streams. Each has an owner and gates the cert r
 |---|---|---|---|
 | Stand up OCTT against `make compose-up` + running CSMS | QA | ⏳ Pending OCTT access | Task **C-2**. First test case to run: `TC_001` (Cold Boot Charge Point). |
 | Wire OCTT 1.6 Core subset into GitLab CI (non-blocking) | QA + SB2 | ⏳ Pending OCTT | Task **C-3**. Becomes blocking before W6. |
-| Wire OCTT Smart Charging subset into CI | QA | ⏳ Phase 2 end | Once Smart Charging handlers exist. |
-| Wire OCTT Reservations + LocalAuthList + RemoteTrigger subsets | QA | ⏳ Phase 3 | Per profile, as handlers land. |
+| Wire OCTT Smart Charging subset into CI | QA | ⏳ Pending OCTT + E2-1E | Once Smart Charging handlers (E2-1E) exist AND OCTT access lands. |
+| Wire OCTT Reservations + LocalAuthList + RemoteTrigger subsets | QA | ⏳ Pending OCTT | Handlers shipped (E2-1B + E2-1C + E2-6); CI wiring blocked on OCTT access (task C-1a, deferred). |
 | Wire OCTT Advanced Security subset | QA | ⏳ Phase 5 | After mTLS work (E5-5). |
 | Promote handler rows in [`08-ocpp-conformance.md`](./08-ocpp-conformance.md) from 🟡 → ✅ as OCTT passes | TL | ⏳ Per handler | Per the four-step promotion process in that doc. |
 

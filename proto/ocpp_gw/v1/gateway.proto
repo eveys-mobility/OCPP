@@ -60,6 +60,66 @@ service OcppGateway {
   // Read the latest cached state for a charger. Synchronous, no OCPP
   // round-trip — answered from the gateway's local registry.
   rpc GetChargerStatus(GetChargerStatusRequest) returns (GetChargerStatusResponse);
+
+  // Read configuration keys from the charger.
+  // OCPP 1.6: GetConfiguration.req → GetConfiguration.conf.
+  // Empty `keys` means "return all known keys" per OCPP spec.
+  rpc GetConfiguration(GetConfigurationRequest) returns (GetConfigurationResponse);
+
+  // Wipe the charger's local Authorize cache (per OCPP 1.6 § Authorize cache).
+  // OCPP 1.6: ClearCache.req → ClearCache.conf.
+  rpc ClearCache(ClearCacheRequest) returns (ClearCacheResponse);
+
+  // Send a vendor-specific DataTransfer payload to the charger.
+  // OCPP 1.6: DataTransfer.req → DataTransfer.conf. The protocol's
+  // generic extension envelope: arbitrary `vendor_id`-namespaced
+  // commands, opaque payload. Used for vendor features outside the
+  // OCPP standard surface.
+  rpc DataTransfer(DataTransferRequest) returns (DataTransferResponse);
+
+  // Read the current LocalAuthList version on the charger.
+  // OCPP 1.6: GetLocalListVersion.req → GetLocalListVersion.conf.
+  rpc GetLocalListVersion(GetLocalListVersionRequest) returns (GetLocalListVersionResponse);
+
+  // Push a new LocalAuthList (Full or Differential) to the charger.
+  // OCPP 1.6: SendLocalList.req → SendLocalList.conf.
+  rpc SendLocalList(SendLocalListRequest) returns (SendLocalListResponse);
+
+  // Reserve a connector for a specific id_tag. The CSMS assigns the
+  // reservation_id; the gateway returns it in the response so the
+  // caller can use it later for CancelReservation.
+  // OCPP 1.6: ReserveNow.req → ReserveNow.conf.
+  rpc ReserveNow(ReserveNowRequest) returns (ReserveNowResponse);
+
+  // Cancel a previously-issued reservation by ID.
+  // OCPP 1.6: CancelReservation.req → CancelReservation.conf.
+  rpc CancelReservation(CancelReservationRequest) returns (CancelReservationResponse);
+
+  // Ask the charger to upload a diagnostics file to a CSMS-supplied URL.
+  // OCPP 1.6: GetDiagnostics.req → GetDiagnostics.conf. The conf may
+  // carry a `file_name`; status transitions are surfaced via inbound
+  // DiagnosticsStatusNotification → `charge_points.last_diagnostics_status`.
+  rpc GetDiagnostics(GetDiagnosticsRequest) returns (GetDiagnosticsResponse);
+
+  // Trigger a firmware update by pointing the charger at a download URL.
+  // OCPP 1.6: UpdateFirmware.req → UpdateFirmware.conf. The conf is
+  // empty; status transitions are surfaced via inbound
+  // FirmwareStatusNotification → `charge_points.last_firmware_status`.
+  rpc UpdateFirmware(UpdateFirmwareRequest) returns (UpdateFirmwareResponse);
+
+  // Push a charging profile to the charger.
+  // OCPP 1.6: SetChargingProfile.req → SetChargingProfile.conf.
+  rpc SetChargingProfile(SetChargingProfileRequest) returns (SetChargingProfileResponse);
+
+  // Remove charging profiles matching a filter set.
+  // OCPP 1.6: ClearChargingProfile.req → ClearChargingProfile.conf.
+  rpc ClearChargingProfile(ClearChargingProfileRequest) returns (ClearChargingProfileResponse);
+
+  // Ask the charger for its computed composite schedule for a connector +
+  // duration. Charger-side resolver is the source of truth (ADR-0022);
+  // the gateway forwards the request and translates the reply.
+  // OCPP 1.6: GetCompositeSchedule.req → GetCompositeSchedule.conf.
+  rpc GetCompositeSchedule(GetCompositeScheduleRequest) returns (GetCompositeScheduleResponse);
 }
 
 // -----------------------------------------------------------------------------
@@ -236,18 +296,282 @@ message GetChargerStatusResponse {
 }
 
 // -----------------------------------------------------------------------------
+// GetConfiguration (E2-1A — OCPP 1.6 Core completion)
+// -----------------------------------------------------------------------------
+
+message GetConfigurationRequest {
+  string cp_id = 1;
+  // Specific keys to read. Empty = "return everything the charger
+  // knows about" per OCPP 1.6 spec.
+  repeated string keys = 2;
+}
+
+message GetConfigurationResponse {
+  // Keys the charger recognized and returned values for.
+  repeated ConfigurationKey configuration_key = 1;
+  // Keys the charger did not recognize (echoed back per spec).
+  repeated string unknown_key = 2;
+}
+
+message ConfigurationKey {
+  string key = 1;
+  // True if the charger reports this key as readonly. Operators must
+  // honour this — `ChangeConfiguration` against a readonly key returns
+  // `Rejected`.
+  bool readonly = 2;
+  // Always present per OCPP 1.6 spec; an empty value is distinct from
+  // "no value".
+  string value = 3;
+}
+
+// -----------------------------------------------------------------------------
+// ClearCache
+// -----------------------------------------------------------------------------
+
+message ClearCacheRequest {
+  string cp_id = 1;
+}
+
+message ClearCacheResponse {
+  ClearCacheStatus status = 1;
+}
+
+enum ClearCacheStatus {
+  CLEAR_CACHE_STATUS_UNSPECIFIED = 0;
+  CLEAR_CACHE_STATUS_ACCEPTED = 1;
+  CLEAR_CACHE_STATUS_REJECTED = 2;
+}
+
+// -----------------------------------------------------------------------------
+// DataTransfer (CSMS → charger; vendor-specific extension envelope)
+// -----------------------------------------------------------------------------
+
+message DataTransferRequest {
+  string cp_id = 1;
+  // Vendor namespace — REQUIRED by OCPP 1.6 spec; identifies the
+  // owner of the message id and data shape.
+  string vendor_id = 2;
+  // Optional message id within the vendor namespace.
+  string message_id = 3;
+  // Opaque payload (any JSON-serialisable string the vendor agrees
+  // on with their charger firmware).
+  string data = 4;
+}
+
+message DataTransferResponse {
+  DataTransferStatus status = 1;
+  // Optional vendor reply payload.
+  string data = 2;
+}
+
+enum DataTransferStatus {
+  DATA_TRANSFER_STATUS_UNSPECIFIED = 0;
+  DATA_TRANSFER_STATUS_ACCEPTED = 1;
+  DATA_TRANSFER_STATUS_REJECTED = 2;
+  // Charger recognised the vendor_id but not the message_id.
+  DATA_TRANSFER_STATUS_UNKNOWN_MESSAGE_ID = 3;
+  // Charger does not implement this vendor_id at all.
+  DATA_TRANSFER_STATUS_UNKNOWN_VENDOR_ID = 4;
+}
+
+// -----------------------------------------------------------------------------
+// LocalAuthList (E2-1B — LocalAuthList profile)
+// -----------------------------------------------------------------------------
+
+message GetLocalListVersionRequest {
+  string cp_id = 1;
+}
+
+message GetLocalListVersionResponse {
+  // Per OCPP 1.6 spec: -1 means the charger has no list (or doesn't
+  // support LocalAuthList). 0 means an empty list. Non-negative
+  // monotonically increasing integers from there.
+  int32 list_version = 1;
+}
+
+message SendLocalListRequest {
+  string cp_id = 1;
+  // The new list version the charger should adopt on success.
+  int32 list_version = 2;
+  LocalAuthListUpdateType update_type = 3;
+  // For ``LOCAL_AUTH_LIST_UPDATE_TYPE_FULL``: the entire new list.
+  // For ``..._DIFFERENTIAL``: per-tag insert/update (with `id_tag_info`
+  // set) and delete (with `id_tag_info` empty / unset).
+  repeated AuthorizationData local_authorization_list = 4;
+}
+
+message SendLocalListResponse {
+  SendLocalListStatus status = 1;
+}
+
+enum LocalAuthListUpdateType {
+  LOCAL_AUTH_LIST_UPDATE_TYPE_UNSPECIFIED = 0;
+  LOCAL_AUTH_LIST_UPDATE_TYPE_FULL = 1;
+  LOCAL_AUTH_LIST_UPDATE_TYPE_DIFFERENTIAL = 2;
+}
+
+enum SendLocalListStatus {
+  SEND_LOCAL_LIST_STATUS_UNSPECIFIED = 0;
+  SEND_LOCAL_LIST_STATUS_ACCEPTED = 1;
+  SEND_LOCAL_LIST_STATUS_FAILED = 2;
+  SEND_LOCAL_LIST_STATUS_NOT_SUPPORTED = 3;
+  // The charger's notion of the list version doesn't match what we
+  // sent — it's expected on Differential when the gateway and charger
+  // have drifted; the operator's response is to send a Full update.
+  SEND_LOCAL_LIST_STATUS_VERSION_MISMATCH = 4;
+}
+
+message AuthorizationData {
+  string id_tag = 1;
+  // Absent / cleared on a Differential update means "delete this tag
+  // from the list". On a Full update, every entry must carry a populated
+  // ``id_tag_info``; entries with no info are silently dropped at the
+  // gateway boundary on Full to avoid sending malformed traffic to the
+  // charger.
+  IdTagInfo id_tag_info = 2;
+}
+
+message IdTagInfo {
+  AuthorizationStatus status = 1;
+  // Optional: id_tag that this one is grouped under (e.g. one
+  // family-card tag covering several physical RFID cards).
+  string parent_id_tag = 2;
+  // Optional: ISO-8601 UTC. Empty means "no expiry".
+  string expiry_date = 3;
+}
+
+enum AuthorizationStatus {
+  AUTHORIZATION_STATUS_UNSPECIFIED = 0;
+  AUTHORIZATION_STATUS_ACCEPTED = 1;
+  AUTHORIZATION_STATUS_BLOCKED = 2;
+  AUTHORIZATION_STATUS_EXPIRED = 3;
+  AUTHORIZATION_STATUS_INVALID = 4;
+  AUTHORIZATION_STATUS_CONCURRENT_TX = 5;
+}
+
+// -----------------------------------------------------------------------------
+// Reservations (E2-1C — Reservations profile, ADR-0021)
+// -----------------------------------------------------------------------------
+
+message ReserveNowRequest {
+  string cp_id = 1;
+  // Specific connector to reserve. Per OCPP 1.6 spec a connector_id
+  // of 0 reserves the whole charger; a positive integer reserves a
+  // specific connector.
+  int32 connector_id = 2;
+  // ISO-8601 UTC. Charger releases the reservation locally when this
+  // passes (charger clock; see ADR-0021 for the two-clock note).
+  string expiry_date = 3;
+  string id_tag = 4;
+  // Optional: id_tag this reservation is grouped under (family card
+  // covering several physical RFIDs).
+  string parent_id_tag = 5;
+}
+
+message ReserveNowResponse {
+  ReserveNowStatus status = 1;
+  // The gateway-assigned reservation_id. Returned even on non-Accepted
+  // statuses (the row was deleted on charger refusal — but the caller
+  // sometimes wants the ID for logging / correlation). Zero when the
+  // gateway never inserted a row (e.g. INVALID_ARGUMENT before dispatch).
+  int64 reservation_id = 2;
+}
+
+enum ReserveNowStatus {
+  RESERVE_NOW_STATUS_UNSPECIFIED = 0;
+  RESERVE_NOW_STATUS_ACCEPTED = 1;
+  // Charger reports the connector currently has a transaction.
+  RESERVE_NOW_STATUS_OCCUPIED = 2;
+  // Charger reports a fault on the connector.
+  RESERVE_NOW_STATUS_FAULTED = 3;
+  // Charger reports the connector is administratively unavailable.
+  RESERVE_NOW_STATUS_UNAVAILABLE = 4;
+  // Charger refused (e.g. Reservations profile disabled on this charger).
+  RESERVE_NOW_STATUS_REJECTED = 5;
+}
+
+message CancelReservationRequest {
+  string cp_id = 1;
+  // The reservation_id returned by ReserveNow.
+  int64 reservation_id = 2;
+}
+
+message CancelReservationResponse {
+  CancelReservationStatus status = 1;
+}
+
+enum CancelReservationStatus {
+  CANCEL_RESERVATION_STATUS_UNSPECIFIED = 0;
+  CANCEL_RESERVATION_STATUS_ACCEPTED = 1;
+  // Charger doesn't know about this reservation_id (already expired,
+  // already consumed, or never issued to this charger).
+  CANCEL_RESERVATION_STATUS_REJECTED = 2;
+}
+
+// -----------------------------------------------------------------------------
+// Diagnostics + Firmware (E2-1F — FirmwareManagement profile)
+// -----------------------------------------------------------------------------
+
+message GetDiagnosticsRequest {
+  string cp_id = 1;
+  // Operator-supplied URL the charger should upload to (FTP/HTTP per
+  // OCPP 1.6; HTTPS preferred). Required by spec.
+  string location = 2;
+  // Optional retry parameters (charger uses defaults when zero).
+  int32 retries = 3;
+  int32 retry_interval = 4;
+  // Optional ISO-8601 UTC time-window. Charger collects logs only
+  // within `[start_time, stop_time]`. Empty strings → unset.
+  string start_time = 5;
+  string stop_time = 6;
+}
+
+message GetDiagnosticsResponse {
+  // Charger-chosen filename for the upload. Empty when the charger
+  // declines to commit upfront (per OCPP, this field is optional).
+  string file_name = 1;
+}
+
+message UpdateFirmwareRequest {
+  string cp_id = 1;
+  // URL the charger should download the firmware image from. Required.
+  string location = 2;
+  // ISO-8601 UTC time at which the charger may *start* the download.
+  // Allows operator-scheduled rollouts. Required by spec.
+  string retrieve_date = 3;
+  // Optional retry parameters (zero → charger defaults).
+  int32 retries = 4;
+  int32 retry_interval = 5;
+}
+
+message UpdateFirmwareResponse {
+  // Empty per spec (UpdateFirmware.conf carries no fields). Reserved
+  // for forward compatibility — Phase 5 / Security profile may add a
+  // pre-flight rejection signal.
+}
+
+// -----------------------------------------------------------------------------
 // Smart Charging — shared types
 // -----------------------------------------------------------------------------
 
-// Subset of OCPP 1.6 ChargingProfile relevant for RemoteStart. Full
-// SetChargingProfile RPC and broader profile management ship with the
-// Smart Charging profile (Phase 2/3, separate from this v1 freeze).
+// OCPP 1.6 ChargingProfile (E2-1E). Used both as a sub-message of
+// `RemoteStart` (originally) and as the body of `SetChargingProfile`.
+// Field tags 1–5 were the original RemoteStart subset; 6–9 are
+// purely-additive E2-1E extensions covering the full OCPP shape.
 message ChargingProfile {
   int32 charging_profile_id = 1;
   int32 stack_level = 2;
   ChargingProfilePurpose charging_profile_purpose = 3;
   ChargingProfileKind charging_profile_kind = 4;
   ChargingSchedule charging_schedule = 5;
+  // Required by spec when `charging_profile_purpose=TxProfile`. Empty
+  // / zero means "not bound to a specific transaction" for the other
+  // purposes.
+  int64 transaction_id = 6;
+  RecurrencyKind recurrency_kind = 7;
+  // ISO-8601 UTC. Empty = unset (charger applies its defaults).
+  string valid_from = 8;
+  string valid_to = 9;
 }
 
 enum ChargingProfilePurpose {
@@ -269,8 +593,12 @@ message ChargingSchedule {
   int32 duration = 1;
   ChargingRateUnit charging_rate_unit = 2;
   repeated ChargingSchedulePeriod charging_schedule_period = 3;
-  // Optional kWh limit for the schedule.
+  // Optional minimum charging rate in `charging_rate_unit` units.
   double min_charging_rate = 4;
+  // ISO-8601 UTC anchor for the schedule. Empty = "use the schedule's
+  // implicit anchor" (Absolute → schedule_start of the profile;
+  // Relative → start of the transaction; Recurring → next firing).
+  string start_schedule = 5;
 }
 
 enum ChargingRateUnit {
@@ -285,4 +613,81 @@ message ChargingSchedulePeriod {
   double limit = 2;
   // Optional: number of phases (1 or 3).
   int32 number_phases = 3;
+}
+
+enum RecurrencyKind {
+  RECURRENCY_KIND_UNSPECIFIED = 0;
+  RECURRENCY_KIND_DAILY = 1;
+  RECURRENCY_KIND_WEEKLY = 2;
+}
+
+// -----------------------------------------------------------------------------
+// Smart Charging — E2-1E request/response messages (ADR-0022)
+// -----------------------------------------------------------------------------
+
+message SetChargingProfileRequest {
+  string cp_id = 1;
+  // 0 = whole-charger profile (`ChargePointMaxProfile`); positive
+  // integer = specific connector. Required by spec.
+  int32 connector_id = 2;
+  ChargingProfile cs_charging_profiles = 3;
+}
+
+message SetChargingProfileResponse {
+  ChargingProfileStatus status = 1;
+}
+
+enum ChargingProfileStatus {
+  CHARGING_PROFILE_STATUS_UNSPECIFIED = 0;
+  CHARGING_PROFILE_STATUS_ACCEPTED = 1;
+  CHARGING_PROFILE_STATUS_REJECTED = 2;
+  CHARGING_PROFILE_STATUS_NOT_SUPPORTED = 3;
+}
+
+message ClearChargingProfileRequest {
+  string cp_id = 1;
+  // All four filters are optional (proto3 zero default = "any").
+  // OCPP semantics: charger removes every profile matching every
+  // *set* filter. Sending no filters wipes everything.
+  int32 charging_profile_id = 2;
+  int32 connector_id = 3;
+  ChargingProfilePurpose charging_profile_purpose = 4;
+  int32 stack_level = 5;
+}
+
+message ClearChargingProfileResponse {
+  ClearChargingProfileStatus status = 1;
+}
+
+enum ClearChargingProfileStatus {
+  CLEAR_CHARGING_PROFILE_STATUS_UNSPECIFIED = 0;
+  CLEAR_CHARGING_PROFILE_STATUS_ACCEPTED = 1;
+  // Charger had nothing matching the filter set.
+  CLEAR_CHARGING_PROFILE_STATUS_UNKNOWN = 2;
+}
+
+message GetCompositeScheduleRequest {
+  string cp_id = 1;
+  int32 connector_id = 2;
+  // Required: time window in seconds the composite must cover.
+  int32 duration = 3;
+  // Optional: ask the charger to express limits in W or A. Unset
+  // means "charger's choice".
+  ChargingRateUnit charging_rate_unit = 4;
+}
+
+message GetCompositeScheduleResponse {
+  GetCompositeScheduleStatus status = 1;
+  // Echoed back from the charger so callers can sanity-check.
+  int32 connector_id = 2;
+  // ISO-8601 UTC anchor. Empty when the charger declines.
+  string schedule_start = 3;
+  // The resolved schedule (charger-computed per OCPP § 3.13.4).
+  ChargingSchedule charging_schedule = 4;
+}
+
+enum GetCompositeScheduleStatus {
+  GET_COMPOSITE_SCHEDULE_STATUS_UNSPECIFIED = 0;
+  GET_COMPOSITE_SCHEDULE_STATUS_ACCEPTED = 1;
+  GET_COMPOSITE_SCHEDULE_STATUS_REJECTED = 2;
 }

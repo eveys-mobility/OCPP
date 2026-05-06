@@ -9,9 +9,9 @@
 | **0** | Foundations | 1 week | Docs approved, repo scaffolded, CI green on empty package |
 | **1** | Protocol skeleton | 1 week | `ocpp-gw` accepts a real charger connection, handles 5 core actions, persists to Postgres |
 | **2** | Full OCPP 1.6 Core | 2 weeks | All ~25 1.6 Core actions + gRPC API + Kafka events; integration tests passing |
-| **3** | Platform integration | 2 weeks | gRPC clients to auth / session / device wired; mobile BFF reads from Kafka |
+| **3** | Platform integration | 2 weeks | Backend REST integration: gateway calls backend `/authorize` + `/sessions/*`; gateway exposes `/api/v1/...` for read + commands; webhooks deliver async events. Specced in `docs/integration/` (ADR-0023). |
 | **4** | Observability + load test | 1 week | Dashboards live, 10k-charger swarm test passes |
-| **5** | Hardening | 2 weeks | Rate limits, idempotency, reconnect-storm test, security review, pen test |
+| **5** | Hardening | 2 weeks | Rate limits, reconnect-storm test, security review, pen test (core idempotency for `BootNotification`/`StopTransaction` already shipped in Phase 2 via E2-11; remaining handler-level idempotency hardening lands here) |
 | **6** | Staging soak | 1 week | 10 dev-fleet chargers running on `ocpp-gw` for 7 days, zero incidents |
 | **7** | Production rollout | 4 weeks | Wave ramp 10 → 100 → 1k → 10k → all chargers live |
 | **Parallel** | OCPP 2.0.1 + OCTT | 12 weeks (start week 4) | OCTT certification passes; 2.0.1 chargers supported |
@@ -73,17 +73,20 @@
 
 ## Phase 3 — Platform integration (weeks 4–5)
 
-**Goal**: stop being an island; wire into the existing Eveys platform.
+**Goal**: wire the gateway to the Eveys backend.
+
+The integration shape is documented in [`docs/integration/`](./integration/README.md) and locked in [ADR-0023](./adr/0023-backend-rest-integration.md): two REST surfaces (gateway calls backend on the OCPP hot path; backend calls gateway for state and commands) plus async webhooks.
 
 | Deliverable | Done when |
 |---|---|
-| gRPC clients to `auth-service` (`Authorize`), `session-service` (`OpenSession` / `CloseSession`), `device-service` (`RegisterCharger`) | Real auth check at session start works |
-| Cache `Authorize` results in Redis (TTL 30s) | P99 `Authorize` < 50ms in load test |
-| Mobile BFF reads `cp.status` from Kafka, exposes live charger status to mobile app | Mobile dev confirms feature works |
-| gRPC contracts frozen in v1 with backward-compatibility policy | Documented in [`05-architecture-decisions.md`](./05-architecture-decisions.md) |
-| Mock `ocpp-gw` server published to npm/PyPI for downstream teams to develop against | Downstream teams unblocked |
+| Gateway HTTP client wired to backend `/authorize`, `/sessions/open`, `/sessions/close`, `/charge-points/register` | OCPP `Authorize`/`StartTransaction`/`StopTransaction`/`BootNotification` handlers consult the backend; charger sees real RFID outcomes |
+| Redis-cached `Authorize` (TTL 30s) | P99 `Authorize` < 50 ms in load test |
+| Gateway-side REST API at `/api/v1/...` — read endpoints + 19 command endpoints | Backend can list chargers, read MeterValues / status history / transactions, and issue any OCPP CSMS command over HTTP |
+| Webhook delivery infrastructure (HMAC-signed, retried, dedupable on `event_id`) | `cp.boot` / `cp.status` / `tx.started` / `tx.stopped` deliveries reach the configured URLs |
+| Mock backend server published for the gateway team to test against without a live backend | Gateway tests can run against a mock |
+| ADR-0023 + `docs/integration/` merged | Backend dev has a frozen contract to implement against |
 
-**Exit**: a transaction started from the mobile app reaches a real charger via `ocpp-gw`.
+**Exit**: a charging session driven by an RFID tap reaches the backend's authorize endpoint, opens a session, closes a session, and the backend can read the resulting MeterValues time-series via the gateway's `/api/v1/...` surface.
 
 ---
 

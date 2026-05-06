@@ -162,22 +162,19 @@ async def test_unparseable_value_is_quarantined(fake_cp: Any) -> None:
 
 @pytest.mark.asyncio
 async def test_handler_survives_kafka_publish_exception(fake_cp: Any) -> None:
-    """Broker down must not crash the WS — the charger isn't waiting on Kafka."""
+    """A broker drop must not crash the handler — chargers retry, and a
+    flaky broker would otherwise DoS the gateway. Aligns with E2-8 where
+    the same guard is added to BootNotification, StatusNotification, and
+    StartTransaction."""
     fake_producer = AsyncMock()
-    fake_producer.publish.side_effect = ConnectionError("kafka down")
+    fake_producer.publish = AsyncMock(side_effect=RuntimeError("broker is down"))
     fake_cp.event_producer = fake_producer
 
     result = await meter_values.handle(
         fake_cp,
         connector_id=1,
-        meter_value=[
-            {
-                "timestamp": "2026-04-30T00:00:00Z",
-                "sampled_value": [_sample("1234")],
-            }
-        ],
+        meter_value=[{"timestamp": "x", "sampled_value": [_sample("100")]}],
     )
 
-    # Handler must return a clean MeterValuesResponse — exception was logged + dropped.
     assert isinstance(result, call_result.MeterValues)
     fake_producer.publish.assert_awaited_once()
