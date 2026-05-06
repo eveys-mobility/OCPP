@@ -878,6 +878,219 @@ class Settings(BaseSettings):
         },
     )
 
+    # ---- E3-9: outbound webhooks --------------------------------------------
+    #
+    # Per docs/integration/03-webhooks.md the gateway pushes signed events
+    # at backend-configured URLs. One URL per event type, each independently
+    # toggleable. Empty `webhook_base_url` disables the whole subsystem
+    # (sidecars and dev runs without a backend skip the dispatcher entirely).
+    webhook_base_url: str = Field(
+        default="",
+        description=(
+            "Base URL the gateway POSTs webhook deliveries to. Empty "
+            "disables the dispatcher entirely. Per-event URLs default "
+            "to `<base>/<event-name>` and can be overridden individually."
+        ),
+        json_schema_extra={
+            "category": "webhooks",
+            "impact": (
+                "Empty string = no webhook subsystem. Set to the "
+                "backend's webhook receiver root URL to enable."
+            ),
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+
+    webhook_secret: str = Field(
+        default="",
+        description=(
+            "Shared HMAC-SHA-256 secret used to sign every webhook "
+            "delivery. The backend's receiver verifies the "
+            "`X-Eveys-Signature` header against the same secret."
+        ),
+        json_schema_extra={
+            "category": "webhooks",
+            "impact": (
+                "Holds in vault. A leak lets an attacker forge "
+                "delivery requests against the backend. Rotate via "
+                "coordinated update (gateway + backend in lockstep)."
+            ),
+            "secret": True,
+            "stability": "tunable",
+        },
+    )
+
+    webhook_url_cp_boot: str = Field(
+        default="",
+        description=(
+            "Override the URL for `cp.boot` events. Empty falls back "
+            "to `<webhook_base_url>/cp-boot` when the base URL is set."
+        ),
+        json_schema_extra={
+            "category": "webhooks",
+            "impact": "Per-event routing override.",
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+
+    webhook_url_cp_status: str = Field(
+        default="",
+        description=(
+            "Override the URL for `cp.status_changed` events. Empty "
+            "falls back to `<webhook_base_url>/cp-status-changed`."
+        ),
+        json_schema_extra={
+            "category": "webhooks",
+            "impact": "Per-event routing override.",
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+
+    webhook_url_cp_meter: str = Field(
+        default="",
+        description=(
+            "Override the URL for `cp.meter` MeterValues events. "
+            "Empty falls back to `<webhook_base_url>/cp-meter`."
+        ),
+        json_schema_extra={
+            "category": "webhooks",
+            "impact": (
+                "MeterValues are high-volume — at 10k chargers this "
+                "is ~333 webhooks/second. Off by default (see "
+                "`webhook_enable_cp_meter`); prefer Kafka."
+            ),
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+
+    webhook_url_tx_started: str = Field(
+        default="",
+        description=(
+            "Override the URL for `tx.started` events. Empty falls "
+            "back to `<webhook_base_url>/tx-started`."
+        ),
+        json_schema_extra={
+            "category": "webhooks",
+            "impact": "Per-event routing override.",
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+
+    webhook_enable_cp_boot: bool = Field(
+        default=True,
+        description="Enable webhook delivery for `cp.boot` events.",
+        json_schema_extra={
+            "category": "webhooks",
+            "impact": "Disable to silence boot-event pushes.",
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+
+    webhook_enable_cp_status: bool = Field(
+        default=True,
+        description="Enable webhook delivery for `cp.status_changed` events.",
+        json_schema_extra={
+            "category": "webhooks",
+            "impact": "Disable to silence status-change pushes.",
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+
+    webhook_enable_cp_meter: bool = Field(
+        default=False,
+        description=(
+            "Enable webhook delivery for `cp.meter` MeterValues "
+            "events. **Off by default** — high volume."
+        ),
+        json_schema_extra={
+            "category": "webhooks",
+            "impact": (
+                "Enabling this on a fleet >100 chargers will saturate "
+                "the dispatcher's HTTP pool. Subscribe to Kafka instead."
+            ),
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+
+    webhook_enable_tx_started: bool = Field(
+        default=True,
+        description="Enable webhook delivery for `tx.started` events.",
+        json_schema_extra={
+            "category": "webhooks",
+            "impact": "Disable to silence transaction-start pushes.",
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+
+    webhook_consumer_group: str = Field(
+        default="eveys-ocpp-webhook-dispatcher",
+        description=(
+            "Kafka consumer group the webhook dispatcher uses to "
+            "tail the four event topics. Distinct from the ClickHouse "
+            "ingestor's group so the two pipelines run independently."
+        ),
+        json_schema_extra={
+            "category": "webhooks",
+            "impact": (
+                "Changing this resets webhook consumer offsets. Keep "
+                "stable unless intentionally replaying from earliest."
+            ),
+            "secret": False,
+            "stability": "structural",
+        },
+    )
+
+    webhook_request_timeout_seconds: float = Field(
+        default=10.0,
+        ge=1.0,
+        le=120.0,
+        description=(
+            "HTTP timeout for a single webhook delivery attempt. "
+            "Backend must respond within this window or the gateway "
+            "treats the attempt as a transient failure and retries."
+        ),
+        json_schema_extra={
+            "category": "webhooks",
+            "impact": (
+                "Lower = faster failure detection; higher = tolerates "
+                "slower backends. 10 s matches the backend's documented "
+                "response budget per `docs/integration/03-webhooks.md`."
+            ),
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+
+    webhook_max_attempts: int = Field(
+        default=5,
+        ge=1,
+        le=20,
+        description=(
+            "Total delivery attempts before the gateway gives up and "
+            "logs `webhook.delivery_failed`. Includes the first attempt."
+        ),
+        json_schema_extra={
+            "category": "webhooks",
+            "impact": (
+                "Retries follow exponential backoff: 1 s, 5 s, 30 s, "
+                "2 min, 10 min for the default of 5. Lowering reduces "
+                "the longest in-flight tail; raising tolerates longer "
+                "backend outages."
+            ),
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+
 
 def get_settings() -> Settings:
     """Build a fresh `Settings` from the current environment.
