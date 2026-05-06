@@ -9,29 +9,41 @@ provided).
 
 JSON Schemas: `ocpp.v16.schemas.StopTransaction` and `StopTransactionResponse`.
 
-Behavior in v0:
+Behavior:
 1. **Replay gate (E2-11, AGENTS rule 3).** Consult the Redis-backed
    idempotency cache keyed by ``(cp_id, message_id)``. Cache hit →
-   skip the DB write, return the canonical Accepted response.
+   skip everything (DB, backend, response shape preserved).
 2. Mark the transaction stopped at the DB layer (also idempotent —
    defense in depth via the ``idempotency_key`` natural key).
-3. Reply with `IdTagInfo.status` for the optional id_tag.
+3. **Backend round-trip (E3-6).** If a `backend_client` is wired AND
+   the DB write was a real first-time stop (`applied=True`), call
+   `POST /api/eveys/sessions/close`. The backend's `id_tag_info.status`
+   flows through to the OCPP response. Replays (cache hit OR DB
+   `applied=False`) skip the backend — chargers retry aggressively and
+   we never want to double-bill.
+4. Reply with the resolved `IdTagInfo.status`.
 
 Why two layers of dedup:
 - Redis (E2-11) is fast and catches the common case (charger retries
-  within seconds). Saves the DB round-trip.
+  within seconds). Saves the DB round-trip + backend call.
 - Postgres ``idempotency_key`` (legacy) survives Redis flushes and
   cross-pod retries that arrive after the cache TTL expires.
 
+Backend failure policy (matches StartTransaction in E3-5):
+- `BackendUnavailableError` → keep the local DB row (audit-of-record),
+  reply `Accepted`. Reconciler heals when the backend recovers.
+- `BackendBusinessError` (e.g. billing-fraud `Blocked`) → keep the
+  row, reply with whatever the backend dictated (typically `Blocked`).
+  Forwards the operational decision to the charger.
+
 Deviations from the OCA spec to verify before W2 / OCTT
 (see `docs/08-ocpp-conformance.md`):
-- `transactionData` (an array of MeterValues) is accepted but NOT
-  persisted by this handler. MeterValues are ClickHouse-bound via Kafka
-  (tasks E2-8 + E2-14).
+- `transactionData` (an array of MeterValues) is accepted by the
+  handler but NOT forwarded to the backend in this version — the
+  `cp.meter` Kafka topic is the canonical home for those samples.
 - We don't validate that the inbound `transaction_id` actually exists —
   the repository's UPDATE simply matches zero rows and returns
-  `applied=False`.
-- Real `session-service.CloseSession` integration lands in E3-6.
+  `applied=False`, which suppresses the backend call.
 """
 
 from __future__ import annotations
@@ -46,6 +58,7 @@ from ocpp.v16.enums import AuthorizationStatus
 from eveys_ocpp.observability import bind_contextvars, get_logger
 from eveys_ocpp.persistence.db import session_scope
 from eveys_ocpp.persistence.repositories import stop_transaction
+from eveys_ocpp.platform import BackendBusinessError, BackendUnavailableError
 
 if TYPE_CHECKING:
     from eveys_ocpp.connection import EveysChargePoint
@@ -53,13 +66,31 @@ if TYPE_CHECKING:
 log = get_logger(__name__)
 
 
-def _response(id_tag: str | None) -> call_result.StopTransaction:
-    info_status = (
-        AuthorizationStatus.invalid
-        if id_tag and id_tag.upper().startswith("INVALID")
-        else AuthorizationStatus.accepted
-    )
-    return call_result.StopTransaction(id_tag_info=IdTagInfo(status=info_status))
+# OCPP wire string → mobilityhouse/ocpp enum. Same shape as Authorize
+# / StartTransaction maps; an unrecognised backend status maps to
+# Invalid (forward-compat — the safe default for an unknown shape on
+# the financial path).
+_AUTH_STATUS_MAP: dict[str, AuthorizationStatus] = {
+    "Accepted": AuthorizationStatus.accepted,
+    "Blocked": AuthorizationStatus.blocked,
+    "Expired": AuthorizationStatus.expired,
+    "Invalid": AuthorizationStatus.invalid,
+    "ConcurrentTx": AuthorizationStatus.concurrent_tx,
+}
+
+
+def _response(status: AuthorizationStatus) -> call_result.StopTransaction:
+    return call_result.StopTransaction(id_tag_info=IdTagInfo(status=status))
+
+
+def _local_status(id_tag: str | None) -> AuthorizationStatus:
+    """Pre-backend default: the inbound id_tag's local-only verdict.
+    Used for replays (we already accepted) and when no backend is
+    wired (W1/dev). The `INVALID*` prefix mirrors the mock policy in
+    `authorize.py` so unit tests stay coherent across handlers."""
+    if id_tag and id_tag.upper().startswith("INVALID"):
+        return AuthorizationStatus.invalid
+    return AuthorizationStatus.accepted
 
 
 async def handle(
@@ -81,8 +112,10 @@ async def handle(
     )
 
     # Redis replay gate (E2-11). Cache hit → return the canonical
-    # response without DB work. Falls through to the DB path if Redis
-    # is misbehaving — the DB-layer dedup below still catches replays.
+    # response without DB work, AND skip the backend call (the first
+    # request already settled the session backend-side). Falls through
+    # to the DB path if Redis is misbehaving — the DB-layer dedup below
+    # still catches replays.
     if cp.idempotency is not None and message_id:
         try:
             replay = await cp.idempotency.check_and_record(cp_id=cp.id, message_id=message_id)
@@ -91,7 +124,7 @@ async def handle(
             replay = False
         if replay:
             log.info("stop_transaction.replay_ignored_cache", message_id=message_id)
-            return _response(id_tag)
+            return _response(_local_status(id_tag))
 
     reported_at = datetime.fromisoformat(timestamp)
 
@@ -110,9 +143,62 @@ async def handle(
             idempotency_key=idem_key,
         )
 
-    if applied:
-        log.info("stop_transaction.applied", reason=reason, meter_stop=meter_stop)
-    else:
+    if not applied:
+        # DB-layer dedup said "we've already stopped this transaction."
+        # Don't double-bill the backend.
         log.info("stop_transaction.replay_ignored_db")
+        return _response(_local_status(id_tag))
 
-    return _response(id_tag)
+    log.info("stop_transaction.applied", reason=reason, meter_stop=meter_stop)
+
+    # Backend round-trip (E3-6). The DB row is now durably marked
+    # stopped; whatever the backend says, we keep that state. On
+    # `BackendUnavailableError` we reply Accepted so the charger
+    # finalises cleanly — the reconciler heals the backend later.
+    # On `BackendBusinessError` we forward the backend's verdict to
+    # the charger (Blocked / Invalid / etc.) so billing-fraud cases
+    # surface immediately.
+    final_status = _local_status(id_tag)
+    if cp.backend_client is not None:
+        try:
+            result = await cp.backend_client.close_session(
+                transaction_id=transaction_id,
+                cp_id=cp.id,
+                # OCPP allows omitting id_tag (e.g. EVDisconnected stop reason).
+                # Contract requires a string; pass empty so the backend can
+                # decide what to do (typically: settle by transaction_id alone).
+                id_tag=id_tag or "",
+                meter_stop_wh=meter_stop,
+                stopped_reported_at=timestamp,
+                stop_reason=reason,
+                idempotency_key=(
+                    f"ocpp-session-close-{transaction_id}-{message_id or 'no-msg-id'}"
+                ),
+            )
+            final_status = _AUTH_STATUS_MAP.get(
+                result.id_tag_info.status, AuthorizationStatus.invalid
+            )
+        except BackendUnavailableError as exc:
+            log.warning(
+                "stop_transaction.backend_unavailable",
+                transaction_id=transaction_id,
+                error=str(exc),
+                error_code=exc.error_code,
+            )
+        except BackendBusinessError as exc:
+            log.warning(
+                "stop_transaction.backend_business_rejected",
+                transaction_id=transaction_id,
+                error_code=exc.error_code,
+                message=str(exc),
+            )
+            # Forward the backend's verdict; default to Invalid if the
+            # business error doesn't carry an actionable status.
+            final_status = AuthorizationStatus.invalid
+
+    log.info(
+        "stop_transaction.decided",
+        transaction_id=transaction_id,
+        decision=final_status.value,
+    )
+    return _response(final_status)
