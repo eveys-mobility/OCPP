@@ -98,7 +98,8 @@ Always use the Makefile targets — don't invoke underlying tools directly unles
 | `make e2e` | Tier-2 e2e: compose-up + alembic + ch-migrate + tests/e2e + compose-down |
 | `make compose-smoke` | Tier-3 smoke: real built image in real compose stack (ADR-0024). Requires Docker. |
 | `make config-export` | Regenerate `docs/11-configuration-reference.md` and `.env.example` from `Settings` (ADR-0025) |
-| `make config-export-check` | Local mirror of the upcoming E0-14 CI staleness gate; fails if either generated file drifts from `Settings` |
+| `make config-export-check` | Mirrors the E0-14 CI gate; fails if either generated file drifts from `Settings` |
+| `make config-schema` | Print `Settings.model_json_schema()` for downstream surfaces (Helm validators, operator UIs) |
 | `make docs` | Build the docs site (delegates to `docs/Makefile`) |
 
 The documentation site is built from `docs/` using its own `Makefile` (Sphinx + MyST). See [`docs/README.md`](./docs/README.md#building-this-site). The repo-root `make docs` target delegates to it.
