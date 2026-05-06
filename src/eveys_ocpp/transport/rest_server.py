@@ -28,6 +28,7 @@ if TYPE_CHECKING:
 
     from eveys_ocpp.registry import Registry
     from eveys_ocpp.settings import Settings
+    from eveys_ocpp.transport.grpc_server import OcppGatewayService
 
 log = get_logger(__name__)
 
@@ -38,6 +39,7 @@ async def serve_forever(
     settings: Settings,
     registry: Registry | None,
     redis: Redis | None,
+    command_service: OcppGatewayService | None = None,
 ) -> None:
     """Build the FastAPI app, run uvicorn, return when the loop exits.
 
@@ -52,6 +54,7 @@ async def serve_forever(
         settings=settings,
         registry=registry,
         redis=redis,
+        command_service=command_service,
     )
     config = uvicorn.Config(
         app,
