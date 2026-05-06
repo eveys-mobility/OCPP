@@ -2,7 +2,7 @@
 
 Documentation for **eveys/ocpp**, the OCPP gateway service of the Eveys EV-charging platform.
 
-> **Scope of this document set**: foundations only — *roadmap, tasks, rules, coding standards*. Implementation plan and code follow after these are reviewed and approved.
+> **Scope of this document set**: full — roadmap, tasks, coding standards, ADRs, implementation plan, conformance matrix, certification readiness, testing strategy, and the generated configuration reference. Code is shipped under `src/` and tested per the four-tier ladder in [10-testing-strategy.md](./10-testing-strategy.md).
 
 ## Contents
 
@@ -49,7 +49,7 @@ Current:
 | Field | Value |
 |---|---|
 | Project | `eveys/ocpp` |
-| Phase | Foundations — pre-implementation |
+| Phase | Phase 3 (platform integration) — Phase 0 + 2 closed; long-tail E2-1 + Phase 3 in progress |
 | Tech lead | TBD |
 | Source of architecture truth | The ADRs (see [Architecture decisions](./05-architecture-decisions.md)) |
 | License | Proprietary — Eveys |
