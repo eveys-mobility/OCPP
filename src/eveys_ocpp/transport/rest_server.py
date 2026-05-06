@@ -26,6 +26,7 @@ if TYPE_CHECKING:
     from redis.asyncio import Redis
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+    from eveys_ocpp.clickhouse.read_client import ClickHouseReadClient
     from eveys_ocpp.registry import Registry
     from eveys_ocpp.settings import Settings
     from eveys_ocpp.transport.grpc_server import OcppGatewayService
@@ -40,6 +41,7 @@ async def serve_forever(
     registry: Registry | None,
     redis: Redis | None,
     command_service: OcppGatewayService | None = None,
+    ch_client: ClickHouseReadClient | None = None,
 ) -> None:
     """Build the FastAPI app, run uvicorn, return when the loop exits.
 
@@ -55,6 +57,7 @@ async def serve_forever(
         registry=registry,
         redis=redis,
         command_service=command_service,
+        ch_client=ch_client,
     )
     config = uvicorn.Config(
         app,

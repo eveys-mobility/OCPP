@@ -35,6 +35,7 @@ from eveys_ocpp.api import (
     commands,
     health,
     reservations,
+    timeseries,
     transactions,
 )
 from eveys_ocpp.api._auth import make_bearer_auth_middleware
@@ -51,6 +52,7 @@ if TYPE_CHECKING:
     from redis.asyncio import Redis
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+    from eveys_ocpp.clickhouse.read_client import ClickHouseReadClient
     from eveys_ocpp.registry import Registry
     from eveys_ocpp.settings import Settings
     from eveys_ocpp.transport.grpc_server import OcppGatewayService
@@ -63,6 +65,7 @@ def make_app(
     registry: Registry | None,
     redis: Redis | None,
     command_service: OcppGatewayService | None = None,
+    ch_client: ClickHouseReadClient | None = None,
 ) -> FastAPI:
     """Construct the gateway REST app.
 
@@ -87,6 +90,11 @@ def make_app(
     # E3-8: command surface dispatches through this service. None is
     # acceptable in tests that exercise only the read API.
     app.state.command_service = command_service
+    # E3-7d: ClickHouse read client backs the timeseries endpoints
+    # (meter-values, status-history). None is acceptable in tests
+    # without ClickHouse; the route handlers raise INTERNAL_ERROR if
+    # a request reaches them with no client wired.
+    app.state.ch_client = ch_client
 
     # Order matters: request-id MUST run before auth so the auth-reject
     # response carries the correlation id. Middlewares run in reverse
@@ -110,8 +118,7 @@ def make_app(
     app.include_router(reservations.router, prefix="/api/v1")
     app.include_router(charging_profiles.router, prefix="/api/v1")
     app.include_router(commands.router, prefix="/api/v1")
-    # Meter-values + status-history (E3-7d) hook in here as their router
-    # lands; needs a ClickHouse async read client first.
+    app.include_router(timeseries.router, prefix="/api/v1")
 
     return app
 

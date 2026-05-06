@@ -83,12 +83,26 @@ def fake_command_service() -> MagicMock:
     return service
 
 
+@pytest.fixture
+def fake_ch_client() -> MagicMock:
+    """Stub ClickHouse read client — only `fetch_meter_values` and
+    `fetch_status_history` are called by the timeseries routes (E3-7d).
+
+    Default: both return empty lists so a route that didn't get a
+    per-test override still answers cleanly."""
+    client = MagicMock()
+    client.fetch_meter_values = AsyncMock(return_value=[])
+    client.fetch_status_history = AsyncMock(return_value=[])
+    return client
+
+
 @pytest_asyncio.fixture
 async def client(
     settings: Settings,
     fake_session_factory: Any,
     fake_registry: MagicMock,
     fake_command_service: MagicMock,
+    fake_ch_client: MagicMock,
 ) -> AsyncIterator[httpx.AsyncClient]:
     """In-process REST client. ASGITransport routes calls to the app
     without booting a socket."""
@@ -98,6 +112,7 @@ async def client(
         registry=fake_registry,
         redis=None,
         command_service=fake_command_service,
+        ch_client=fake_ch_client,
     )
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app),

@@ -14,6 +14,7 @@ from redis.asyncio import Redis
 
 from eveys_ocpp import __version__
 from eveys_ocpp.bus import CommandBus
+from eveys_ocpp.clickhouse.read_client import ClickHouseReadClient
 from eveys_ocpp.connections import ConnectionMap
 from eveys_ocpp.events import KafkaEventProducer
 from eveys_ocpp.idempotency import IdempotencyCache
@@ -75,6 +76,14 @@ async def _serve_all(
         bus=bus,
     )
 
+    # E3-7d: ClickHouse read client backs the timeseries endpoints
+    # (meter-values, status-history). Only constructed when REST is
+    # enabled — sidecar shapes that don't serve HTTP don't need it.
+    ch_client: ClickHouseReadClient | None = None
+    if settings.rest_enabled:
+        ch_client = ClickHouseReadClient(settings)
+        await ch_client.start()
+
     await event_producer.start()
     await bus.start()
     try:
@@ -110,6 +119,7 @@ async def _serve_all(
                         registry=registry,
                         redis=redis,
                         command_service=command_service,
+                        ch_client=ch_client,
                     ),
                     name="rest_server",
                 )
@@ -118,6 +128,8 @@ async def _serve_all(
         await event_producer.stop()
         if backend_client is not None:
             await backend_client.aclose()
+        if ch_client is not None:
+            await ch_client.aclose()
         # Single close on the shared client; `registry.close()` would
         # close the same connection twice.
         await redis.aclose()
