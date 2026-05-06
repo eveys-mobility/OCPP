@@ -22,6 +22,7 @@ from eveys_ocpp.persistence.db import make_engine, make_session_factory
 from eveys_ocpp.platform import AuthorizeCache, BackendHTTPClient
 from eveys_ocpp.registry import Registry
 from eveys_ocpp.settings import Settings, get_settings
+from eveys_ocpp.transport.grpc_server import OcppGatewayService
 from eveys_ocpp.transport.grpc_server import serve_forever as serve_grpc_forever
 from eveys_ocpp.transport.rest_server import serve_forever as serve_rest_forever
 from eveys_ocpp.transport.ws_server import serve_forever as serve_ws_forever
@@ -60,6 +61,20 @@ async def _serve_all(
         pod_id=settings.pod_id,
     )
 
+    # Build the gRPC service once and share it with the REST command
+    # surface (E3-8). Both transports dispatch through the same
+    # ConnectionMap / Registry / CommandBus, so a charger connected on
+    # this pod is reachable from either entry point. The service's
+    # __init__ also wires the bus's owning-side dispatcher; constructing
+    # it here ensures that hook fires before any inbound bus traffic.
+    command_service = OcppGatewayService(
+        session_factory=session_factory,
+        settings=settings,
+        connections=connections,
+        registry=registry,
+        bus=bus,
+    )
+
     await event_producer.start()
     await bus.start()
     try:
@@ -78,19 +93,15 @@ async def _serve_all(
                 name="ws_server",
             )
             tg.create_task(
-                serve_grpc_forever(
-                    session_factory=session_factory,
-                    settings=settings,
-                    connections=connections,
-                    registry=registry,
-                    bus=bus,
-                ),
+                serve_grpc_forever(settings=settings, service=command_service),
                 name="grpc_server",
             )
             # E3-7: gateway-side REST API for the backend's read needs.
-            # Gated on `rest_enabled` so shapes that share this image
-            # but don't serve HTTP (e.g. the clickhouse-ingestor
-            # sidecar) skip booting it. Per ADR-0026.
+            # E3-8: same surface picks up the 19 command endpoints by
+            # consuming `command_service`. Gated on `rest_enabled` so
+            # shapes that share this image but don't serve HTTP (e.g.
+            # the clickhouse-ingestor sidecar) skip booting it. Per
+            # ADR-0026.
             if settings.rest_enabled:
                 tg.create_task(
                     serve_rest_forever(
@@ -98,6 +109,7 @@ async def _serve_all(
                         settings=settings,
                         registry=registry,
                         redis=redis,
+                        command_service=command_service,
                     ),
                     name="rest_server",
                 )

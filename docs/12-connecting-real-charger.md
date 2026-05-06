@@ -57,7 +57,7 @@ You also need:
 
 - **WS port (host 19000 → container 9000)**: the only port a charger talks to. Plain `ws://` only — TLS is terminated upstream by Envoy in production. The host port is `19000` because container port `9000` collides with ClickHouse's native protocol on the host. See §5.2.
 - **REST port (8080)**: backend-facing read API. Bearer-token auth required. See §7.
-- **gRPC port (50051)**: command channel from backend to gateway (E3-8, not yet used end-to-end).
+- **gRPC port (50051)**: command channel from backend to gateway. Same surface is exposed over REST as `/api/v1/charge-points/{cp_id}/commands/*` (E3-8); see §7.3.
 - **Metrics port (9100)**: Prometheus scrape endpoint (E4-1).
 
 ---
@@ -401,7 +401,7 @@ The rest of this section assumes REST is reachable at `http://localhost:8080`.
 
 ### 7.3 Endpoints
 
-Five GET routes today (more land with E3-7 commits 3+4 and E3-8 — see `docs/01-roadmap.md`):
+#### Read endpoints (5)
 
 | Method | Path | Purpose | Auth |
 |---|---|---|---|
@@ -411,7 +411,59 @@ Five GET routes today (more land with E3-7 commits 3+4 and E3-8 — see `docs/01
 | GET | `/api/v1/charge-points/{cp_id}/transactions` | Sessions for a charger; cursor-paginated; filters: `id_tag`, `open`, `from`, `to` (ISO-8601) | required |
 | GET | `/api/v1/transactions/{transaction_id}` | Single transaction by OCPP-visible `transaction_id` (not the surrogate PK) | required |
 
-Full spec: `docs/integration/02-gateway-rest-api.md`. ADR-0026 records the design decisions.
+#### Command endpoints (19, E3-8)
+
+All under `/api/v1/charge-points/{cp_id}/commands/`. POST except `get-charger-status` (GET — read-only, no OCPP round-trip).
+
+| Path | Body | Notes |
+|---|---|---|
+| `remote-start` | `{ "id_tag": "...", "connector_id": 1 }` | Start a session |
+| `remote-stop` | `{ "transaction_id": 12345 }` | Stop a session |
+| `reset` | `{ "type": "Soft" \| "Hard" }` | Reset the charger |
+| `change-configuration` | `{ "key": "...", "value": "..." }` | Returns Accepted/Rejected/RebootRequired/NotSupported |
+| `get-configuration` | `{ "keys": [ "..." ] }` (or empty for all) | Returns `{ configuration_key, unknown_key }` |
+| `clear-cache` | `{}` | Wipe the charger's local Authorize cache |
+| `trigger-message` | `{ "requested_message": "BootNotification", "connector_id": 0 }` | Force a message from the charger |
+| `unlock-connector` | `{ "connector_id": 1 }` | Returns Unlocked/UnlockFailed/NotSupported |
+| `data-transfer` | `{ "vendor_id": "...", "message_id": "...", "data": "..." }` | Vendor-specific; returns `{ status, data }` |
+| `get-local-list-version` | `{}` | Returns `{ "list_version": 11 }` |
+| `send-local-list` | `{ "list_version": 12, "update_type": "Full"\|"Differential", "local_authorization_list": [...] }` | Mirrors to Postgres on Accepted |
+| `reserve-now` | `{ "connector_id": 1, "expiry_date": "...", "id_tag": "...", "parent_id_tag": "..." }` | Returns `{ status, reservation_id }`; gateway-assigned id |
+| `cancel-reservation` | `{ "reservation_id": 8842 }` | Mirrors to Postgres on Accepted |
+| `get-diagnostics` | `{ "location": "https://...", ... }` | Returns `{ "file_name": "..." }` |
+| `update-firmware` | `{ "location": "https://...", "retrieve_date": "..." }` | Status arrives via `FirmwareStatusNotification` |
+| `set-charging-profile` | `{ "connector_id": 1, "charging_profile": {...} }` | Mirrors to Postgres on Accepted |
+| `clear-charging-profile` | `{ "charging_profile_id": 42, ... }` (all optional) | Mirrors to Postgres on Accepted |
+| `get-composite-schedule` | `{ "connector_id": 1, "duration": 7200, "charging_rate_unit": "W" }` | Returns the resolved composite from the charger |
+| `get-charger-status` (GET) | (none) | Cached state — no OCPP round-trip |
+
+Examples:
+
+```bash
+TOKEN=dev-token
+
+# Tell the charger to start a session for an RFID tag.
+curl -s -X POST -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"id_tag":"RFID_X","connector_id":1}' \
+  http://localhost:8080/api/v1/charge-points/CP_LAB_001/commands/remote-start | jq
+# { "status": "Accepted", "request_id": "..." }
+
+# Stop a running session by its OCPP transaction_id.
+curl -s -X POST -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"transaction_id":12345}' \
+  http://localhost:8080/api/v1/charge-points/CP_LAB_001/commands/remote-stop | jq
+
+# Reserve a connector.
+curl -s -X POST -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"connector_id":1,"id_tag":"RFID_X","expiry_date":"2026-05-06T16:00:00+00:00"}' \
+  http://localhost:8080/api/v1/charge-points/CP_LAB_001/commands/reserve-now | jq
+# { "status": "Accepted", "reservation_id": 8842, "request_id": "..." }
+```
+
+Full spec: `docs/integration/02-gateway-rest-api.md` § "Command endpoints". ADR-0026 records the design decisions.
 
 #### Worked example — list, then drill in
 
@@ -593,8 +645,8 @@ Stable error codes (`src/eveys_ocpp/api/_errors.py`):
 | 404 | `UNKNOWN_CP_ID` | `cp_id` has never sent a BootNotification |
 | 404 | `UNKNOWN_TRANSACTION_ID` | `transaction_id` not in the transactions table |
 | 404 | `UNKNOWN_RESERVATION_ID` | Reserved (returned by reservation endpoints when E3-7 commit 3 lands) |
-| 409 | `CHARGER_OFFLINE` | Reserved (gRPC command surface in E3-8) |
-| 504 | `CHARGER_TIMEOUT` | Reserved (gRPC command surface in E3-8) |
+| 503 | `CHARGER_OFFLINE` | Charger known but no pod owns the WS right now (or registry shows a different pod and cross-pod bus is misconfigured) |
+| 504 | `CHARGER_TIMEOUT` | Charger online but didn't reply within 30 s |
 | 400 | `WINDOW_TOO_LARGE` | Reserved (timeseries surface in E3-7 commit 4) |
 | 429 | `RATE_LIMITED` | Reserved (no rate limit at the gateway today; Envoy at the edge) |
 | 500 | `INTERNAL_ERROR` | Anything that escapes the typed-error path. The traceback is logged; the response body never leaks it. |
@@ -666,7 +718,6 @@ make compose-up
 Once you have one charger connecting and you're comfortable with the read APIs, the next platform features in flight:
 
 - **E3-7 commits 3+4** — reservations + charging-profiles list endpoints, ClickHouse-backed meter-values + status-history endpoints. See [`docs/02-tasks.md`](./02-tasks.md) and [`docs/01-roadmap.md`](./01-roadmap.md).
-- **E3-8** — command endpoints: REST wrappers around the gRPC RPCs (RemoteStartTransaction, ChangeAvailability, ResetCharger, ...). Backend will dispatch chargers via REST.
 - **E3-9** — webhook delivery: gateway pushes signed events to a backend URL. Replaces backend-side polling.
 - **Phase 4** — load test, observability dashboard, alerting runbook.
 
