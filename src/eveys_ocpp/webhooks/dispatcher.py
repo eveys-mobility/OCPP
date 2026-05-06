@@ -271,10 +271,25 @@ class WebhookDispatcher:
         `docs/integration/03-webhooks.md` § Event catalog. Returns
         None when the event type isn't enabled (or is unknown).
 
-        Only the events PR-1 wires are translated here: cp.boot,
-        cp.status_changed, tx.started. Others fall through to None
-        until PR-2 lands them."""
+        Events delivered today: cp.boot, cp.online, cp.status_changed,
+        tx.started. Other spec'd events (cp.offline,
+        cp.firmware_status_changed, cp.diagnostics_status_changed,
+        tx.stopped) need new proto messages and producers first; they
+        return None here until a future PR adds them.
+        """
         kind = envelope.WhichOneof("payload")
+        if kind == "cp_connected" and self._settings.webhook_enable_cp_online:
+            p = envelope.cp_connected
+            data = {
+                "event_id": envelope.event_id,
+                "event_type": "cp.online",
+                "occurred_at": envelope.occurred_at,
+                "cp_id": envelope.cp_id,
+                "subprotocol": p.subprotocol,
+                "pod_id": p.pod_id,
+            }
+            return _envelope(data)
+
         if kind == "cp_boot" and self._settings.webhook_enable_cp_boot:
             p = envelope.cp_boot
             data = {
@@ -329,6 +344,8 @@ class WebhookDispatcher:
         """URL for this envelope's event type, or None if disabled."""
         kind = envelope.WhichOneof("payload")
         s = self._settings
+        if kind == "cp_connected" and s.webhook_enable_cp_online:
+            return s.webhook_url_cp_online or f"{s.webhook_base_url}/cp-online"
         if kind == "cp_boot" and s.webhook_enable_cp_boot:
             return s.webhook_url_cp_boot or f"{s.webhook_base_url}/cp-boot"
         if kind == "cp_status" and s.webhook_enable_cp_status:
@@ -342,7 +359,12 @@ class WebhookDispatcher:
     def _enabled_topics(self) -> tuple[str, ...]:
         """Subset of the four event topics whose webhook delivery is
         currently enabled. Lets us avoid subscribing the consumer to
-        topics nobody listens for."""
+        topics nobody listens for.
+
+        Note: `cp.online` (the `cp_connected` proto variant) doesn't
+        have a Kafka topic yet — no producer emits it. The dispatcher
+        knows how to translate one when it shows up; subscribing to a
+        topic for it is the WS-server work that adds the producer."""
         s = self._settings
         topics: list[str] = []
         if s.webhook_enable_cp_boot:
