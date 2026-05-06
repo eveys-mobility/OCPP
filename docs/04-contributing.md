@@ -40,7 +40,7 @@ To run the hooks against the whole tree without committing:
 make precommit
 ```
 
-If a hook auto-fixes something, re-stage and re-commit. **Never bypass hooks with `--no-verify`** (AGENTS.md hard rule 7).
+If a hook auto-fixes something, re-stage and re-commit. **Never bypass hooks with `--no-verify`** — if a hook fails, fix the underlying issue.
 
 ## Commit conventions
 
@@ -141,9 +141,9 @@ A task is **done** when:
 - **Production incident** → page on-call, PIR within 48h.
 - **Random ideas** → drop in `#eveys-ocpp-random` first, then issue if it sticks.
 
-## Onboarding checklist (new engineer / new AI session)
+## Onboarding checklist (new engineer)
 
-- [ ] Read `docs/00-overview.md`, `docs/03-coding-standards.md`, this file, and `AGENTS.md`.
+- [ ] Read `docs/00-overview.md`, `docs/03-coding-standards.md`, and this file.
 - [ ] Clone the repo, run `make install`, run `make tests` — all green locally.
 - [ ] Read the `mobilityhouse/ocpp` library README and 1.6 examples.
 - [ ] Pick a `good-first-issue` task and ship it.

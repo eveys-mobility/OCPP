@@ -8,7 +8,7 @@ license = { text = "Proprietary" }
 authors = [{ name = "Eveys engineering" }]
 
 # Runtime dependencies are intentionally minimal. Each addition needs a
-# justification in the MR description (see AGENTS.md, hard rule 4).
+# justification in the PR description.
 dependencies = [
     "ocpp>=2.1,<2.2",              # mobilityhouse/ocpp — pinned minor; bumps need a conformance re-run (see docs/08-ocpp-conformance.md). Library + bundled schemas authoritative per ADR-0002
     "websockets>=13.1",            # WS server transport
@@ -23,8 +23,8 @@ dependencies = [
     "protobuf>=5.28",              # runtime for grpclib-generated stubs
     "redis>=5.2",                  # async Redis client for online registry + pub/sub bus (E2-9, E2-10)
     "aiokafka>=0.12",              # async Kafka producer for event firehose (E2-7, E2-8); first use is MeterValues
-    "asynch>=0.2",                 # async ClickHouse driver for the Kafka→CH ingestor (E2-14, ADR-0020). Sync drivers (clickhouse-driver) would block the asyncio loop on every insert, which AGENTS.md §"Async patterns" prohibits.
-    "httpx>=0.28",                 # async HTTP client for the backend integration (E3-2, ADR-0023). Sync clients (`requests`) would block the asyncio loop on every Authorize / sessions/open / sessions/close call, which AGENTS.md §"Async patterns" prohibits.
+    "asynch>=0.2",                 # async ClickHouse driver for the Kafka→CH ingestor (E2-14, ADR-0020). Sync drivers (clickhouse-driver) would block the asyncio loop on every insert.
+    "httpx>=0.28",                 # async HTTP client for the backend integration (E3-2, ADR-0023). Sync clients (`requests`) would block the asyncio loop on every Authorize / sessions/open / sessions/close call.
     "fastapi>=0.115",              # ASGI framework for the inbound gateway REST API (E3-7, ADR-0026); also used by the dev-only mock backend (E3-10).
     "uvicorn[standard]>=0.32",     # ASGI server. Run programmatically (not the CLI) inside the existing TaskGroup so the WS/gRPC/REST servers share one event loop and structured-logging context (ADR-0026).
 ]

@@ -223,4 +223,4 @@ This document is part of **every** handler MR. A handler change without a matrix
 - `mobilityhouse/ocpp` library: <https://github.com/mobilityhouse/ocpp>
 - ADR-0002 — Adopt mobilityhouse/ocpp: [`adr/0002-mobilityhouse-ocpp-library.md`](./adr/0002-mobilityhouse-ocpp-library.md).
 - ADR-0005 — Certification target: [`adr/0005-certification-target.md`](./adr/0005-certification-target.md).
-- AGENTS.md — OCPP-specific hard rules (§ "OCPP-specific rules") — at the repo root.
+- [`docs/03-coding-standards.md`](./03-coding-standards.md) — project conventions, including the OCPP-specific hard rules.

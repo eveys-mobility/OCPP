@@ -37,6 +37,20 @@ src/eveys_ocpp/_generated/*
 *.swp
 *.swo
 
+# AI assistant local config / caches — not tracked in this repo
+.cursor/
+.claude/
+.aider*
+.copilot/
+.continue/
+.windsurf/
+.cursorignore
+.cursorrules
+.aiderignore
+CLAUDE.md
+AGENTS.md
+.github/copilot-instructions.md
+
 # macOS
 .DS_Store
 

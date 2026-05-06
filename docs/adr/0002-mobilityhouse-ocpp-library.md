@@ -85,7 +85,7 @@ Around this library, **we build**:
 - JSON Schemas in `ocpp/<version>/schemas/` are authoritative. Our dataclasses don't override or "loosen" them.
 - We never disable schema validation, even under load.
 
-These conventions are restated in [`03-coding-standards.md`](../03-coding-standards.md) and in `AGENTS.md` at the repo root.
+These conventions are restated in [`03-coding-standards.md`](../03-coding-standards.md).
 
 ## References
 
