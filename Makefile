@@ -102,11 +102,11 @@ protoc: $(VENV)/bin/python
 # ---- code quality -----------------------------------------------------------
 
 format: install
-	$(VENV)/bin/isort src tests
-	$(VENV)/bin/black src tests
+	$(VENV)/bin/isort src tests scripts
+	$(VENV)/bin/black src tests scripts
 
 lint: install
-	$(VENV)/bin/ruff check src tests
+	$(VENV)/bin/ruff check src tests scripts
 
 types: install
 	$(VENV)/bin/mypy
