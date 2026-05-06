@@ -1,0 +1,65 @@
+# Composite action — every Python job uses this to provision Python 3.13,
+# install uv, build a project-relative .venv with all `[dev]` deps, and
+# generate the gRPC stubs that mypy / pytest import transitively.
+#
+# Caches:
+# - .venv/ keyed on pyproject.toml so a deps change rebuilds.
+# - uv's download cache keyed on the same so the next run is fast even
+#   on a fresh runner.
+name: Set up Python venv with project deps
+description: |
+  Provision Python 3.13, uv, .venv with [dev] deps, and gRPC stubs.
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.13"
+
+    - name: Cache uv download cache
+      uses: actions/cache@v4
+      with:
+        path: .uv-cache
+        key: uv-cache-${{ runner.os }}-${{ hashFiles('pyproject.toml') }}
+        restore-keys: |
+          uv-cache-${{ runner.os }}-
+
+    - name: Cache .venv
+      id: cache-venv
+      uses: actions/cache@v4
+      with:
+        path: .venv
+        key: venv-${{ runner.os }}-py313-${{ hashFiles('pyproject.toml') }}
+
+    - name: Install uv
+      shell: bash
+      run: |
+        curl -LsSf https://astral.sh/uv/install.sh | sh
+        echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+    - name: Build venv (cache miss)
+      if: steps.cache-venv.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        UV_CACHE_DIR: ${{ github.workspace }}/.uv-cache
+        UV_PROJECT_ENVIRONMENT: ${{ github.workspace }}/.venv
+      run: |
+        # `--clear` on cache miss so a stale layer can't poison the build.
+        uv venv --clear .venv
+        uv pip install --python .venv/bin/python -e ".[dev]"
+
+    # Generate gRPC stubs every run (cheap; the .venv cache covers deps but
+    # not generated files). mypy + pytest import these transitively.
+    - name: Generate gRPC stubs
+      shell: bash
+      run: |
+        .venv/bin/python -m grpc_tools.protoc \
+          --plugin=protoc-gen-grpclib_python=.venv/bin/protoc-gen-grpclib_python \
+          --proto_path=proto \
+          --python_out=src/eveys_ocpp/_generated \
+          --grpclib_python_out=src/eveys_ocpp/_generated \
+          proto/ocpp_gw/v1/gateway.proto \
+          proto/events/v1/events.proto
+        find src/eveys_ocpp/_generated -mindepth 1 -type d -exec touch {}/__init__.py \;

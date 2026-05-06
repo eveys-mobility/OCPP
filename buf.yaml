@@ -1,0 +1,22 @@
+# Buf configuration for `eveys/ocpp` (E2-12 — see ADR-0018).
+#
+# This file's only job today is to drive `buf breaking` in CI. We do not
+# use `buf` for codegen (we use grpc_tools.protoc — see `Makefile`'s
+# `protoc` target) or for `buf lint` (deferred — ADR-0018 § "Not
+# implementing right now").
+#
+# Both v1 proto trees are independent modules so a future `events/v2/`
+# would slot in without touching `ocpp_gw/`'s baseline.
+version: v2
+modules:
+  - path: proto/ocpp_gw/v1
+    name: buf.build/eveys/ocpp-gw-v1
+  - path: proto/events/v1
+    name: buf.build/eveys/events-v1
+breaking:
+  # WIRE_JSON catches binary-protobuf wire breakage AND protobuf-JSON
+  # wire breakage (e.g. `cp_id` → `cpId`). The latter matters because
+  # ClickHouse and ad-hoc analytics consume the Kafka envelope as JSON.
+  # Rationale in ADR-0018.
+  use:
+    - WIRE_JSON

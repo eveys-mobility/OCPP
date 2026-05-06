@@ -1,0 +1,189 @@
+# Local development stack for eveys/ocpp.
+#
+# Per docs/07-local-dev-setup.md — brings up the data plane (Postgres, Redis,
+# Kafka, ClickHouse). The eveys/ocpp service container itself is commented out
+# below; it is enabled when the Dockerfile (task E0-5) and the runnable service
+# (E1-1..E1-9) land. Until then, run the service against this compose stack
+# directly from the host: `python -m eveys_ocpp` after `make install`.
+#
+# CREDENTIALS BELOW ARE FOR LOCAL DEV ONLY. They must NEVER be used in
+# staging or production. Real secrets are managed by the secrets manager
+# (decision pending; ADR-TBD).
+
+name: eveys-ocpp
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: eveys-ocpp-postgres
+    environment:
+      POSTGRES_USER: eveys
+      POSTGRES_PASSWORD: eveys           # local-dev only
+      POSTGRES_DB: eveys_ocpp
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U eveys -d eveys_ocpp"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: eveys-ocpp-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  kafka:
+    # Apache's first-party image (Bitnami's public images moved to bitnamilegacy/
+    # after a 2025 licensing change; we use Apache's directly for longevity).
+    image: apache/kafka:3.7.0
+    container_name: eveys-ocpp-kafka
+    ports:
+      - "9092:9092"
+    environment:
+      # KRaft mode — no ZooKeeper.
+      KAFKA_NODE_ID: "1"
+      KAFKA_PROCESS_ROLES: "broker,controller"
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@localhost:9093"
+      # Two PLAINTEXT listeners on different ports so a single broker can
+      # serve both host-side clients (laptop running pytest, an IDE, the
+      # `python -m eveys_ocpp` dev loop) AND in-compose-network clients
+      # (the `ocpp` and `clickhouse-ingestor` containers).
+      #
+      # An advertised listener is what the broker tells the client to
+      # reconnect to AFTER bootstrap. With a single `localhost:9092`
+      # advertisement, in-container clients bootstrap fine but every
+      # follow-up metadata response sends them to `localhost`, which
+      # inside their own container is themselves — connection refused.
+      # Hence the dual layout: HOST://*:9092 advertised as `localhost:9092`
+      # for `host.docker.internal`-style host access, INTERNAL://*:29092
+      # advertised as `kafka:29092` for the docker network.
+      KAFKA_LISTENERS: "HOST://:9092,INTERNAL://:29092,CONTROLLER://:9093"
+      KAFKA_ADVERTISED_LISTENERS: "HOST://localhost:9092,INTERNAL://kafka:29092"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,HOST:PLAINTEXT,INTERNAL:PLAINTEXT"
+      KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+      KAFKA_INTER_BROKER_LISTENER_NAME: "INTERNAL"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+      # Auto-create topics for dev convenience. Disabled in prod.
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_LOG_DIRS: "/tmp/kraft-combined-logs"
+      CLUSTER_ID: "MkU3OEVBNTcwNTJENDM2Qk"
+    # No persistent volume in dev: Kafka logs in /tmp survive container
+    # restarts but are wiped by `make compose-down-volumes`. Restoring them
+    # from a fresh start is fine for local development.
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  clickhouse:
+    # Use the Ubuntu-based image, not :24-alpine — the alpine variant hits
+    # a `get_mempolicy: Operation not permitted` startup loop on Apple Silicon
+    # (M1/M2/M3) under Docker Desktop.
+    image: clickhouse/clickhouse-server:24
+    container_name: eveys-ocpp-clickhouse
+    ports:
+      - "8123:8123"   # HTTP
+      - "9001:9000"   # native (remapped: host 9001 → container 9000 to free
+                      # host port 9000 for the eveys/ocpp WebSocket server)
+    environment:
+      CLICKHOUSE_DB: eveys_ocpp
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: ""           # local-dev only
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+    healthcheck:
+      # BusyBox wget in the alpine image doesn't accept GNU-style flags;
+      # use the bare `-q -O -` form which works in both BusyBox and GNU wget.
+      test: ["CMD-SHELL", "wget -q -O - http://localhost:8123/ping | grep -q Ok"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 10s
+
+  ocpp:
+    # Built locally from deploy/Dockerfile (distroless multi-stage; ~168 MB).
+    # Use `make build-image` (or `docker compose build ocpp`) before
+    # `make compose-up` to refresh the image.
+    build:
+      context: ../..
+      dockerfile: deploy/Dockerfile
+    image: eveys-ocpp:dev
+    container_name: eveys-ocpp
+    # Host port 19000 instead of 9000: standalone ClickHouse client and many
+    # IDEs (PhpStorm, JetBrains TBE) squat on 9000. Inside the compose
+    # network the service still listens on 9000.
+    ports:
+      - "19000:9000"     # WebSocket (host 19000 → container 9000)
+      - "50051:50051"    # gRPC (lands with E2-4)
+      - "9100:9100"      # Prometheus metrics (lands with E4-1)
+    environment:
+      EVEYS_OCPP_DB_URL: postgresql+asyncpg://eveys:eveys@postgres:5432/eveys_ocpp
+      EVEYS_OCPP_REDIS_URL: redis://redis:6379/0
+      # Use the INTERNAL listener — see the `kafka` service for why both
+      # exist. `localhost:9092` (the default in `Settings`) only works
+      # for processes running on the laptop, not for sibling containers.
+      EVEYS_OCPP_KAFKA_BROKERS: kafka:29092
+      EVEYS_OCPP_CLICKHOUSE_HOST: clickhouse
+      EVEYS_OCPP_CLICKHOUSE_PORT: "9000"
+      EVEYS_OCPP_CLICKHOUSE_DB: eveys_ocpp
+      EVEYS_OCPP_LOG_JSON: "true"
+      EVEYS_OCPP_LOG_LEVEL: "INFO"
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      kafka: { condition: service_healthy }
+      clickhouse: { condition: service_healthy }
+
+  # Sidecar consumer for the Kafka → ClickHouse pipeline (E2-14, ADR-0020).
+  # Reuses the same image as the gateway — entry point is overridden to run
+  # the ingestor module instead of the WS+gRPC server.
+  clickhouse-ingestor:
+    image: eveys-ocpp:dev
+    container_name: eveys-ocpp-clickhouse-ingestor
+    # The ENTRYPOINT in `deploy/Dockerfile` is the interpreter
+    # (`python3.13`); compose's `command:` is its argv. So just `-m
+    # ...` here, NOT `python -m ...` — passing `python` as argv[0]
+    # would make the interpreter try to run a file called `python`.
+    command: ["-m", "eveys_ocpp.clickhouse.ingestor"]
+    environment:
+      # `kafka:29092` is the INTERNAL listener — the only one that
+      # advertises a hostname reachable from inside the compose network.
+      # The `:9092` advertisement is for laptop-side clients only.
+      EVEYS_OCPP_KAFKA_BROKERS: "kafka:29092"
+      EVEYS_OCPP_CLICKHOUSE_HOST: "clickhouse"
+      EVEYS_OCPP_CLICKHOUSE_PORT: "9000"
+      EVEYS_OCPP_CLICKHOUSE_DB: "eveys_ocpp"
+      EVEYS_OCPP_LOG_JSON: "true"
+      EVEYS_OCPP_LOG_LEVEL: "INFO"
+    depends_on:
+      kafka: { condition: service_healthy }
+      clickhouse: { condition: service_healthy }
+
+volumes:
+  postgres_data:
+  redis_data:
+  clickhouse_data:

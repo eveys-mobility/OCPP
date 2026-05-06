@@ -1,0 +1,77 @@
+# Pre-commit hooks for eveys/ocpp.
+#
+# Activate locally:  cd ocpp && make install   (runs pre-commit install)
+# Run on all files:  pre-commit run --all-files
+# Update versions:   pre-commit autoupdate
+#
+# CI runs `ruff check` and `mypy` directly via .github/workflows/quality.yml.
+# These hooks catch the same problems before push, without waiting for CI feedback.
+
+default_language_version:
+  python: python3.13
+
+# Run hooks against staged files only by default. Heavy hooks (mypy) are
+# limited to source paths so a docs-only commit doesn't pay their cost.
+default_stages: [pre-commit]
+
+repos:
+  # ---- stock hygiene ------------------------------------------------------
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+        # Markdown trailing whitespace can be intentional (line-break).
+        exclude: \.md$
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-added-large-files
+        args: ["--maxkb=500"]
+      - id: check-merge-conflict
+      - id: check-case-conflict
+      - id: mixed-line-ending
+        args: ["--fix=lf"]
+
+  # ---- ruff (lint + format) ----------------------------------------------
+  # ruff replaces flake8/isort/pyupgrade and runs in milliseconds.
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.12
+    hooks:
+      - id: ruff
+        args: ["--fix", "--exit-non-zero-on-fix"]
+      - id: ruff-format
+
+  # ---- mypy (strict) ------------------------------------------------------
+  # Run mypy via the project venv (not pre-commit's isolated env) so the
+  # `[tool.mypy.overrides]` in pyproject.toml — including
+  # `follow_untyped_imports = true` for the `ocpp.*` package — apply
+  # consistently with the CI `types` job. Requires `make install` first.
+  - repo: local
+    hooks:
+      - id: mypy
+        name: mypy (project venv)
+        entry: .venv/bin/mypy
+        language: system
+        types: [python]
+        files: ^src/
+        pass_filenames: false  # mypy reads `files=` from pyproject.toml
+
+  # ---- conventional commits (optional but recommended) -------------------
+  # Project standard per docs/04-contributing.md: `feature(scope): subject (E…)`.
+  - repo: https://github.com/compilerla/conventional-pre-commit
+    rev: v3.6.0
+    hooks:
+      - id: conventional-pre-commit
+        stages: [commit-msg]
+        args:
+          - feature
+          - fix
+          - docs
+          - chore
+          - refactor
+          - test
+          - ci
+          - perf
+          - build
+          - revert
+          - HOTFIX  # per docs/04-contributing.md hot-fix convention

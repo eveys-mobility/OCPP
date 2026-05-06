@@ -1,0 +1,21 @@
+# Default: enforce LF line endings on all text files.
+* text=auto eol=lf
+
+# Explicit binary types (don't try to diff or normalize).
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.pdf   binary
+*.zip   binary
+*.gz    binary
+*.tar   binary
+*.whl   binary
+
+# Treat lockfiles as generated — collapse in MR diffs.
+uv.lock          linguist-generated=true
+poetry.lock      linguist-generated=true
+
+# Treat docs build output as generated (in case it ever gets committed).
+docs/_build/**   linguist-generated=true
