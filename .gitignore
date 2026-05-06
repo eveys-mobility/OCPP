@@ -1,0 +1,60 @@
+# Sphinx build output and venv
+docs/_build/
+docs/.venv/
+
+# Python project venv (created by uv)
+.venv/
+
+# Python build / cache artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+build/
+dist/
+.eggs/
+
+# Test / coverage artifacts
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# Type-checker caches
+.mypy_cache/
+.ruff_cache/
+
+# Generated protobuf / grpclib stubs (regenerate with `make protoc`).
+# The top-level __init__.py is hand-written (sets up sys.path for the
+# generated absolute imports); everything else is generated.
+src/eveys_ocpp/_generated/*
+!src/eveys_ocpp/_generated/__init__.py
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# AI assistant local config / caches — not tracked in this repo
+.cursor/
+.claude/
+.aider*
+.copilot/
+.continue/
+.windsurf/
+.cursorignore
+.cursorrules
+.aiderignore
+CLAUDE.md
+AGENTS.md
+.github/copilot-instructions.md
+
+# macOS
+.DS_Store
+
+# Local env overrides
+.env
+.env.local
+*.local

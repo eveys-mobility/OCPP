@@ -1,0 +1,58 @@
+"""DataTransfer handler (charger-initiated direction).
+
+OCPP 1.6 reference: DataTransfer.req / DataTransfer.conf, Core profile.
+The protocol's vendor-extension envelope: chargers can emit arbitrary
+``vendor_id``-namespaced payloads alongside the standard surface. The
+CSMS-initiated direction is in ``transport/grpc_server.py::DataTransfer``.
+
+Behaviour rule of thumb for the inbound side: we have no a priori
+knowledge of which ``vendor_id`` strings the operator wants to honour,
+so we acknowledge with ``UnknownVendorId`` by default and rely on
+operators wiring vendor handlers explicitly when needed (a future
+hook lives in `Settings.data_transfer_vendor_allowlist` — empty for
+now). This is the spec-compliant negative path: the charger learns
+"I don't know this vendor" and stops sending.
+
+Why we don't crash or auto-accept: per AGENTS rule 3, replies must
+be deterministic and validated. Auto-accepting an arbitrary
+vendor-extension payload masks a misconfigured charger or a
+mislabeled firmware. ``UnknownVendorId`` is the spec's way of saying
+"please stop talking to me about this".
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+from ocpp.v16 import call_result
+from ocpp.v16.enums import DataTransferStatus
+
+from eveys_ocpp.observability import bind_contextvars, get_logger
+
+if TYPE_CHECKING:
+    from eveys_ocpp.connection import EveysChargePoint
+
+log = get_logger(__name__)
+
+
+async def handle(
+    cp: EveysChargePoint,
+    *,
+    vendor_id: str,
+    message_id: str | None = None,
+    data: str | None = None,
+) -> call_result.DataTransfer:
+    bind_contextvars(cp_id=cp.id, action="DataTransfer", direction="rx")
+
+    log.info(
+        "data_transfer.received",
+        vendor_id=vendor_id,
+        message_id=message_id,
+        data_len=len(data) if data is not None else 0,
+    )
+
+    # No vendor handlers wired today — return UnknownVendorId per spec.
+    # If/when operators want to honour a vendor, the dispatch table goes
+    # here. Keeping the surface small means we don't accidentally
+    # accept payloads we can't actually process.
+    return call_result.DataTransfer(status=DataTransferStatus.unknown_vendor_id)

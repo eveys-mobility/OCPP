@@ -1,0 +1,187 @@
+[project]
+name = "eveys-ocpp"
+version = "0.0.0"
+description = "OCPP gateway service for the Eveys EV-charging platform"
+readme = "README.md"
+requires-python = ">=3.13"
+license = { text = "Proprietary" }
+authors = [{ name = "Eveys engineering" }]
+
+# Runtime dependencies are intentionally minimal. Each addition needs a
+# justification in the PR description.
+dependencies = [
+    "ocpp>=2.1,<2.2",              # mobilityhouse/ocpp — pinned minor; bumps need a conformance re-run (see docs/08-ocpp-conformance.md). Library + bundled schemas authoritative per ADR-0002
+    "websockets>=13.1",            # WS server transport
+    "asyncpg>=0.30",               # async Postgres driver (hot path)
+    "sqlalchemy[asyncio]>=2.0.36", # ORM for admin/CRUD paths
+    "alembic>=1.14",               # schema migrations
+    "pydantic>=2.9",               # data validation
+    "pydantic-settings>=2.6",      # env-driven config
+    "structlog>=24.4",             # structured JSON logging
+    "uvloop>=0.21; platform_system != 'Windows'",  # fast event loop (ADR-0001)
+    "grpclib>=0.4.7",              # async-native gRPC (ADR-0001)
+    "protobuf>=5.28",              # runtime for grpclib-generated stubs
+    "redis>=5.2",                  # async Redis client for online registry + pub/sub bus (E2-9, E2-10)
+    "aiokafka>=0.12",              # async Kafka producer for event firehose (E2-7, E2-8); first use is MeterValues
+    "asynch>=0.2",                 # async ClickHouse driver for the Kafka→CH ingestor (E2-14, ADR-0020). Sync drivers (clickhouse-driver) would block the asyncio loop on every insert.
+    "httpx>=0.28",                 # async HTTP client for the backend integration (E3-2, ADR-0023). Sync clients (`requests`) would block the asyncio loop on every Authorize / sessions/open / sessions/close call.
+    "fastapi>=0.115",              # ASGI framework for the inbound gateway REST API (E3-7, ADR-0026); also used by the dev-only mock backend (E3-10).
+    "uvicorn[standard]>=0.32",     # ASGI server. Run programmatically (not the CLI) inside the existing TaskGroup so the WS/gRPC/REST servers share one event loop and structured-logging context (ADR-0026).
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.6",
+    "black>=24.8",
+    "isort>=5.13",
+    "mypy>=1.11",
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "pytest-cov>=5.0",
+    "pre-commit>=3.8",
+    "freezegun>=1.5",              # deterministic timestamps in tests
+    "grpcio-tools>=1.66",          # protoc + grpc_tools.protoc for codegen (dev only)
+]
+
+[project.scripts]
+eveys-ocpp = "eveys_ocpp.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/eveys_ocpp"]
+
+# ---- ruff -------------------------------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+src = ["src", "tests"]
+# Generated code (protobuf / grpclib stubs). We don't own the formatting.
+extend-exclude = ["src/eveys_ocpp/_generated"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "UP",  # pyupgrade
+    "SIM", # flake8-simplify
+    "RUF", # ruff-specific
+]
+
+# Tell ruff's isort which packages are first-party so it groups
+# `eveys_ocpp.*` separately from third-party. Mirrors `[tool.isort]` below
+# so PyCharm + ruff + isort all agree.
+[tool.ruff.lint.isort]
+known-first-party = ["eveys_ocpp"]
+
+# ---- black ------------------------------------------------------------------
+[tool.black]
+line-length = 100
+target-version = ["py313"]
+
+# ---- isort ------------------------------------------------------------------
+[tool.isort]
+profile = "black"
+line_length = 100
+known_first_party = ["eveys_ocpp"]
+
+# ---- mypy -------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.13"
+strict = true
+files = ["src/eveys_ocpp"]
+exclude = ["src/eveys_ocpp/_generated"]
+plugins = []
+
+# Generated proto / grpclib stubs are untyped (`Any`-heavy). Treat the whole
+# generated package as opaque — the wrappers around it stay strictly typed.
+[[tool.mypy.overrides]]
+module = ["eveys_ocpp._generated.*"]
+ignore_errors = true
+follow_untyped_imports = true
+
+# redis-py's async client uses heavy overloading for sync/async dual methods;
+# its public API types are too loose to satisfy mypy --strict. Suppress only
+# the no-any-return + misc errors that come from awaiting their methods.
+# Our `Registry` wrapper preserves precise types for callers.
+[[tool.mypy.overrides]]
+module = ["redis.*"]
+ignore_missing_imports = true
+follow_untyped_imports = true
+
+# aiokafka ships no py.typed marker. Treat as opaque at the boundary;
+# `KafkaEventProducer` keeps strict types for its callers.
+[[tool.mypy.overrides]]
+module = ["aiokafka.*"]
+ignore_missing_imports = true
+
+# mobilityhouse/ocpp does not ship a py.typed marker yet (upstream issue).
+# Treat its public API as untyped so we don't have to spray `# type: ignore`
+# across every handler. Our wrappers around it are still strictly typed.
+[[tool.mypy.overrides]]
+module = ["ocpp.*"]
+ignore_missing_imports = true
+follow_untyped_imports = true
+
+# Our connection module bridges to the untyped library — relax the
+# decorator + untyped-call rules just here. The gRPC server and the
+# MeterValues handler also touch opaque `_generated.*` proto stubs
+# and (for gRPC) the untyped `ocpp.v16.call` namespace; same relaxation.
+[[tool.mypy.overrides]]
+module = [
+    "eveys_ocpp.connection",
+    "eveys_ocpp.transport.ws_server",
+    "eveys_ocpp.transport.grpc_server",
+    "eveys_ocpp.handlers.v16.meter_values",
+    # E2-8 emitters touch the same generated `events_pb2` types — same
+    # untyped-stub story as meter_values.
+    "eveys_ocpp.handlers.v16.boot_notification",
+    "eveys_ocpp.handlers.v16.status_notification",
+    "eveys_ocpp.handlers.v16.start_transaction",
+    # E2-14 ClickHouse ingestor — same generated `events_pb2` opaqueness.
+    "eveys_ocpp.clickhouse.ingestor",
+]
+disallow_untyped_decorators = false
+disallow_untyped_calls = false
+disable_error_code = ["name-defined", "attr-defined", "no-any-return"]
+
+# ---- pytest -----------------------------------------------------------------
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+addopts = [
+    "--cov=src/eveys_ocpp",
+    "--cov-report=term-missing",
+    "--cov-fail-under=80",
+    "-ra",
+]
+testpaths = ["tests"]
+
+# ---- coverage ---------------------------------------------------------------
+[tool.coverage.run]
+branch = true
+source = ["src/eveys_ocpp"]
+omit = [
+    # Process entry point — exercised end-to-end by E1-13 smoke test, not unit-tested.
+    "src/eveys_ocpp/__main__.py",
+    # WS server wiring (websockets.serve loop) — covered by integration tests against
+    # a running compose stack; same E1-13 owner.
+    "src/eveys_ocpp/transport/ws_server.py",
+    # ChargePoint subclass is pure decorator wiring; the dispatched handlers
+    # are covered exhaustively in tests/unit/handlers/v16/.
+    "src/eveys_ocpp/connection.py",
+    # Generated protobuf / grpclib stubs — regenerated by `make protoc`.
+    "src/eveys_ocpp/_generated/*",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
+]
