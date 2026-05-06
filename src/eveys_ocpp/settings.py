@@ -935,6 +935,20 @@ class Settings(BaseSettings):
         },
     )
 
+    webhook_url_cp_online: str = Field(
+        default="",
+        description=(
+            "Override the URL for `cp.online` events. Empty falls "
+            "back to `<webhook_base_url>/cp-online`."
+        ),
+        json_schema_extra={
+            "category": "webhooks",
+            "impact": "Per-event routing override.",
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+
     webhook_url_cp_status: str = Field(
         default="",
         description=(
@@ -987,6 +1001,22 @@ class Settings(BaseSettings):
         json_schema_extra={
             "category": "webhooks",
             "impact": "Disable to silence boot-event pushes.",
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+
+    webhook_enable_cp_online: bool = Field(
+        default=True,
+        description=("Enable webhook delivery for `cp.online` events (charger WebSocket connect)."),
+        json_schema_extra={
+            "category": "webhooks",
+            "impact": (
+                "Pairs with `cp.offline` for backend-side online-state "
+                "tracking. No producer emits this yet — the WS server "
+                "needs to be wired to publish `CpConnected` envelopes "
+                "before this setting has an effect."
+            ),
             "secret": False,
             "stability": "tunable",
         },

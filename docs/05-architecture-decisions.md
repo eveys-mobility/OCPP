@@ -84,6 +84,7 @@ ADRs are **never deleted**. They are append-only history.
 | [0021](./adr/0021-reservations-charger-authority.md) | Reservations: charger-side authority + gateway-side mirror | Accepted | 2026-05-05 |
 | [0022](./adr/0022-smart-charging-charger-side-resolver.md) | Smart Charging: charger-side resolver, gateway-side profile mirror | Accepted | 2026-05-05 |
 | [0023](./adr/0023-backend-rest-integration.md) | Backend REST integration: two surfaces, asymmetric envelope | Accepted | 2026-05-05 |
+| [0027](./adr/0027-webhook-delivery.md) | Outbound webhook delivery: Kafka-tail, HMAC, exponential retry | Accepted | 2026-05-07 |
 
 ## Pending / planned
 
