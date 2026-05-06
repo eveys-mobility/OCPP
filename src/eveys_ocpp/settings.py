@@ -698,6 +698,29 @@ class Settings(BaseSettings):
             "stability": "tunable",
         },
     )
+    backend_register_fallback: Literal["reject", "accept_offline"] = Field(
+        default="accept_offline",
+        description=(
+            "What BootNotification returns when the backend's "
+            "`/charge-points/register` endpoint is unreachable past the "
+            "retry budget. `accept_offline` → `Accepted` with the "
+            "configured heartbeat interval (the local DB row anchors "
+            "reconciliation when the backend recovers). `reject` → "
+            "`Rejected`, charger stops calling."
+        ),
+        json_schema_extra={
+            "category": "backend_integration",
+            "impact": (
+                "Default `accept_offline` matches the contract's "
+                "fail-soft model: a backend outage must not prevent "
+                "chargers from booting and serving Authorize-cached "
+                "sessions. Flip to `reject` only if the operator "
+                "wants chargers offline during a backend incident."
+            ),
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
 
     # ---- Authorize cache (E3-4) --------------------------------------------
     backend_authorize_cache_enabled: bool = Field(
