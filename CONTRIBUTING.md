@@ -1,28 +1,24 @@
 # Contributing
 
-Thanks for considering a contribution. The full workflow guide lives at
-[`docs/04-contributing.md`](./docs/04-contributing.md) — it covers
-branching, PRs, code review, releases, hot-fixes, and the definition of
-done.
+Thanks for considering a contribution.
 
-This file is the short version GitHub surfaces in its UI.
+## Workflow
 
-## Quick rules
-
-- Fork or branch off `main` (`feature/<task-id>-<slug>`,
-  `fix/<task-id>-<slug>`, `chore/<task-id>-<slug>`).
+- Branch off `main`: `feature/<short-slug>`, `fix/<short-slug>`,
+  `chore/<short-slug>`.
 - PRs should be **under 400 lines of diff** when possible. Larger PRs
   need a checklist in the description explaining why.
 - Every PR must:
-  - reference a task ID from [`docs/02-tasks.md`](./docs/02-tasks.md)
-    in the title (e.g. `feature(api): gateway REST commands (E3-8)`);
   - have green CI (lint, types, tests, ≥ 80% coverage);
   - include tests for new behavior;
-  - update relevant docs when behavior or contracts change.
+  - update relevant docs when behavior or contracts change;
+  - be reviewed by at least one other engineer.
 - Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/):
   `<type>(<scope>): <subject>` where `<type>` is one of
   `feature`, `fix`, `chore`, `docs`, `refactor`, `test`, `perf`, `ci`,
   `build`, `revert`.
+- Squash on merge. Linear history. Never force-push to a shared
+  branch (local rebase is fine).
 
 ## Getting started
 
@@ -33,15 +29,18 @@ make install      # creates .venv, installs deps, sets up pre-commit
 make tests        # full pre-commit gate locally
 ```
 
-See [`docs/07-local-dev-setup.md`](./docs/07-local-dev-setup.md) for
-the full local stack (Postgres, Redis, Kafka, ClickHouse via
-docker-compose) and [`docs/12-connecting-real-charger.md`](./docs/12-connecting-real-charger.md)
-for connecting a real OCPP charger to the gateway.
+The `README.md` covers what the service does, how to run it, the
+configuration knobs, and the project layout.
 
 ## Reporting issues
 
-Bugs and features go to GitHub Issues. Use the templates if available;
-include reproduction steps for bugs.
+Bugs and features go to GitHub Issues. Use the templates; include
+reproduction steps for bugs.
+
+## Security
+
+Security issues do **not** go through the public issue tracker. See
+[`SECURITY.md`](./SECURITY.md) for the private reporting channel.
 
 ## Code of Conduct
 

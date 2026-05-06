@@ -1,6 +1,7 @@
-# Sphinx build output and venv
-docs/_build/
-docs/.venv/
+# Project-progress / planning docs are kept locally, not tracked in
+# the repo. Production user-facing docs (README, CONTRIBUTING, etc.)
+# stay at the repo root.
+docs/
 
 # Python project venv (created by uv)
 .venv/

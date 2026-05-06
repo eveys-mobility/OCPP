@@ -74,13 +74,14 @@ In scope:
 Out of scope (please don't report these as vulnerabilities):
 
 - Findings against deliberately-permissive dev defaults
-  (e.g. `EVEYS_OCPP_REST_AUTH_DISABLED=true` is documented as
-  dev-only, see `docs/11-configuration-reference.md`).
+  (e.g. `EVEYS_OCPP_REST_AUTH_DISABLED=true`, which is documented in
+  `Settings` as a dev-only knob and logs a loud warning at boot when
+  enabled).
 - Issues in upstream dependencies that already have a public CVE and a
   pinned-version fix path; open a regular issue tagged `dependency`.
 - Denial-of-service via traffic volume against a single dev instance.
 - Missing TLS at the gateway layer — TLS is terminated upstream by
-  Envoy in production by design (see `docs/12-connecting-real-charger.md`).
+  Envoy in production by design.
 
 ## Safe-harbor
 
