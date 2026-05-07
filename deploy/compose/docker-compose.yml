@@ -97,7 +97,15 @@ services:
     image: clickhouse/clickhouse-server:24
     container_name: eveys-ocpp-clickhouse
     ports:
-      - "8123:8123"   # HTTP
+      # HTTP remapped to 8124: the canonical 8123 is squatted by any
+      # Homebrew `clickhouse server` already running on the laptop
+      # (loopback bind wins over docker's `*:8123`). When the
+      # collision happened our `make ch-migrate` silently targeted
+      # the wrong server and the stack went into a confusing split-
+      # brain state. See issue #24. `make ch-migrate` now passes
+      # `--port 8124` to match this; ad-hoc curl probes also need
+      # 8124 (e.g. `curl http://localhost:8124/?query=...`).
+      - "8124:8123"   # HTTP   (host 8124 → container 8123)
       - "9001:9000"   # native (remapped: host 9001 → container 9000 to free
                       # host port 9000 for the eveys/ocpp WebSocket server)
     environment:

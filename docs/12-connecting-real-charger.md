@@ -98,7 +98,7 @@ psql postgres://eveys:eveys@localhost:5432/eveys_ocpp -c "\dt"
 #           charging_schedule_periods, local_auth_lists,
 #           local_auth_list_entries, alembic_version
 
-curl 'http://localhost:8123/?query=SHOW+TABLES+FROM+eveys_ocpp'
+curl 'http://localhost:8124/?query=SHOW+TABLES+FROM+eveys_ocpp'
 # Expected: cp.boot  cp.meter  cp.status  schema_migrations  tx.started
 ```
 
@@ -311,7 +311,7 @@ ORDER BY occurred_at DESC;
 Use the HTTP interface for one-offs:
 
 ```bash
-curl 'http://localhost:8123/?query=SELECT+count()+FROM+eveys_ocpp.%60cp.meter%60'
+curl 'http://localhost:8124/?query=SELECT+count()+FROM+eveys_ocpp.%60cp.meter%60'
 ```
 
 DDL is in `src/eveys_ocpp/clickhouse/ddl/`.

@@ -168,13 +168,19 @@ print(' '.join(names))" 2>/dev/null); \
 # safe to re-run.
 # ClickHouse schema migrator. Idempotent; reads SQL files from
 # src/eveys_ocpp/clickhouse/ddl/ and applies any not yet recorded in
-# the schema_migrations table. Uses the HTTP port (8123) so this works
-# whether ClickHouse is local or in compose. See ADR-0020.
+# the schema_migrations table. See ADR-0020.
+#
+# Default HTTP port is 8124 to match docker-compose's host mapping. The
+# canonical CH HTTP port is 8123, but a Homebrew `clickhouse server`
+# already running on the laptop will steal it (loopback bind wins over
+# docker's `*:8123`) and migrations silently target the wrong server.
+# CI overrides this via E2E_CH_HTTP_PORT=8123 because the GitHub
+# Actions runner binds CH directly on 8123 with no collision risk.
 ch-migrate: install
 	@echo ">> applying ClickHouse migrations..."
 	@$(VENV)/bin/python -m eveys_ocpp.clickhouse.migrate \
 	    --host $${E2E_CH_HOST:-localhost} \
-	    --port $${E2E_CH_HTTP_PORT:-8123} \
+	    --port $${E2E_CH_HTTP_PORT:-8124} \
 	    --db $${EVEYS_OCPP_CLICKHOUSE_DB:-eveys_ocpp}
 
 e2e: install

@@ -22,7 +22,7 @@ import pytest
 from eveys_ocpp.clickhouse.migrate import apply_pending
 
 _CH_HOST = os.environ.get("E2E_CH_HOST", "localhost")
-_CH_HTTP_PORT = int(os.environ.get("E2E_CH_HTTP_PORT", "8123"))
+_CH_HTTP_PORT = int(os.environ.get("E2E_CH_HTTP_PORT", "8124"))
 _CH_DB = os.environ.get("EVEYS_OCPP_CLICKHOUSE_DB", "eveys_ocpp")
 _E2E_REQUIRE = os.environ.get("E2E_REQUIRE") == "1"
 

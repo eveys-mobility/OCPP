@@ -32,7 +32,7 @@ from eveys_ocpp.events import KafkaEventProducer
 from eveys_ocpp.settings import Settings
 
 _CH_HOST = os.environ.get("E2E_CH_HOST", "localhost")
-_CH_HTTP_PORT = int(os.environ.get("E2E_CH_HTTP_PORT", "8123"))
+_CH_HTTP_PORT = int(os.environ.get("E2E_CH_HTTP_PORT", "8124"))
 # Native ClickHouse port. The container always listens on 9000 (CI's
 # tests:e2e job reaches it as clickhouse:9000, the in-process compose
 # stack uses container-side 9000 too). Dev laptops that run ClickHouse

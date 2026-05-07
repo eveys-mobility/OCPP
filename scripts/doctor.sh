@@ -165,6 +165,53 @@ else
     miss "Docker daemon" "not running — start Docker Desktop"
 fi
 
+# Host-port collisions with the compose stack.
+#
+# `make compose-up` publishes a fixed set of ports. If something on the
+# laptop is already bound to one of them (a Homebrew clickhouse server,
+# a stray Postgres, a previous `python -m http.server`), the docker
+# binding either fails outright or — on macOS for loopback addresses —
+# the existing process wins and our queries silently target the wrong
+# server. The latter is what bit us in issue #24, where a Homebrew CH
+# on `localhost:8123` swallowed our migrations and the docker CH stayed
+# empty.
+#
+# We probe TCP listen state (not just open sockets) so a `curl` that
+# just connected and closed doesn't trigger a false positive.
+declare -a expected_ports=(
+    "5432:postgres"
+    "6379:redis"
+    "9092:kafka"
+    "8124:clickhouse-http"
+    "9001:clickhouse-native"
+    "19000:gateway-ws"
+    "50051:gateway-grpc"
+    "9100:gateway-metrics"
+    "8080:gateway-rest"
+)
+collisions=0
+for entry in "${expected_ports[@]}"; do
+    port="${entry%%:*}"
+    name="${entry##*:}"
+    # `lsof -iTCP:<port> -sTCP:LISTEN -nP -F c` lists every listener on
+    # the port and returns one `c<full-command-name>` line per process,
+    # avoiding the truncation `lsof`'s default tabular output applies to
+    # the COMMAND column. We strip docker's own listeners
+    # (`com.docker.backend`, `vpnkit`, `Docker`) — those are how compose
+    # itself binds.
+    holders=$(lsof -iTCP:"$port" -sTCP:LISTEN -nP -F c 2>/dev/null \
+        | awk '/^c/ {sub(/^c/,""); print}' \
+        | grep -viE 'com\.docker|vpnkit|^Docker$' \
+        | sort -u)
+    if [ -n "$holders" ]; then
+        collisions=$((collisions + 1))
+        miss "port $port" "$name port held by non-docker process(es): $(echo "$holders" | tr '\n' ' ')— stop it before \`make compose-up\`"
+    fi
+done
+if [ "$collisions" -eq 0 ]; then
+    ok  "ports" "no collisions on the 9 ports compose publishes"
+fi
+
 # Free disk space at the repo root.
 disk_avail_kb=$(df -k . 2>/dev/null | awk 'NR==2 {print $4}' || echo 0)
 disk_avail_gb=$(( disk_avail_kb / 1024 / 1024 ))
