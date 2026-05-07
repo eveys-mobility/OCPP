@@ -58,6 +58,7 @@ _CATEGORY_ORDER: Final[tuple[str, ...]] = (
     "webhooks",
     "metrics",
     "tracing",
+    "sentry",
 )
 
 # Human-readable H2 heading per category. Mirrors the hand-written seed.
@@ -80,6 +81,7 @@ _SECTION_TITLES: Final[dict[str, str]] = {
     "webhooks": "Outbound webhooks (E3-9)",
     "metrics": "Prometheus metrics (Phase 4 / E4-1)",
     "tracing": "OpenTelemetry tracing (Phase 4 / E4-3)",
+    "sentry": "Sentry error tracking (Phase 4 / E4-4)",
 }
 
 # Optional per-section blockquote shown immediately under the H2.

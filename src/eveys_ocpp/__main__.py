@@ -24,6 +24,7 @@ from eveys_ocpp.observability import (
     configure_logging,
     configure_tracing,
     get_logger,
+    init_sentry,
     shutdown_tracing,
 )
 from eveys_ocpp.persistence.db import make_engine, make_session_factory
@@ -205,6 +206,10 @@ def main() -> None:
         pass
 
     settings = get_settings()
+    # Sentry first — wires into stdlib logging so init failures and
+    # subsequent observability setup errors are captured. No-op when
+    # `sentry_dsn=""`, which is the default.
+    init_sentry(settings)
     configure_logging(level=settings.log_level, json=settings.log_json)
     # Tracing must be set up before any handler emits a span. Idempotent
     # and a no-op when `tracing_enabled=False`, so safe to call early.
@@ -215,6 +220,7 @@ def main() -> None:
         "startup",
         version=__version__,
         tracing_enabled=settings.tracing_enabled,
+        sentry_enabled=bool(settings.sentry_dsn),
     )
 
     engine = make_engine(

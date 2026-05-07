@@ -199,6 +199,16 @@ sensitivity.
 | `EVEYS_OCPP_TRACING_SAMPLE_RATE` | `1.0` | 0.0–1.0 | tunable | no | Head-based sample rate in `[0.0, 1.0]`. 1.0 traces every request — fine in dev. In production set this to 0.01-0.1 unless your collector is sized for full-rate. | Lowering this drops spans uniformly across all operations. Errors are *not* preferentially kept (no tail-based sampling at the SDK layer); use a collector-side tail sampler if you need that. |
 | `EVEYS_OCPP_TRACING_SERVICE_NAME` | `eveys-ocpp` | string | structural | no | `service.name` resource attribute attached to every span. Identifies this service in the trace UI; default matches the python package name. Multiple replicas of the same service share this — `service.instance.id` (auto-set from `pod_id`) discriminates between replicas. | Changing this re-bins all spans under a new service in your trace backend; existing saved searches break. Treat as fixed once a deployment is live. |
 
+## Sentry error tracking (Phase 4 / E4-4)
+
+| Variable | Default | Range | Stability | Secret | What it does | Impact of changing |
+|---|---|---|---|---|---|---|
+| `EVEYS_OCPP_SENTRY_DSN` | (empty) | string | structural | **yes** | Sentry DSN for error tracking. Empty disables the SDK entirely (no init, no transport, no monkey-patches) so the gateway behaves identically to a Sentry-free build. Set in production to capture unhandled exceptions and structured `error`-level logs. | Empty → Sentry is a hard no-op. Non-empty → SDK boots at startup; any later DSN typo surfaces as a `Bad DSN` log line on stderr (the SDK refuses to init silently). |
+| `EVEYS_OCPP_SENTRY_ENVIRONMENT` | `development` | string | structural | no | `environment` tag attached to every Sentry event. Conventionally `production`, `staging`, `development`. Sentry alert rules and saved searches typically pivot on this — keep it stable per deployment. | Changing splits the Sentry issue stream — the same exception on the same release line appears as two issues if `environment` differs. |
+| `EVEYS_OCPP_SENTRY_RELEASE` | (empty) | string | tunable | no | `release` tag attached to every Sentry event. Empty lets the gateway default to the package `__version__` at boot. Override only when CI injects a richer label (commit SHA, deploy id). | Drives Sentry's regression detection — an issue marked resolved in release X reopens automatically when release Y emits the same fingerprint. |
+| `EVEYS_OCPP_SENTRY_TRACES_SAMPLE_RATE` | `0.0` | 0.0–1.0 | tunable | no | Sentry performance / tracing sample rate. Default 0.0 — OTel (E4-3) owns tracing; Sentry's job here is errors only. Setting > 0 doubles the tracing instrumentation cost and fragments traces across two backends; only flip if you specifically want Sentry's `Performance` view. | Above 0 → Sentry SDK monkey-patches httpx / fastapi / asyncio to record spans. May overlap with OTel's instrumentation depending on import order. |
+| `EVEYS_OCPP_SENTRY_PROFILES_SAMPLE_RATE` | `0.0` | 0.0–1.0 | tunable | no | Sentry profiling sample rate. Default 0.0 (off). Profiling samples Python frames at ~100 Hz per traced transaction; ignored unless `sentry_traces_sample_rate > 0` since profiling attaches to traces. | Above 0 → SIGPROF-driven sampler runs; ~3-5% steady-state CPU overhead on traced requests. Only useful when chasing per-frame latency. |
+
 ---
 
 ## Common operations
