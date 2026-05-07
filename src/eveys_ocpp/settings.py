@@ -693,6 +693,33 @@ class Settings(BaseSettings):
             "stability": "tunable",
         },
     )
+    outbound_tls_verify: bool = Field(
+        default=True,
+        description=(
+            "Whether to verify TLS certificates on every outbound "
+            "connection the gateway makes — both the backend HTTP "
+            "client (Authorize / sessions/open / sessions/close / "
+            "charge-points/register) and the webhook dispatcher. "
+            "Default True for production. Local dev with a self-signed "
+            "cert (e.g. https://toger.test) sets this to False so the "
+            "gateway doesn't slam the circuit breaker on every "
+            "Authorize and the webhook delivery doesn't fail every "
+            "attempt. Setting False in production silently disables a "
+            "real security control — boot logs a loud warning to make "
+            "that obvious in case it ever ships by accident."
+        ),
+        json_schema_extra={
+            "category": "backend_integration",
+            "impact": (
+                "False allows MITM against the backend AND webhook "
+                "legs. Acceptable for local dev; never in production. "
+                "Phase 5 vault work (E5-7) will swap this for proper "
+                "CA-bundle config per leg."
+            ),
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
     backend_timeout_authorize_seconds: float = Field(
         default=5.0,
         ge=0.1,

@@ -145,10 +145,27 @@ class BackendHTTPClient:
         Default per-call timeout is the largest endpoint timeout —
         each method overrides via `httpx.Timeout` per request.
         """
+        if not settings.outbound_tls_verify:
+            # Loud warning — a False verify in production silently
+            # disables a real security control. Logged once at boot so
+            # the value is grep-able in container logs and alertable
+            # via Prometheus log-counter rules. The webhook dispatcher
+            # logs the same warning when it starts; both legs together
+            # mean a misconfigured production never fails silent.
+            log.warning(
+                "backend.tls_verify_disabled",
+                detail=(
+                    "EVEYS_OCPP_OUTBOUND_TLS_VERIFY=False — accepting "
+                    "any TLS cert on the backend leg. Acceptable for "
+                    "local dev (self-signed toger.test); never in "
+                    "production."
+                ),
+            )
         http = httpx.AsyncClient(
             base_url=settings.backend_base_url.rstrip("/"),
             headers={"Authorization": f"Bearer {settings.backend_token}"},
             timeout=httpx.Timeout(settings.backend_timeout_default_seconds),
+            verify=settings.outbound_tls_verify,
         )
         breaker = CircuitBreaker(
             name="backend",

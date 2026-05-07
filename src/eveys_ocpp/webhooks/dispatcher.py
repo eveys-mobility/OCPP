@@ -77,8 +77,23 @@ class WebhookDispatcher:
         await consumer.start()
         self._consumer = consumer
 
+        if not self._settings.outbound_tls_verify:
+            # Symmetric warning to the one BackendHTTPClient emits.
+            # Both outbound legs honour the same flag; logging at each
+            # site means an operator scanning for "tls_verify_disabled"
+            # finds the webhook dispatcher's own line too instead of
+            # having to know it shares config with the backend client.
+            log.warning(
+                "webhook.tls_verify_disabled",
+                detail=(
+                    "EVEYS_OCPP_OUTBOUND_TLS_VERIFY=False — accepting "
+                    "any TLS cert on the webhook leg. Acceptable for "
+                    "local dev; never in production."
+                ),
+            )
         self._http = httpx.AsyncClient(
             timeout=httpx.Timeout(self._settings.webhook_request_timeout_seconds),
+            verify=self._settings.outbound_tls_verify,
         )
 
         log.info(

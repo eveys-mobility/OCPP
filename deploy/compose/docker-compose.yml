@@ -174,6 +174,13 @@ services:
       EVEYS_OCPP_BACKEND_BASE_URL: ${EVEYS_OCPP_BACKEND_BASE_URL:-}
       EVEYS_OCPP_BACKEND_TOKEN: ${EVEYS_OCPP_BACKEND_TOKEN:-}
       EVEYS_OCPP_BACKEND_AUTHORIZE_FALLBACK: ${EVEYS_OCPP_BACKEND_AUTHORIZE_FALLBACK:-reject}
+      # TLS verify defaults to True (production-safe). Local dev with
+      # a self-signed backend (e.g. https://toger.test) sets this to
+      # False in repo-root .env. Applies to BOTH the backend HTTP
+      # client and the webhook dispatcher; the gateway logs a loud
+      # warning at each site when the value is False so it can't ship
+      # to production by accident.
+      EVEYS_OCPP_OUTBOUND_TLS_VERIFY: ${EVEYS_OCPP_OUTBOUND_TLS_VERIFY:-true}
       EVEYS_OCPP_WEBHOOK_BASE_URL: ${EVEYS_OCPP_WEBHOOK_BASE_URL:-}
       EVEYS_OCPP_WEBHOOK_SECRET: ${EVEYS_OCPP_WEBHOOK_SECRET:-}
       EVEYS_OCPP_WEBHOOK_URL_CP_BOOT: ${EVEYS_OCPP_WEBHOOK_URL_CP_BOOT:-}

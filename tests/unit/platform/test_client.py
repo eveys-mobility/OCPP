@@ -376,6 +376,48 @@ async def test_request_includes_bearer_and_x_request_id() -> None:
         await client.aclose()
 
 
+def test_from_settings_propagates_tls_verify_flag() -> None:
+    """`outbound_tls_verify=False` (local-dev override for self-signed
+    backend certs) must reach the underlying httpx client. httpx stores
+    `verify` on its transport's SSL context — when verify=False, the
+    context's verify_mode is CERT_NONE."""
+    import asyncio
+    import ssl
+
+    settings = Settings(
+        backend_base_url="https://backend.test",
+        backend_token="t",
+        outbound_tls_verify=False,
+    )
+    client = BackendHTTPClient.from_settings(settings)
+    try:
+        transport = client._http._transport
+        ctx = transport._pool._ssl_context  # type: ignore[attr-defined]
+        assert ctx.verify_mode == ssl.CERT_NONE
+    finally:
+        asyncio.run(client.aclose())
+
+
+def test_from_settings_keeps_tls_verify_on_by_default() -> None:
+    """The default must be True — production must not regress to a
+    permissive setting because someone forgot to set the env var."""
+    import asyncio
+    import ssl
+
+    settings = Settings(
+        backend_base_url="https://backend.test",
+        backend_token="t",
+    )
+    client = BackendHTTPClient.from_settings(settings)
+    try:
+        transport = client._http._transport
+        ctx = transport._pool._ssl_context  # type: ignore[attr-defined]
+        # CERT_REQUIRED is httpx's production-safe mode for verify=True.
+        assert ctx.verify_mode == ssl.CERT_REQUIRED
+    finally:
+        asyncio.run(client.aclose())
+
+
 @pytest.mark.asyncio
 async def test_idempotency_key_passed_through() -> None:
     captured: dict[str, str] = {}
