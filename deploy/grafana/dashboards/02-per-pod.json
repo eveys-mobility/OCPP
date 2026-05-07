@@ -1,0 +1,248 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {"type": "grafana", "uid": "-- Grafana --"},
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "description": "One pod under the lens. Use the pod_id picker to drill into a specific gateway replica when fleet-overview shows it misbehaving — answers 'is this one pod sick or is the whole fleet?'",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "links": [
+    {"title": "Fleet overview", "type": "link", "url": "/d/eveys-ocpp-fleet", "targetBlank": false}
+  ],
+  "liveNow": false,
+  "panels": [
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {
+        "defaults": {"color": {"mode": "thresholds"}, "unit": "short",
+          "thresholds": {"mode": "absolute", "steps": [
+            {"color": "green", "value": null}
+          ]}}
+      },
+      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 0},
+      "id": 1,
+      "title": "Active WS connections",
+      "type": "stat",
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
+      "targets": [
+        {
+          "expr": "eveys_ocpp_ws_connections_active{pod_id=~\"$pod_id\"}",
+          "refId": "A",
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        }
+      ]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "unit": "short"}},
+      "gridPos": {"h": 4, "w": 6, "x": 6, "y": 0},
+      "id": 2,
+      "title": "Online chargers (this pod)",
+      "type": "stat",
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
+      "targets": [
+        {
+          "expr": "eveys_ocpp_registry_online_chargers{pod_id=~\"$pod_id\"}",
+          "refId": "A",
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        }
+      ]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "unit": "short",
+        "thresholds": {"mode": "absolute", "steps": [
+          {"color": "green", "value": null},
+          {"color": "yellow", "value": 5},
+          {"color": "red", "value": 20}
+        ]}}},
+      "gridPos": {"h": 4, "w": 6, "x": 12, "y": 0},
+      "id": 3,
+      "title": "Cross-pod bus inflight",
+      "type": "stat",
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
+      "targets": [
+        {
+          "expr": "eveys_ocpp_bus_inflight{pod_id=~\"$pod_id\"}",
+          "refId": "A",
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        }
+      ]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "unit": "short",
+        "thresholds": {"mode": "absolute", "steps": [
+          {"color": "green", "value": null},
+          {"color": "red", "value": 1}
+        ]}}},
+      "gridPos": {"h": 4, "w": 6, "x": 18, "y": 0},
+      "id": 4,
+      "title": "Backend circuit (open=2)",
+      "type": "stat",
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
+      "targets": [
+        {
+          "expr": "max(eveys_ocpp_backend_circuit_state{pod_id=~\"$pod_id\"})",
+          "refId": "A",
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        }
+      ]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "unit": "ops"}},
+      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 4},
+      "id": 5,
+      "title": "Inbound CALL rate (per action)",
+      "type": "timeseries",
+      "options": {"legend": {"displayMode": "table", "placement": "right"}},
+      "targets": [
+        {
+          "expr": "sum by (action) (rate(eveys_ocpp_ws_messages_in_total{pod_id=~\"$pod_id\"}[1m]))",
+          "legendFormat": "{{action}}",
+          "refId": "A",
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        }
+      ]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "unit": "s"}},
+      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 4},
+      "id": 6,
+      "title": "Handler P50 / P99 (per action)",
+      "type": "timeseries",
+      "options": {"legend": {"displayMode": "table", "placement": "right"}},
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (action, le) (rate(eveys_ocpp_handler_latency_seconds_bucket{pod_id=~\"$pod_id\"}[5m])))",
+          "legendFormat": "p50 {{action}}",
+          "refId": "A",
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (action, le) (rate(eveys_ocpp_handler_latency_seconds_bucket{pod_id=~\"$pod_id\"}[5m])))",
+          "legendFormat": "p99 {{action}}",
+          "refId": "B",
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        }
+      ]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "unit": "ops"}},
+      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 13},
+      "id": 7,
+      "title": "Backend HTTP rate (per endpoint, by outcome)",
+      "type": "timeseries",
+      "options": {"legend": {"displayMode": "table", "placement": "right"}},
+      "targets": [
+        {
+          "expr": "sum by (endpoint, outcome) (rate(eveys_ocpp_backend_requests_total{pod_id=~\"$pod_id\"}[1m]))",
+          "legendFormat": "{{endpoint}} {{outcome}}",
+          "refId": "A",
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        }
+      ]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "unit": "s"}},
+      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 13},
+      "id": 8,
+      "title": "DB query latency P50/P99 (per op)",
+      "type": "timeseries",
+      "options": {"legend": {"displayMode": "table", "placement": "right"}},
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (op, le) (rate(eveys_ocpp_db_query_latency_seconds_bucket{pod_id=~\"$pod_id\"}[5m])))",
+          "legendFormat": "p50 {{op}}",
+          "refId": "A",
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (op, le) (rate(eveys_ocpp_db_query_latency_seconds_bucket{pod_id=~\"$pod_id\"}[5m])))",
+          "legendFormat": "p99 {{op}}",
+          "refId": "B",
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        }
+      ]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "unit": "short"}},
+      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 22},
+      "id": 9,
+      "title": "DB pool — in use & overflow",
+      "type": "timeseries",
+      "options": {"legend": {"displayMode": "table", "placement": "right"}},
+      "targets": [
+        {
+          "expr": "eveys_ocpp_db_pool_in_use{pod_id=~\"$pod_id\"}",
+          "legendFormat": "in_use",
+          "refId": "A",
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        },
+        {
+          "expr": "eveys_ocpp_db_pool_overflow{pod_id=~\"$pod_id\"}",
+          "legendFormat": "overflow",
+          "refId": "B",
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        }
+      ]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "unit": "s"}},
+      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 22},
+      "id": 10,
+      "title": "Redis command latency P99 (per op)",
+      "type": "timeseries",
+      "options": {"legend": {"displayMode": "table", "placement": "right"}},
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.99, sum by (op, le) (rate(eveys_ocpp_redis_command_latency_seconds_bucket{pod_id=~\"$pod_id\"}[5m])))",
+          "legendFormat": "p99 {{op}}",
+          "refId": "A",
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        }
+      ]
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 38,
+  "tags": ["eveys", "ocpp", "pod"],
+  "templating": {
+    "list": [
+      {
+        "name": "pod_id",
+        "type": "query",
+        "datasource": {"type": "prometheus", "uid": "prometheus"},
+        "query": {"query": "label_values(eveys_ocpp_build_info, pod_id)", "refId": "PrometheusVariableQueryEditor-VariableQuery"},
+        "refresh": 1,
+        "includeAll": false,
+        "multi": false,
+        "current": {"text": "", "value": ""},
+        "label": "pod"
+      }
+    ]
+  },
+  "time": {"from": "now-1h", "to": "now"},
+  "timepicker": {},
+  "timezone": "",
+  "title": "eveys/ocpp — Per-pod",
+  "uid": "eveys-ocpp-pod",
+  "version": 1,
+  "weekStart": ""
+}

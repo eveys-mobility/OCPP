@@ -1,0 +1,248 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {"type": "grafana", "uid": "-- Grafana --"},
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "description": "Fleet-wide rollup across all gateway pods. The first stop when triaging — answers 'how many chargers are online, how busy are they, are we delivering events to the backend'.",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "red", "value": null},
+              {"color": "green", "value": 1}
+            ]
+          },
+          "unit": "short"
+        }
+      },
+      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 0},
+      "id": 1,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "textMode": "auto"
+      },
+      "title": "Online chargers (fleet)",
+      "type": "stat",
+      "targets": [
+        {
+          "expr": "sum(eveys_ocpp_registry_online_chargers)",
+          "refId": "A",
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        }
+      ]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {
+        "defaults": {"color": {"mode": "palette-classic"}, "unit": "ops"}
+      },
+      "gridPos": {"h": 4, "w": 6, "x": 6, "y": 0},
+      "id": 2,
+      "title": "Inbound OCPP CALL rate (per action)",
+      "type": "stat",
+      "options": {
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "textMode": "value_and_name"
+      },
+      "targets": [
+        {
+          "expr": "sum by (action) (rate(eveys_ocpp_ws_messages_in_total[5m]))",
+          "legendFormat": "{{action}}",
+          "refId": "A",
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        }
+      ]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {
+        "defaults": {"color": {"mode": "thresholds"}, "unit": "percent",
+          "thresholds": {"mode": "absolute", "steps": [
+            {"color": "green", "value": null},
+            {"color": "yellow", "value": 1},
+            {"color": "red", "value": 5}
+          ]}}
+      },
+      "gridPos": {"h": 4, "w": 6, "x": 12, "y": 0},
+      "id": 3,
+      "title": "Authorize backend-error rate",
+      "type": "stat",
+      "options": {
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "expr": "100 * sum(rate(eveys_ocpp_backend_requests_total{endpoint=\"authorize\",outcome!=\"ok\"}[5m])) / clamp_min(sum(rate(eveys_ocpp_backend_requests_total{endpoint=\"authorize\"}[5m])), 1)",
+          "refId": "A",
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        }
+      ]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {
+        "defaults": {"color": {"mode": "thresholds"}, "unit": "short",
+          "thresholds": {"mode": "absolute", "steps": [
+            {"color": "green", "value": null},
+            {"color": "yellow", "value": 1}
+          ]}}
+      },
+      "gridPos": {"h": 4, "w": 6, "x": 18, "y": 0},
+      "id": 4,
+      "title": "Backend circuits open",
+      "type": "stat",
+      "options": {
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "expr": "sum(eveys_ocpp_backend_circuit_state == 2)",
+          "refId": "A",
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        }
+      ]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {
+        "defaults": {"color": {"mode": "palette-classic"}, "unit": "short"}
+      },
+      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 4},
+      "id": 5,
+      "title": "Active WS connections (per pod)",
+      "type": "timeseries",
+      "options": {"legend": {"displayMode": "table", "placement": "right", "calcs": ["mean", "max"]}},
+      "targets": [
+        {
+          "expr": "eveys_ocpp_ws_connections_active",
+          "legendFormat": "{{pod_id}}",
+          "refId": "A",
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        }
+      ]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {
+        "defaults": {"color": {"mode": "palette-classic"}, "unit": "ops"}
+      },
+      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 4},
+      "id": 6,
+      "title": "WS connect / disconnect rate",
+      "type": "timeseries",
+      "options": {"legend": {"displayMode": "table", "placement": "right"}},
+      "targets": [
+        {
+          "expr": "sum(rate(eveys_ocpp_ws_connects_total[1m]))",
+          "legendFormat": "connects",
+          "refId": "A",
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        },
+        {
+          "expr": "sum by (reason) (rate(eveys_ocpp_ws_disconnects_total[1m]))",
+          "legendFormat": "disconnects ({{reason}})",
+          "refId": "B",
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        }
+      ]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {
+        "defaults": {"color": {"mode": "palette-classic"}, "unit": "s"}
+      },
+      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 13},
+      "id": 7,
+      "title": "OCPP handler P50 / P99 latency (per action)",
+      "type": "timeseries",
+      "options": {"legend": {"displayMode": "table", "placement": "right"}},
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (action, le) (rate(eveys_ocpp_handler_latency_seconds_bucket[5m])))",
+          "legendFormat": "p50 {{action}}",
+          "refId": "A",
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (action, le) (rate(eveys_ocpp_handler_latency_seconds_bucket[5m])))",
+          "legendFormat": "p99 {{action}}",
+          "refId": "B",
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        }
+      ]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {
+        "defaults": {"color": {"mode": "palette-classic"}, "unit": "ops"}
+      },
+      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 13},
+      "id": 8,
+      "title": "Webhook deliveries (per outcome)",
+      "type": "timeseries",
+      "options": {"legend": {"displayMode": "table", "placement": "right"}},
+      "targets": [
+        {
+          "expr": "sum by (outcome) (rate(eveys_ocpp_webhook_deliveries_total[5m]))",
+          "legendFormat": "{{outcome}}",
+          "refId": "A",
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        }
+      ]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {
+        "defaults": {"color": {"mode": "palette-classic"}, "unit": "ops"}
+      },
+      "gridPos": {"h": 9, "w": 24, "x": 0, "y": 22},
+      "id": 9,
+      "title": "Kafka publish rate by topic",
+      "type": "timeseries",
+      "options": {"legend": {"displayMode": "table", "placement": "right"}},
+      "targets": [
+        {
+          "expr": "sum by (topic, outcome) (rate(eveys_ocpp_kafka_publish_total[5m]))",
+          "legendFormat": "{{topic}} {{outcome}}",
+          "refId": "A",
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        }
+      ]
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 38,
+  "tags": ["eveys", "ocpp", "fleet"],
+  "templating": {"list": []},
+  "time": {"from": "now-1h", "to": "now"},
+  "timepicker": {},
+  "timezone": "",
+  "title": "eveys/ocpp — Fleet overview",
+  "uid": "eveys-ocpp-fleet",
+  "version": 1,
+  "weekStart": ""
+}

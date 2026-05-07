@@ -1,0 +1,218 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {"type": "grafana", "uid": "-- Grafana --"},
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "description": "Charging-session lifecycle. Answers 'are sessions starting, are MeterValues flowing, are sessions ending cleanly, and is downstream (Kafka, webhooks, ClickHouse) keeping up?'",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "links": [
+    {"title": "Fleet overview", "type": "link", "url": "/d/eveys-ocpp-fleet", "targetBlank": false}
+  ],
+  "liveNow": false,
+  "panels": [
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "unit": "ops"}},
+      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 0},
+      "id": 1,
+      "title": "Starts /min",
+      "type": "stat",
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
+      "targets": [
+        {
+          "expr": "60 * sum(rate(eveys_ocpp_start_transactions_total[5m]))",
+          "refId": "A",
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        }
+      ]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "unit": "ops"}},
+      "gridPos": {"h": 4, "w": 6, "x": 6, "y": 0},
+      "id": 2,
+      "title": "Stops /min",
+      "type": "stat",
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
+      "targets": [
+        {
+          "expr": "60 * sum(rate(eveys_ocpp_stop_transactions_total[5m]))",
+          "refId": "A",
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        }
+      ]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "unit": "ops",
+        "thresholds": {"mode": "absolute", "steps": [
+          {"color": "green", "value": null},
+          {"color": "yellow", "value": 0.1}
+        ]}}},
+      "gridPos": {"h": 4, "w": 6, "x": 12, "y": 0},
+      "id": 3,
+      "title": "Stop replays /min (idempotency hits)",
+      "type": "stat",
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
+      "targets": [
+        {
+          "expr": "60 * sum(rate(eveys_ocpp_stop_transaction_replays_total[5m]))",
+          "refId": "A",
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        }
+      ]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "unit": "short"}},
+      "gridPos": {"h": 4, "w": 6, "x": 18, "y": 0},
+      "id": 4,
+      "title": "Webhook consumer lag (max across partitions)",
+      "type": "stat",
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
+      "targets": [
+        {
+          "expr": "max(eveys_ocpp_webhook_consumer_lag_messages)",
+          "refId": "A",
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        }
+      ]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "unit": "ops"}},
+      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 4},
+      "id": 5,
+      "title": "Start vs stop rate (open-session indicator)",
+      "type": "timeseries",
+      "options": {"legend": {"displayMode": "table", "placement": "right"}},
+      "targets": [
+        {
+          "expr": "sum(rate(eveys_ocpp_start_transactions_total[5m]))",
+          "legendFormat": "starts",
+          "refId": "A",
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        },
+        {
+          "expr": "sum(rate(eveys_ocpp_stop_transactions_total[5m]))",
+          "legendFormat": "stops",
+          "refId": "B",
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        }
+      ]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "unit": "ops"}},
+      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 4},
+      "id": 6,
+      "title": "Stop reasons",
+      "type": "timeseries",
+      "options": {"legend": {"displayMode": "table", "placement": "right"}},
+      "targets": [
+        {
+          "expr": "sum by (reason) (rate(eveys_ocpp_stop_transactions_total[5m]))",
+          "legendFormat": "{{reason}}",
+          "refId": "A",
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        }
+      ]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "unit": "ops"}},
+      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 13},
+      "id": 7,
+      "title": "Kafka publish — by topic & outcome",
+      "type": "timeseries",
+      "options": {"legend": {"displayMode": "table", "placement": "right"}},
+      "targets": [
+        {
+          "expr": "sum by (topic, outcome) (rate(eveys_ocpp_kafka_publish_total[1m]))",
+          "legendFormat": "{{topic}} {{outcome}}",
+          "refId": "A",
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        }
+      ]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "unit": "s"}},
+      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 13},
+      "id": 8,
+      "title": "Kafka publish latency P50/P99",
+      "type": "timeseries",
+      "options": {"legend": {"displayMode": "table", "placement": "right"}},
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (topic, le) (rate(eveys_ocpp_kafka_publish_latency_seconds_bucket[5m])))",
+          "legendFormat": "p50 {{topic}}",
+          "refId": "A",
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (topic, le) (rate(eveys_ocpp_kafka_publish_latency_seconds_bucket[5m])))",
+          "legendFormat": "p99 {{topic}}",
+          "refId": "B",
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        }
+      ]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "unit": "ops"}},
+      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 22},
+      "id": 9,
+      "title": "Webhook deliveries by outcome",
+      "type": "timeseries",
+      "options": {"legend": {"displayMode": "table", "placement": "right"}},
+      "targets": [
+        {
+          "expr": "sum by (outcome) (rate(eveys_ocpp_webhook_deliveries_total[5m]))",
+          "legendFormat": "{{outcome}}",
+          "refId": "A",
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        }
+      ]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "unit": "short"}},
+      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 22},
+      "id": 10,
+      "title": "Webhook attempts (retry pressure)",
+      "type": "timeseries",
+      "options": {"legend": {"displayMode": "table", "placement": "right"}},
+      "targets": [
+        {
+          "expr": "sum by (attempt) (rate(eveys_ocpp_webhook_attempts_total[5m]))",
+          "legendFormat": "attempt {{attempt}}",
+          "refId": "A",
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        }
+      ]
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 38,
+  "tags": ["eveys", "ocpp", "transactions"],
+  "templating": {"list": []},
+  "time": {"from": "now-1h", "to": "now"},
+  "timepicker": {},
+  "timezone": "",
+  "title": "eveys/ocpp — Transactions & downstream",
+  "uid": "eveys-ocpp-tx",
+  "version": 1,
+  "weekStart": ""
+}
