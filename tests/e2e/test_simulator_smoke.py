@@ -68,14 +68,19 @@ async def test_simulator_drives_transactions_through_real_gateway(
     )
 
     # Verify a transaction landed in Postgres for one of our cp_ids.
-    # Filter by the cp_id prefix so the test stays isolated from other
-    # transactions in the same DB.
+    # Join through `charge_points` because `transactions.charge_point_id`
+    # is the FK to `charge_points.id` (bigint), not the cp_id string —
+    # that one lives on `charge_points.cp_id`.
     engine = create_async_engine(_TEST_DB_URL)
     try:
         async with engine.connect() as conn:
             row = (
                 await conn.execute(
-                    sa.text("SELECT COUNT(*) FROM transactions WHERE charge_point_id LIKE :prefix"),
+                    sa.text(
+                        "SELECT COUNT(*) FROM transactions t "
+                        "JOIN charge_points cp ON cp.id = t.charge_point_id "
+                        "WHERE cp.cp_id LIKE :prefix"
+                    ),
                     {"prefix": f"{config.cp_id_prefix}%"},
                 )
             ).scalar()

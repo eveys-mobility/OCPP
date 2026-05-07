@@ -47,9 +47,15 @@ class Counters:
     errors: int = 0
 
 
-@dataclass(slots=True)
 class _SimChargePoint(Cp):
-    """python-ocpp client. The library handles framing + correlation."""
+    """python-ocpp client. The library handles framing + correlation.
+
+    Plain subclass — no `@dataclass` here. python-ocpp's `ChargePoint`
+    has its own `__init__(id, connection)`; a `@dataclass` decorator
+    would shadow it with a zero-arg `__init__` and the constructor
+    `_SimChargePoint(cp_id, ws)` would TypeError at runtime. This
+    bug ate one CI run before the fix landed.
+    """
 
 
 @dataclass(slots=True)
