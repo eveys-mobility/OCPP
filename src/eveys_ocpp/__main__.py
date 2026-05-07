@@ -18,6 +18,8 @@ from eveys_ocpp.clickhouse.read_client import ClickHouseReadClient
 from eveys_ocpp.connections import ConnectionMap
 from eveys_ocpp.events import KafkaEventProducer
 from eveys_ocpp.idempotency import IdempotencyCache
+from eveys_ocpp.metrics import MetricsServer
+from eveys_ocpp.metrics import registry as metrics_registry
 from eveys_ocpp.observability import configure_logging, get_logger
 from eveys_ocpp.persistence.db import make_engine, make_session_factory
 from eveys_ocpp.platform import AuthorizeCache, BackendHTTPClient
@@ -99,6 +101,29 @@ async def _serve_all(
 
     await event_producer.start()
     await bus.start()
+
+    # Phase 4 / E4-1: Prometheus scrape endpoint.
+    #
+    # MetricsServer runs the HTTP server on its own daemon thread, so
+    # nothing is added to the TaskGroup; we just start it before and
+    # stop it after. metrics_enabled=False (set by an autouse fixture
+    # in tests) skips the bind so a pytest run never reserves 9100.
+    metrics_server: MetricsServer | None = None
+    if settings.metrics_enabled:
+        metrics_server = MetricsServer(
+            host=settings.metrics_host,
+            port=settings.metrics_port,
+            include_python_collectors=settings.metrics_include_python_collectors,
+        )
+        await metrics_server.start()
+        # Set the build_info gauge once. Static labels carry the
+        # version + pod id so a Grafana table panel can render the
+        # running fleet without needing a separate info-counter.
+        metrics_registry.BUILD_INFO.labels(
+            version=__version__,
+            pod_id=settings.pod_id,
+        ).set(1)
+
     try:
         async with asyncio.TaskGroup() as tg:
             tg.create_task(
@@ -153,6 +178,8 @@ async def _serve_all(
         # Single close on the shared client; `registry.close()` would
         # close the same connection twice.
         await redis.aclose()
+        if metrics_server is not None:
+            await metrics_server.stop()
 
 
 def main() -> None:

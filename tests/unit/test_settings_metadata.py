@@ -29,6 +29,7 @@ ALLOWED_CATEGORIES = {
     "backend_integration",
     "authorize_cache",
     "webhooks",
+    "metrics",
 }
 
 ALLOWED_STABILITY = {"tunable", "structural", "dev-only"}
