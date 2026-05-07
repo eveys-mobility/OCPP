@@ -183,14 +183,52 @@ monolithic per-transport but commands are domain-named within.
   and forks the structured-logging context.
 - **Offset pagination.** Simpler cursors but unstable on large
   growing tables. Keyset costs one tiny helper.
-- **Public OpenAPI / docs UI.** Disabled (`docs_url=None,
-  redoc_url=None`) — the contract is in `docs/integration/`, not at
-  a discoverable URL on the gateway. We don't want the gateway to
-  publish a self-describing schema to anyone who can curl it.
+- **Public OpenAPI / docs UI.** Disabled by default — the contract
+  is in `docs/integration/`, not at a discoverable URL on the
+  gateway. We don't want the gateway to publish a self-describing
+  schema to anyone who can curl it. **Amended 2026-05-07** (see below).
+
+## Amendment 2026-05-07 — opt-in OpenAPI / Swagger UI
+
+The blanket "OpenAPI is disabled" decision above turned out to be
+slightly too strict in practice. Operators wanted a clickable Swagger
+UI for dev / staging without rebuilding the binary, and the backend
+team wanted a Postman-importable spec. The spirit of the original
+decision (the gateway must not self-publish to anonymous callers)
+is preserved with a narrower constraint:
+
+- New setting `rest_openapi_enabled: bool = False` (per ADR-0025
+  metadata). When **False** (default), the original behaviour stands:
+  `docs_url=None`, `redoc_url=None`, `openapi_url=None`. Production
+  deploys keep the toggle off.
+- When **True**, FastAPI mounts `/api/v1/openapi.json` (the spec),
+  `/api/v1/docs` (Swagger UI), and `/api/v1/redoc` (ReDoc). All three
+  are subject to the same bearer-token auth as the rest of
+  `/api/v1/*`; only token-bearers can read the spec. A boot-time
+  WARNING log (`rest_openapi.enabled`) makes a forgotten flip
+  greppable.
+- The canonical spec for sharing lives at `docs/api/openapi.{json,yaml}`,
+  regenerated via `make openapi-export`. Its drift is gated in CI by
+  `make openapi-export-check`. The committed file is the artifact for
+  Postman, external Swagger UIs, contract reviews, etc.; the runtime
+  toggle is the dev-time clickable equivalent.
+- Routes opt into rich OpenAPI schemas via `responses=` (and
+  `openapi_extra={"requestBody": ...}` for POST bodies) rather than
+  `response_model=`, because most routes return plain dicts and we
+  don't want to risk runtime validation drift on a production surface.
+  The trade-off (schemas can drift from real responses if not
+  maintained) is mitigated by the snapshot test
+  `tests/unit/api/test_openapi.py`.
+
+This amendment doesn't widen what the gateway exposes by default; it
+only adds an opt-in. The threat model is unchanged for production:
+operators must explicitly turn the toggle on, and even then auth
+gates the schema.
 
 ## References
 
 - [`docs/integration/02-gateway-rest-api.md`](../integration/02-gateway-rest-api.md) — frozen contract.
+- [`docs/15-openapi.md`](../15-openapi.md) — operator-facing how-to (E3-7 OpenAPI add-on).
 - [ADR-0023](./0023-backend-rest-integration.md) — chose the asymmetric envelope.
 - [ADR-0025](./0025-generated-config-reference.md) — every new Settings field needs full metadata.
 - E3-7 (this MR), E3-8 (commands), E3-9 (webhooks) in `docs/02-tasks.md`.

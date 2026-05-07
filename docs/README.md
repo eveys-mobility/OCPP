@@ -23,6 +23,7 @@ Documentation for **eveys/ocpp**, the OCPP gateway service of the Eveys EV-charg
 | 12 | [Connecting a real charger](./12-connecting-real-charger.md) | Operator/integrator guide: install, connect a real OCPP 1.6 device, watch activity in logs/Postgres/ClickHouse/Kafka, use the REST API from `curl` or Postman | Operators, integrators, anyone connecting a charger for the first time |
 | 13 | [Load testing](./13-load-testing.md) | The `tools/load` rig — how to drive the gateway at scale and capture pass/fail evidence per the Phase 4 exit criteria (E4-6) | SREs, anyone planning a staging load run |
 | 14 | [SLOs](./14-slos.md) | The five service-level objectives the gateway commits to — SLI math, targets, windows, error budgets, breach consequences (E4-8) | SREs, on-call, leadership |
+| 15 | [OpenAPI / Swagger](./15-openapi.md) | Static spec + opt-in runtime Swagger UI — how to use both, plus the security caveat amendment to ADR-0026 | Backend team, integrators, operators |
 
 ## ADRs
 
@@ -154,6 +155,7 @@ The two hidden `{toctree}` directives below this section define the navigation. 
 12-connecting-real-charger
 13-load-testing
 14-slos
+15-openapi
 ```
 
 ```{toctree}

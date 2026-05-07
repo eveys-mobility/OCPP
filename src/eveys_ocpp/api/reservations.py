@@ -25,6 +25,7 @@ from eveys_ocpp.api._errors import (
     ApiError,
 )
 from eveys_ocpp.api._pagination import clamp_limit, decode_cursor, encode_cursor
+from eveys_ocpp.api._schemas import ReservationListResponse
 from eveys_ocpp.persistence.db import session_scope
 from eveys_ocpp.persistence.repositories import list_reservations_by_cp
 
@@ -49,7 +50,11 @@ def _to_response(r: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-@router.get("/charge-points/{cp_id}/reservations")
+@router.get(
+    "/charge-points/{cp_id}/reservations",
+    summary="List reservations for a charge point (cursor-paginated)",
+    responses={200: {"model": ReservationListResponse}},
+)
 async def list_reservations_route(
     request: Request,
     cp_id: str,

@@ -18,7 +18,8 @@ COMPOSE    := docker compose -f deploy/compose/docker-compose.yml $(COMPOSE_ENV)
 
 .PHONY: help doctor install format lint types tests e2e smoke compose-smoke precommit clean distclean \
         compose-up compose-down compose-status compose-down-volumes compose-wait \
-        build-image protoc ch-migrate docs docs-clean config-export config-export-check config-schema
+        build-image protoc ch-migrate docs docs-clean config-export config-export-check config-schema \
+        openapi-export openapi-export-check
 
 # ---- meta -------------------------------------------------------------------
 
@@ -52,6 +53,8 @@ help:
 	@echo "Config reference (ADR-0025):"
 	@echo "  make config-export       regenerate docs/11-configuration-reference.md + .env.example"
 	@echo "  make config-export-check fail if either file is out of date with src/eveys_ocpp/settings.py"
+	@echo "  make openapi-export      regenerate docs/api/openapi.{json,yaml} from the FastAPI app"
+	@echo "  make openapi-export-check fail if the committed OpenAPI files drift from the FastAPI app"
 	@echo "  make config-schema       print Settings as JSON Schema (for Helm validators, operator UIs)"
 	@echo ""
 	@echo "Cleanup:"
@@ -256,6 +259,19 @@ config-export-check: install
 # (`make config-schema > settings.schema.json`). Per ADR-0025.
 config-schema: install
 	@$(VENV)/bin/python -c "import json; from eveys_ocpp.settings import Settings; print(json.dumps(Settings.model_json_schema(), indent=2))"
+
+# ---- OpenAPI spec ----------------------------------------------------------
+#
+# Regenerate `docs/api/openapi.{json,yaml}` from the FastAPI app. This
+# is the canonical artifact for sharing with backend teams / Postman /
+# external Swagger UIs. The runtime-mounted UI at `/api/v1/docs` (gated
+# by `EVEYS_OCPP_REST_OPENAPI_ENABLED=true`) is the dev-time clickable
+# equivalent. CI runs `--check` to refuse drift.
+openapi-export: install
+	$(VENV)/bin/python scripts/export_openapi.py
+
+openapi-export-check: install
+	$(VENV)/bin/python scripts/export_openapi.py --check
 
 # ---- cleanup ----------------------------------------------------------------
 

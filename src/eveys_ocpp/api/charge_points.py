@@ -31,6 +31,11 @@ from fastapi import APIRouter, Query, Request
 
 from eveys_ocpp.api._errors import ERR_UNKNOWN_CP_ID, ApiError
 from eveys_ocpp.api._pagination import clamp_limit, decode_cursor, encode_cursor
+from eveys_ocpp.api._schemas import (
+    ChargePointDetail,
+    ChargePointListResponse,
+    ErrorEnvelope,
+)
 from eveys_ocpp.persistence.db import session_scope
 from eveys_ocpp.persistence.repositories import (
     get_charge_point_detail,
@@ -122,7 +127,11 @@ async def _enrich_with_connectors(
     return cp_dicts
 
 
-@router.get("/charge-points")
+@router.get(
+    "/charge-points",
+    summary="List charge points (cursor-paginated)",
+    responses={200: {"model": ChargePointListResponse}},
+)
 async def list_charge_points_route(
     request: Request,
     cursor: str | None = Query(default=None),
@@ -183,7 +192,17 @@ async def list_charge_points_route(
     }
 
 
-@router.get("/charge-points/{cp_id}")
+@router.get(
+    "/charge-points/{cp_id}",
+    summary="Charge-point detail with active reservations + charging profiles",
+    responses={
+        200: {"model": ChargePointDetail},
+        404: {
+            "model": ErrorEnvelope,
+            "description": "Unknown cp_id (never sent BootNotification).",
+        },
+    },
+)
 async def get_charge_point_route(request: Request, cp_id: str) -> dict[str, Any]:
     async with session_scope(request.app.state.session_factory) as session:
         detail = await get_charge_point_detail(session, cp_id=cp_id)

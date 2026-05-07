@@ -24,6 +24,7 @@ from eveys_ocpp.api._errors import (
     ApiError,
 )
 from eveys_ocpp.api._pagination import clamp_limit, decode_cursor, encode_cursor
+from eveys_ocpp.api._schemas import ChargingProfileListResponse
 from eveys_ocpp.persistence.db import session_scope
 from eveys_ocpp.persistence.repositories import list_charging_profiles_by_cp
 
@@ -57,7 +58,11 @@ def _to_response(p: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-@router.get("/charge-points/{cp_id}/charging-profiles")
+@router.get(
+    "/charge-points/{cp_id}/charging-profiles",
+    summary="List active charging profiles for a charge point (cursor-paginated)",
+    responses={200: {"model": ChargingProfileListResponse}},
+)
 async def list_charging_profiles_route(
     request: Request,
     cp_id: str,
