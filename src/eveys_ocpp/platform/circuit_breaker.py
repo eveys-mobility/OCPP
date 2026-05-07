@@ -31,6 +31,7 @@ import time
 from dataclasses import dataclass
 from enum import Enum
 
+from eveys_ocpp.metrics import registry as metrics_registry
 from eveys_ocpp.observability import get_logger
 from eveys_ocpp.platform.errors import BackendCircuitOpenError
 
@@ -71,6 +72,10 @@ class CircuitBreaker:
                 if time.monotonic() - self._opened_at >= self.cooldown_seconds:
                     log.info("circuit_breaker.half_open", name=self.name)
                     self._state = _State.HALF_OPEN
+                    self._record_state_metric()
+                    metrics_registry.BACKEND_CIRCUIT_TRANSITIONS_TOTAL.labels(
+                        name=self.name, to_state="half_open"
+                    ).inc()
                 else:
                     raise BackendCircuitOpenError(f"circuit breaker open for {self.name}")
 
@@ -78,8 +83,12 @@ class CircuitBreaker:
         async with self._lock:
             if self._state is not _State.CLOSED:
                 log.info("circuit_breaker.closed", name=self.name)
+                metrics_registry.BACKEND_CIRCUIT_TRANSITIONS_TOTAL.labels(
+                    name=self.name, to_state="closed"
+                ).inc()
             self._state = _State.CLOSED
             self._consecutive_failures = 0
+            self._record_state_metric()
 
     async def record_failure(self) -> None:
         async with self._lock:
@@ -99,6 +108,15 @@ class CircuitBreaker:
                 )
                 self._state = _State.OPEN
                 self._opened_at = time.monotonic()
+                self._record_state_metric()
+                metrics_registry.BACKEND_CIRCUIT_TRANSITIONS_TOTAL.labels(
+                    name=self.name, to_state="open"
+                ).inc()
+
+    def _record_state_metric(self) -> None:
+        """Reflect the live state into the gauge. closed=0, half_open=1, open=2."""
+        value = {_State.CLOSED: 0.0, _State.HALF_OPEN: 1.0, _State.OPEN: 2.0}[self._state]
+        metrics_registry.BACKEND_CIRCUIT_STATE.labels(name=self.name).set(value)
 
     @property
     def state(self) -> str:

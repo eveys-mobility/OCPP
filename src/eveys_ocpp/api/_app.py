@@ -20,6 +20,7 @@ the time-series endpoints.
 
 from __future__ import annotations
 
+import time
 import uuid
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
@@ -46,6 +47,7 @@ from eveys_ocpp.api._errors import (
     internal_error_handler,
     validation_exception_handler,
 )
+from eveys_ocpp.metrics import registry as metrics_registry
 from eveys_ocpp.observability import bind_contextvars
 
 if TYPE_CHECKING:
@@ -99,8 +101,11 @@ def make_app(
     # Order matters: request-id MUST run before auth so the auth-reject
     # response carries the correlation id. Middlewares run in reverse
     # registration order (FastAPI/Starlette quirk), so register auth
-    # first, then request-id last → request-id wraps everything.
+    # first, then metrics, then request-id last → request-id wraps
+    # everything; metrics wraps the auth + handlers so a 401 still
+    # observes latency.
     app.middleware("http")(make_bearer_auth_middleware(settings))
+    app.middleware("http")(_metrics_middleware)
     app.middleware("http")(_request_id_middleware)
 
     # Exception handlers. ApiError is the typed shape routes raise;
@@ -138,4 +143,31 @@ async def _request_id_middleware(
     bind_contextvars(request_id=rid, http_path=request.url.path, http_method=request.method)
     response = await call_next(request)
     response.headers["X-Request-ID"] = rid
+    return response
+
+
+async def _metrics_middleware(
+    request: Request,
+    call_next: Callable[[Request], Awaitable[JSONResponse]],
+) -> JSONResponse:
+    """Increment `REST_REQUESTS_TOTAL{method,route,code}` and observe
+    `REST_REQUEST_LATENCY_SECONDS{method,route}` on every request.
+
+    `route` uses the FastAPI **route template** (e.g.
+    `/api/v1/charge-points/{cp_id}`) — never the literal path — so a
+    cp_id-keyed traffic pattern doesn't blow up label cardinality.
+    Requests that don't match a route (404s, OPTIONS preflights) get
+    `route="_unmatched"`.
+    """
+    started = time.perf_counter()
+    response = await call_next(request)
+    route_obj = request.scope.get("route")
+    route_label = getattr(route_obj, "path", None) or "_unmatched"
+    method = request.method
+    metrics_registry.REST_REQUESTS_TOTAL.labels(
+        method=method, route=route_label, code=str(response.status_code)
+    ).inc()
+    metrics_registry.REST_REQUEST_LATENCY_SECONDS.labels(method=method, route=route_label).observe(
+        time.perf_counter() - started
+    )
     return response
