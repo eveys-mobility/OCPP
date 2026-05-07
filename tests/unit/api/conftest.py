@@ -85,14 +85,16 @@ def fake_command_service() -> MagicMock:
 
 @pytest.fixture
 def fake_ch_client() -> MagicMock:
-    """Stub ClickHouse read client — only `fetch_meter_values` and
-    `fetch_status_history` are called by the timeseries routes (E3-7d).
+    """Stub ClickHouse read client — used by both the timeseries routes
+    (`fetch_meter_values`, `fetch_status_history`) and the charge-points
+    routes (`fetch_latest_connector_statuses`).
 
-    Default: both return empty lists so a route that didn't get a
-    per-test override still answers cleanly."""
+    Default: every method returns an empty result so a route that didn't
+    get a per-test override still answers cleanly."""
     client = MagicMock()
     client.fetch_meter_values = AsyncMock(return_value=[])
     client.fetch_status_history = AsyncMock(return_value=[])
+    client.fetch_latest_connector_statuses = AsyncMock(return_value={})
     return client
 
 

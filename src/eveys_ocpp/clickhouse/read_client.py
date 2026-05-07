@@ -119,6 +119,59 @@ class ClickHouseReadClient:
             rows = await cursor.fetchall()
         return [dict(zip(cols, row, strict=True)) for row in rows]
 
+    async def fetch_latest_connector_statuses(
+        self,
+        *,
+        cp_ids: list[str],
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Return the most recent StatusNotification per (cp_id, connector_id).
+
+        Used to enrich the `/charge-points` and `/charge-points/{cp_id}`
+        responses with a per-connector breakdown, so a multi-connector
+        charger no longer collapses to a single `last_status` slot. The
+        scalar `last_status` is kept on the response as a "most recent
+        across all connectors" convenience for single-connector callers
+        and consumers who don't need the breakdown.
+
+        Returns a mapping keyed by cp_id; chargers with no recorded
+        StatusNotifications are simply absent from the map. Callers
+        treat that as "no per-connector data, fall back to []".
+
+        Implementation note: ClickHouse's `argMax` makes "latest row per
+        group" cheap — one scan, no subqueries — and the cp_status
+        partition key starts with cp_id so the IN-list prunes well.
+        """
+        assert self._conn is not None  # narrowed by start()
+
+        if not cp_ids:
+            return {}
+
+        sql = """
+            SELECT
+                cp_id,
+                connector_id,
+                argMax(status, occurred_at) AS status,
+                argMax(error_code, occurred_at) AS error_code,
+                max(occurred_at) AS last_changed_at
+            FROM cp_status
+            WHERE cp_id IN %(cp_ids)s
+            GROUP BY cp_id, connector_id
+            ORDER BY cp_id, connector_id
+        """
+        params: dict[str, Any] = {"cp_ids": tuple(cp_ids)}
+
+        async with self._conn.cursor() as cursor:
+            await cursor.execute(sql, params)
+            cols = [d[0] for d in cursor.description]
+            rows = await cursor.fetchall()
+
+        out: dict[str, list[dict[str, Any]]] = {}
+        for row in rows:
+            record = dict(zip(cols, row, strict=True))
+            cp_id = record.pop("cp_id")
+            out.setdefault(cp_id, []).append(record)
+        return out
+
     async def fetch_status_history(
         self,
         *,

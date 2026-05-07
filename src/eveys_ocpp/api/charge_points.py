@@ -10,6 +10,14 @@ Per the contract `docs/integration/02-gateway-rest-api.md`:
 - The response is **raw** (top-level *is* the resource), not enveloped.
 - `online` and `pod_id` come from the Redis online registry.
 - `last_*` fields come from Postgres (charge_points table).
+- `connectors[]` carries the most recent StatusNotification per
+  connector (sourced from ClickHouse `cp_status`). Empty when no
+  StatusNotifications have been recorded yet, or when the gateway
+  is running without a ClickHouse client wired (tests, dev laptops).
+- `last_status` is kept as a single-string convenience for callers
+  that don't need per-connector resolution. For multi-connector
+  chargers it is **last-write-wins** across connectors and should
+  not be read as the device's current state — use `connectors[]`.
 - 404 with `error_code=UNKNOWN_CP_ID` when the charger has never sent
   a BootNotification.
 """
@@ -71,7 +79,47 @@ def _to_response(cp: dict[str, Any]) -> dict[str, Any]:
         "last_status": cp["last_status"],
         "last_diagnostics_status": cp["last_diagnostics_status"],
         "last_firmware_status": cp["last_firmware_status"],
+        "connectors": cp.get("connectors", []),
     }
+
+
+async def _enrich_with_connectors(
+    request: Request, cp_dicts: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Attach per-connector status from ClickHouse to every dict.
+
+    Batches all charger ids in one query so a list of N chargers stays
+    a single ClickHouse round-trip. Falls back to an empty list per
+    charger when the read client isn't wired (dev / unit tests) or the
+    query fails — the route still serves the metadata correctly.
+    """
+    if not cp_dicts:
+        return cp_dicts
+
+    client = getattr(request.app.state, "ch_client", None)
+    if client is None:
+        for cp in cp_dicts:
+            cp.setdefault("connectors", [])
+        return cp_dicts
+
+    cp_ids = [cp["cp_id"] for cp in cp_dicts]
+    try:
+        latest_by_cp = await client.fetch_latest_connector_statuses(cp_ids=cp_ids)
+    except Exception:  # ClickHouse hiccup must not 500 the metadata path
+        latest_by_cp = {}
+
+    for cp in cp_dicts:
+        rows = latest_by_cp.get(cp["cp_id"], [])
+        cp["connectors"] = [
+            {
+                "connector_id": r["connector_id"],
+                "status": r["status"],
+                "error_code": r["error_code"] or None,
+                "last_changed_at": _isoformat(r["last_changed_at"]),
+            }
+            for r in rows
+        ]
+    return cp_dicts
 
 
 @router.get("/charge-points")
@@ -126,6 +174,8 @@ async def list_charge_points_route(
     if online is not None:
         enriched = [cp for cp in enriched if cp["online"] == online]
 
+    enriched = await _enrich_with_connectors(request, enriched)
+
     return {
         "charge_points": [_to_response(cp) for cp in enriched],
         "next_cursor": next_cursor,
@@ -145,6 +195,7 @@ async def get_charge_point_route(request: Request, cp_id: str) -> dict[str, Any]
         )
 
     enriched = await _enrich_with_presence(request, detail)
+    [enriched] = await _enrich_with_connectors(request, [enriched])
     response = _to_response(enriched)
     response["active_reservations"] = [
         {
