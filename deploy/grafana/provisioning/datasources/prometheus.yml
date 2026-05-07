@@ -1,0 +1,16 @@
+apiVersion: 1
+
+# Default Prometheus datasource for the dashboards in
+# `deploy/grafana/dashboards/`. The URL points at whatever Prometheus
+# the operator has scraping the gateway's `/metrics:9100` — change to
+# match your stack. In compose-based dev a sidecar Prometheus is
+# expected at `http://prometheus:9090`; in k8s the ServiceMonitor
+# pattern handles scraping and the URL would be the cluster-internal
+# Prometheus service.
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: ${PROMETHEUS_URL:-http://prometheus:9090}
+    isDefault: true
+    editable: false

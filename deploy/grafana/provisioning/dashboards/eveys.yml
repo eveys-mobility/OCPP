@@ -1,0 +1,22 @@
+apiVersion: 1
+
+# Auto-load every dashboard JSON from `deploy/grafana/dashboards/`
+# into the "eveys/ocpp" folder. Editable by default so an operator
+# can iterate against a live system; commit-back is up to the
+# operator's workflow (export from Grafana, replace the JSON).
+providers:
+  - name: eveys-ocpp
+    orgId: 1
+    folder: "eveys/ocpp"
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      # Where the dashboard JSON files are mounted inside the Grafana
+      # container. The provider yaml itself lives under
+      # /etc/grafana/provisioning/dashboards/; the *dashboards* are
+      # mounted to a separate path so Grafana doesn't try to parse the
+      # provider yaml as a dashboard.
+      path: /var/lib/grafana/dashboards/eveys
+      foldersFromFilesStructure: false
