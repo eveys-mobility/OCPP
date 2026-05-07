@@ -4,9 +4,15 @@ Assembles middleware (request-id correlation, bearer auth), exception
 handlers (typed `ApiError` + Pydantic validation + framework
 `HTTPException` + catch-all), and per-domain routers.
 
-Per ADR-0026, OpenAPI / docs UIs are disabled — the contract lives in
-`docs/integration/02-gateway-rest-api.md` and we don't want a self-
-describing schema published to anyone who can curl the gateway.
+OpenAPI / docs UIs are gated behind `settings.rest_openapi_enabled`
+(default False) per ADR-0026. The hand-written contract in
+`docs/integration/02-gateway-rest-api.md` is still the canonical
+source of truth; the schema generated from FastAPI is a complement,
+not a replacement, because most routes return plain dicts annotated
+via `responses=` rather than `response_model=` (so OpenAPI describes
+the shape without forcing runtime validation that could break a
+production endpoint). Operators flip the toggle on in dev / staging /
+behind a VPN to get Swagger UI at `/api/v1/docs`.
 
 Routes attach to `request.app.state` for the dependencies they need:
 
@@ -23,13 +29,14 @@ from __future__ import annotations
 import time
 import uuid
 from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from eveys_ocpp import __version__
 from eveys_ocpp.api import (
     charge_points,
     charging_profiles,
@@ -48,7 +55,9 @@ from eveys_ocpp.api._errors import (
     validation_exception_handler,
 )
 from eveys_ocpp.metrics import registry as metrics_registry
-from eveys_ocpp.observability import bind_contextvars
+from eveys_ocpp.observability import bind_contextvars, get_logger
+
+log = get_logger(__name__)
 
 if TYPE_CHECKING:
     from redis.asyncio import Redis
@@ -78,13 +87,61 @@ def make_app(
     probe pings Redis directly; threading it through keeps the route
     out of `Registry`'s private state.
     """
+    # OpenAPI surface is gated behind `rest_openapi_enabled`. Default off
+    # per ADR-0026 (the gateway doesn't self-publish a discoverable
+    # schema in production); set the env var to True for dev / staging
+    # to get Swagger UI at `/api/v1/docs` and ReDoc at `/api/v1/redoc`.
+    # Auth still applies — only token-bearers can read the spec.
+    if settings.rest_openapi_enabled:
+        log.warning(
+            "rest_openapi.enabled",
+            detail=(
+                "EVEYS_OCPP_REST_OPENAPI_ENABLED=True — the gateway is "
+                "publishing OpenAPI schema + Swagger UI on `/api/v1/`. "
+                "Acceptable in dev / staging / behind a VPN; never "
+                "expose to the public internet without considering the "
+                "schema-discovery threat model documented in ADR-0026."
+            ),
+        )
+        openapi_kwargs: dict[str, Any] = {
+            "openapi_url": "/api/v1/openapi.json",
+            "docs_url": "/api/v1/docs",
+            "redoc_url": "/api/v1/redoc",
+        }
+    else:
+        openapi_kwargs = {
+            "openapi_url": None,
+            "docs_url": None,
+            "redoc_url": None,
+        }
+
     app = FastAPI(
         title="eveys/ocpp gateway",
-        # OpenAPI surface disabled per ADR-0026 D-rejected-alternatives.
-        docs_url=None,
-        redoc_url=None,
-        openapi_url=None,
+        version=__version__,
+        description=(
+            "Inbound REST surface (E3-7 / E3-8). Backend services read "
+            "charger and transaction state under `/api/v1/charge-points`, "
+            "`/api/v1/transactions`, etc., and dispatch OCPP commands "
+            "via `/api/v1/charge-points/{cp_id}/commands/*`. "
+            "All endpoints require a bearer token (`EVEYS_OCPP_REST_INBOUND_TOKENS`); "
+            "`/api/v1/health` is exempt. Errors carry the closed-enum "
+            "envelope `{error, error_code, request_id}` documented in "
+            "[`docs/integration/02-gateway-rest-api.md`]"
+            "(https://github.com/eveys-mobility/OCPP/blob/main/docs/integration/02-gateway-rest-api.md)."
+        ),
+        **openapi_kwargs,
     )
+
+    # Command routes reference `RemoteStartRequest` / `RemoteStopRequest` /
+    # `ResetRequest` via `openapi_extra={"requestBody": ...}`, which uses
+    # `$ref: #/components/schemas/<Name>` — but FastAPI only auto-emits
+    # models that show up in route signatures (`response_model=`,
+    # `Body(...)`, etc.). The three request models are referenced by
+    # name but never appear in a signature, so they'd be missing from
+    # `components/schemas` and the `$ref` would dangle. Wrap `app.openapi`
+    # to inject them after FastAPI builds its base spec.
+    if settings.rest_openapi_enabled:
+        _install_extra_schemas(app)
     app.state.session_factory = session_factory
     app.state.settings = settings
     app.state.registry = registry
@@ -126,6 +183,38 @@ def make_app(
     app.include_router(timeseries.router, prefix="/api/v1")
 
     return app
+
+
+def _install_extra_schemas(app: FastAPI) -> None:
+    """Inject request models referenced via `openapi_extra` into the
+    generated spec's `components.schemas` so the `$ref`s resolve.
+
+    See the comment at the call site in `make_app` for the why. Wraps
+    `app.openapi` so the spec is computed lazily on first read but the
+    extras land on every subsequent call (FastAPI caches the result on
+    `app.openapi_schema` after first call).
+    """
+    from eveys_ocpp.api._schemas import (
+        RemoteStartRequest,
+        RemoteStopRequest,
+        ResetRequest,
+    )
+
+    extras = (RemoteStartRequest, RemoteStopRequest, ResetRequest)
+    base_openapi = app.openapi
+
+    def custom_openapi() -> dict[str, Any]:
+        spec = base_openapi()
+        components = spec.setdefault("components", {})
+        schemas = components.setdefault("schemas", {})
+        for model in extras:
+            if model.__name__ not in schemas:
+                schemas[model.__name__] = model.model_json_schema(
+                    ref_template="#/components/schemas/{model}"
+                )
+        return spec
+
+    app.openapi = custom_openapi  # type: ignore[method-assign]
 
 
 async def _request_id_middleware(

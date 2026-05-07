@@ -26,6 +26,11 @@ from eveys_ocpp.api._errors import (
     ApiError,
 )
 from eveys_ocpp.api._pagination import clamp_limit, decode_cursor, encode_cursor
+from eveys_ocpp.api._schemas import (
+    ErrorEnvelope,
+    TransactionDetail,
+    TransactionListResponse,
+)
 from eveys_ocpp.persistence.db import session_scope
 from eveys_ocpp.persistence.repositories import (
     get_transaction_by_id,
@@ -70,7 +75,17 @@ def _transaction_to_response(tx: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-@router.get("/charge-points/{cp_id}/transactions")
+@router.get(
+    "/charge-points/{cp_id}/transactions",
+    summary="List transactions for a charge point (cursor-paginated)",
+    responses={
+        200: {"model": TransactionListResponse},
+        400: {
+            "model": ErrorEnvelope,
+            "description": "Bad cursor or unparseable from/to timestamp.",
+        },
+    },
+)
 async def list_transactions_route(
     request: Request,
     cp_id: str,
@@ -135,7 +150,14 @@ async def list_transactions_route(
     }
 
 
-@router.get("/transactions/{transaction_id}")
+@router.get(
+    "/transactions/{transaction_id}",
+    summary="Single-transaction detail",
+    responses={
+        200: {"model": TransactionDetail},
+        404: {"model": ErrorEnvelope, "description": "Unknown transaction_id."},
+    },
+)
 async def get_transaction_route(request: Request, transaction_id: int) -> dict[str, Any]:
     async with session_scope(request.app.state.session_factory) as session:
         tx = await get_transaction_by_id(session, transaction_id=transaction_id)

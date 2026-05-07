@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING
 from fastapi import APIRouter, Request
 from sqlalchemy import text
 
+from eveys_ocpp.api._schemas import HealthResponse
 from eveys_ocpp.observability import get_logger
 
 if TYPE_CHECKING:
@@ -36,7 +37,11 @@ log = get_logger(__name__)
 router = APIRouter(tags=["health"])
 
 
-@router.get("/health")
+@router.get(
+    "/health",
+    summary="Liveness + per-component probe (auth-exempt)",
+    responses={200: {"model": HealthResponse}},
+)
 async def health(request: Request) -> dict[str, object]:
     components: dict[str, str] = {}
 

@@ -1,0 +1,3100 @@
+{
+  "components": {
+    "schemas": {
+      "ChargePoint": {
+        "description": "One row of `GET /api/v1/charge-points`. Detail endpoint adds\n`active_reservations` and `active_charging_profiles`.",
+        "properties": {
+          "connectors": {
+            "items": {
+              "$ref": "#/components/schemas/ConnectorStatus"
+            },
+            "title": "Connectors",
+            "type": "array"
+          },
+          "cp_id": {
+            "description": "Stable identifier the charger sent in BootNotification.",
+            "title": "Cp Id",
+            "type": "string"
+          },
+          "firmware_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Firmware Version"
+          },
+          "last_heartbeat_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Heartbeat At"
+          },
+          "last_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Last-write-wins across connectors. For multi-connector chargers, prefer `connectors[]` (the per-connector array) \u2014 `last_status` is a single-string convenience for callers that don't need per-connector resolution.",
+            "title": "Last Status"
+          },
+          "last_status_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Status At"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "online": {
+            "description": "True iff some pod currently holds the charger's WS.",
+            "title": "Online",
+            "type": "boolean"
+          },
+          "pod_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Which gateway pod owns the WS. None when offline.",
+            "title": "Pod Id"
+          },
+          "serial_number": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Serial Number"
+          },
+          "vendor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vendor"
+          }
+        },
+        "required": [
+          "cp_id",
+          "online"
+        ],
+        "title": "ChargePoint",
+        "type": "object"
+      },
+      "ChargePointDetail": {
+        "example": {
+          "active_charging_profiles": [],
+          "active_reservations": [],
+          "connectors": [
+            {
+              "connector_id": 1,
+              "error_code": "NoError",
+              "status": "Charging",
+              "timestamp": "2026-05-07T12:34:56+00:00"
+            }
+          ],
+          "cp_id": "CP_BERLIN_001",
+          "firmware_version": "1.2.3",
+          "last_heartbeat_at": "2026-05-07T12:35:00+00:00",
+          "last_status": "Charging",
+          "last_status_at": "2026-05-07T12:34:56+00:00",
+          "model": "X1",
+          "online": true,
+          "pod_id": "ocpp-gw-7f9c4-x2k8q",
+          "request_id": "9b3c5d18-1f7c-4b6a-8e0e-5b9a3c4f2e10",
+          "serial_number": "SN-12345",
+          "vendor": "ACME"
+        },
+        "properties": {
+          "active_charging_profiles": {
+            "items": {
+              "$ref": "#/components/schemas/ChargingProfile"
+            },
+            "title": "Active Charging Profiles",
+            "type": "array"
+          },
+          "active_reservations": {
+            "items": {
+              "$ref": "#/components/schemas/Reservation"
+            },
+            "title": "Active Reservations",
+            "type": "array"
+          },
+          "connectors": {
+            "items": {
+              "$ref": "#/components/schemas/ConnectorStatus"
+            },
+            "title": "Connectors",
+            "type": "array"
+          },
+          "cp_id": {
+            "description": "Stable identifier the charger sent in BootNotification.",
+            "title": "Cp Id",
+            "type": "string"
+          },
+          "firmware_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Firmware Version"
+          },
+          "last_heartbeat_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Heartbeat At"
+          },
+          "last_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Last-write-wins across connectors. For multi-connector chargers, prefer `connectors[]` (the per-connector array) \u2014 `last_status` is a single-string convenience for callers that don't need per-connector resolution.",
+            "title": "Last Status"
+          },
+          "last_status_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Status At"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "online": {
+            "description": "True iff some pod currently holds the charger's WS.",
+            "title": "Online",
+            "type": "boolean"
+          },
+          "pod_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Which gateway pod owns the WS. None when offline.",
+            "title": "Pod Id"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          },
+          "serial_number": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Serial Number"
+          },
+          "vendor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vendor"
+          }
+        },
+        "required": [
+          "cp_id",
+          "online",
+          "request_id"
+        ],
+        "title": "ChargePointDetail",
+        "type": "object"
+      },
+      "ChargePointListResponse": {
+        "description": "`GET /api/v1/charge-points`. Cursor-paginated. `next_cursor=null`\nmeans no more pages.",
+        "example": {
+          "charge_points": [
+            {
+              "connectors": [],
+              "cp_id": "CP_BERLIN_001",
+              "firmware_version": "1.2.3",
+              "last_heartbeat_at": "2026-05-07T12:35:00+00:00",
+              "last_status": "Available",
+              "last_status_at": "2026-05-07T12:30:00+00:00",
+              "model": "X1",
+              "online": true,
+              "pod_id": "ocpp-gw-7f9c4-x2k8q",
+              "serial_number": "SN-12345",
+              "vendor": "ACME"
+            }
+          ],
+          "next_cursor": "eyJpZCI6IDQyfQ==",
+          "request_id": "9b3c5d18-1f7c-4b6a-8e0e-5b9a3c4f2e10"
+        },
+        "properties": {
+          "charge_points": {
+            "items": {
+              "$ref": "#/components/schemas/ChargePoint"
+            },
+            "title": "Charge Points",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "charge_points",
+          "next_cursor",
+          "request_id"
+        ],
+        "title": "ChargePointListResponse",
+        "type": "object"
+      },
+      "ChargingProfile": {
+        "description": "Mirror of the OCPP 1.6 SetChargingProfile request payload, as\npersisted server-side. The shape is dynamic per the OCPP spec \u2014\nwe treat it as opaque-ish for OpenAPI purposes.",
+        "properties": {
+          "charging_profile_id": {
+            "title": "Charging Profile Id",
+            "type": "integer"
+          },
+          "charging_profile_kind": {
+            "title": "Charging Profile Kind",
+            "type": "string"
+          },
+          "charging_profile_purpose": {
+            "title": "Charging Profile Purpose",
+            "type": "string"
+          },
+          "charging_schedule": {
+            "additionalProperties": true,
+            "title": "Charging Schedule",
+            "type": "object"
+          },
+          "recurrency_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recurrency Kind"
+          },
+          "stack_level": {
+            "title": "Stack Level",
+            "type": "integer"
+          },
+          "valid_from": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valid From"
+          },
+          "valid_to": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valid To"
+          }
+        },
+        "required": [
+          "charging_profile_id",
+          "stack_level",
+          "charging_profile_purpose",
+          "charging_profile_kind",
+          "charging_schedule"
+        ],
+        "title": "ChargingProfile",
+        "type": "object"
+      },
+      "ChargingProfileListResponse": {
+        "properties": {
+          "charging_profiles": {
+            "items": {
+              "$ref": "#/components/schemas/ChargingProfile"
+            },
+            "title": "Charging Profiles",
+            "type": "array"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "charging_profiles",
+          "request_id"
+        ],
+        "title": "ChargingProfileListResponse",
+        "type": "object"
+      },
+      "CommandAcceptedResponse": {
+        "description": "Generic shape for the typed OCPP command responses. Specific\ncommands extend this; the generic form is what FastAPI advertises\nfor routes whose typed shape is a follow-up task.",
+        "example": {
+          "request_id": "9b3c5d18-1f7c-4b6a-8e0e-5b9a3c4f2e10",
+          "status": "Accepted"
+        },
+        "properties": {
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          },
+          "status": {
+            "description": "OCPP-side response (`Accepted` / `Rejected` / `Unknown` for most commands; `Scheduled` for some). The exact enum is per OCPP 1.6.",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "request_id"
+        ],
+        "title": "CommandAcceptedResponse",
+        "type": "object"
+      },
+      "ConnectorStatus": {
+        "description": "One row from the `cp_status` ClickHouse table \u2014 the most-recent\nStatusNotification per connector.",
+        "properties": {
+          "connector_id": {
+            "description": "0 is the charger itself; 1+ are physical connectors.",
+            "minimum": 0.0,
+            "title": "Connector Id",
+            "type": "integer"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          },
+          "info": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Info"
+          },
+          "status": {
+            "description": "OCPP 1.6 \u00a73.1.1 enum: Available, Preparing, Charging, \u2026",
+            "title": "Status",
+            "type": "string"
+          },
+          "timestamp": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "ISO 8601 of the StatusNotification.",
+            "title": "Timestamp"
+          },
+          "vendor_error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vendor Error Code"
+          },
+          "vendor_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vendor Id"
+          }
+        },
+        "required": [
+          "connector_id",
+          "status"
+        ],
+        "title": "ConnectorStatus",
+        "type": "object"
+      },
+      "ErrorEnvelope": {
+        "description": "Stable error shape per `docs/integration/02-gateway-rest-api.md`.\n\nAll non-2xx responses from `/api/v1/*` carry this body. The 11\n`error_code` values are the closed enum from\n`src/eveys_ocpp/api/_errors.py` (BAD_REQUEST, UNAUTHORIZED,\nFORBIDDEN, UNKNOWN_CP_ID, UNKNOWN_TRANSACTION_ID,\nUNKNOWN_RESERVATION_ID, CHARGER_OFFLINE, CHARGER_TIMEOUT,\nWINDOW_TOO_LARGE, RATE_LIMITED, INTERNAL_ERROR).",
+        "example": {
+          "error": "unknown cp_id: CP_DOES_NOT_EXIST",
+          "error_code": "UNKNOWN_CP_ID",
+          "request_id": "9b3c5d18-1f7c-4b6a-8e0e-5b9a3c4f2e10"
+        },
+        "properties": {
+          "error": {
+            "description": "Human-readable description for logs.",
+            "title": "Error",
+            "type": "string"
+          },
+          "error_code": {
+            "description": "Stable machine code; one of the 11 closed-enum values.",
+            "title": "Error Code",
+            "type": "string"
+          },
+          "request_id": {
+            "description": "Correlation id mirroring the X-Request-ID header.",
+            "title": "Request Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "error",
+          "error_code",
+          "request_id"
+        ],
+        "title": "ErrorEnvelope",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "HealthComponents": {
+        "properties": {
+          "postgres": {
+            "description": "`ok` or `unavailable`.",
+            "title": "Postgres",
+            "type": "string"
+          },
+          "redis": {
+            "description": "`ok` or `unavailable`.",
+            "title": "Redis",
+            "type": "string"
+          }
+        },
+        "required": [
+          "postgres",
+          "redis"
+        ],
+        "title": "HealthComponents",
+        "type": "object"
+      },
+      "HealthResponse": {
+        "description": "`GET /api/v1/health`. Liveness + per-component probe.",
+        "example": {
+          "components": {
+            "postgres": "ok",
+            "redis": "ok"
+          },
+          "request_id": "9b3c5d18-1f7c-4b6a-8e0e-5b9a3c4f2e10",
+          "status": "ok",
+          "version": "0.0.0"
+        },
+        "properties": {
+          "components": {
+            "$ref": "#/components/schemas/HealthComponents"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          },
+          "status": {
+            "description": "`ok` when every component is `ok`; `degraded` otherwise.",
+            "title": "Status",
+            "type": "string"
+          },
+          "version": {
+            "description": "Gateway package version string.",
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "version",
+          "components",
+          "request_id"
+        ],
+        "title": "HealthResponse",
+        "type": "object"
+      },
+      "MeterValueSample": {
+        "properties": {
+          "connector_id": {
+            "title": "Connector Id",
+            "type": "integer"
+          },
+          "context": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Context"
+          },
+          "location": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Location"
+          },
+          "measurand": {
+            "description": "OCPP 1.6 measurand: Energy.Active.Import.Register, \u2026",
+            "title": "Measurand",
+            "type": "string"
+          },
+          "phase": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phase"
+          },
+          "timestamp": {
+            "title": "Timestamp",
+            "type": "string"
+          },
+          "transaction_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Transaction Id"
+          },
+          "unit": {
+            "description": "Wh, W, A, V, \u00b0C, \u2026",
+            "title": "Unit",
+            "type": "string"
+          },
+          "value": {
+            "title": "Value",
+            "type": "number"
+          }
+        },
+        "required": [
+          "timestamp",
+          "connector_id",
+          "measurand",
+          "value",
+          "unit"
+        ],
+        "title": "MeterValueSample",
+        "type": "object"
+      },
+      "MeterValuesResponse": {
+        "description": "`GET /api/v1/charge-points/{cp_id}/meter-values?from=\u2026&to=\u2026`.",
+        "properties": {
+          "cp_id": {
+            "title": "Cp Id",
+            "type": "string"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          },
+          "samples": {
+            "items": {
+              "$ref": "#/components/schemas/MeterValueSample"
+            },
+            "title": "Samples",
+            "type": "array"
+          }
+        },
+        "required": [
+          "cp_id",
+          "samples",
+          "request_id"
+        ],
+        "title": "MeterValuesResponse",
+        "type": "object"
+      },
+      "RemoteStartRequest": {
+        "example": {
+          "connector_id": 1,
+          "id_tag": "RFID_VALID_001"
+        },
+        "properties": {
+          "charging_profile": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Charging Profile"
+          },
+          "connector_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional. Charger picks one if omitted.",
+            "title": "Connector Id"
+          },
+          "id_tag": {
+            "description": "The RFID / token the charger should associate with the session.",
+            "title": "Id Tag",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id_tag"
+        ],
+        "title": "RemoteStartRequest",
+        "type": "object"
+      },
+      "RemoteStopRequest": {
+        "example": {
+          "transaction_id": 12345
+        },
+        "properties": {
+          "transaction_id": {
+            "title": "Transaction Id",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "transaction_id"
+        ],
+        "title": "RemoteStopRequest",
+        "type": "object"
+      },
+      "Reservation": {
+        "properties": {
+          "connector_id": {
+            "title": "Connector Id",
+            "type": "integer"
+          },
+          "expiry_date": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expiry Date"
+          },
+          "id_tag": {
+            "title": "Id Tag",
+            "type": "string"
+          },
+          "reservation_id": {
+            "title": "Reservation Id",
+            "type": "integer"
+          },
+          "status": {
+            "description": "`active` or `cancelled`.",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reservation_id",
+          "connector_id",
+          "id_tag",
+          "status"
+        ],
+        "title": "Reservation",
+        "type": "object"
+      },
+      "ReservationListResponse": {
+        "properties": {
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          },
+          "reservations": {
+            "items": {
+              "$ref": "#/components/schemas/Reservation"
+            },
+            "title": "Reservations",
+            "type": "array"
+          }
+        },
+        "required": [
+          "reservations",
+          "request_id"
+        ],
+        "title": "ReservationListResponse",
+        "type": "object"
+      },
+      "ResetRequest": {
+        "example": {
+          "type": "Soft"
+        },
+        "properties": {
+          "type": {
+            "description": "Soft = restart software; Hard = full power cycle.",
+            "pattern": "^(Soft|Hard)$",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type"
+        ],
+        "title": "ResetRequest",
+        "type": "object"
+      },
+      "StatusEvent": {
+        "properties": {
+          "connector_id": {
+            "title": "Connector Id",
+            "type": "integer"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          },
+          "info": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Info"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "timestamp": {
+            "title": "Timestamp",
+            "type": "string"
+          },
+          "vendor_error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vendor Error Code"
+          },
+          "vendor_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vendor Id"
+          }
+        },
+        "required": [
+          "timestamp",
+          "connector_id",
+          "status"
+        ],
+        "title": "StatusEvent",
+        "type": "object"
+      },
+      "StatusHistoryResponse": {
+        "description": "`GET /api/v1/charge-points/{cp_id}/status-history?from=\u2026&to=\u2026`.",
+        "properties": {
+          "cp_id": {
+            "title": "Cp Id",
+            "type": "string"
+          },
+          "events": {
+            "items": {
+              "$ref": "#/components/schemas/StatusEvent"
+            },
+            "title": "Events",
+            "type": "array"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "cp_id",
+          "events",
+          "request_id"
+        ],
+        "title": "StatusHistoryResponse",
+        "type": "object"
+      },
+      "Transaction": {
+        "properties": {
+          "connector_id": {
+            "title": "Connector Id",
+            "type": "integer"
+          },
+          "cp_id": {
+            "title": "Cp Id",
+            "type": "string"
+          },
+          "id_tag": {
+            "description": "RFID / token used to authorize the session.",
+            "title": "Id Tag",
+            "type": "string"
+          },
+          "meter_start_wh": {
+            "title": "Meter Start Wh",
+            "type": "integer"
+          },
+          "meter_stop_wh": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Meter Stop Wh"
+          },
+          "open": {
+            "description": "True until StopTransaction lands.",
+            "title": "Open",
+            "type": "boolean"
+          },
+          "started_at": {
+            "description": "ISO 8601 timestamp of the StartTransaction.",
+            "title": "Started At",
+            "type": "string"
+          },
+          "stop_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stop Reason"
+          },
+          "stopped_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stopped At"
+          },
+          "transaction_id": {
+            "description": "OCPP 1.6 transaction id assigned by the gateway.",
+            "title": "Transaction Id",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "transaction_id",
+          "cp_id",
+          "connector_id",
+          "id_tag",
+          "meter_start_wh",
+          "started_at",
+          "open"
+        ],
+        "title": "Transaction",
+        "type": "object"
+      },
+      "TransactionDetail": {
+        "example": {
+          "connector_id": 1,
+          "cp_id": "CP_BERLIN_001",
+          "id_tag": "RFID_VALID_001",
+          "meter_start_wh": 1000000,
+          "meter_stop_wh": 1012345,
+          "open": false,
+          "request_id": "9b3c5d18-1f7c-4b6a-8e0e-5b9a3c4f2e10",
+          "started_at": "2026-05-07T12:00:00+00:00",
+          "stop_reason": "Local",
+          "stopped_at": "2026-05-07T12:30:00+00:00",
+          "transaction_id": 12345
+        },
+        "properties": {
+          "connector_id": {
+            "title": "Connector Id",
+            "type": "integer"
+          },
+          "cp_id": {
+            "title": "Cp Id",
+            "type": "string"
+          },
+          "id_tag": {
+            "description": "RFID / token used to authorize the session.",
+            "title": "Id Tag",
+            "type": "string"
+          },
+          "meter_start_wh": {
+            "title": "Meter Start Wh",
+            "type": "integer"
+          },
+          "meter_stop_wh": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Meter Stop Wh"
+          },
+          "open": {
+            "description": "True until StopTransaction lands.",
+            "title": "Open",
+            "type": "boolean"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          },
+          "started_at": {
+            "description": "ISO 8601 timestamp of the StartTransaction.",
+            "title": "Started At",
+            "type": "string"
+          },
+          "stop_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stop Reason"
+          },
+          "stopped_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stopped At"
+          },
+          "transaction_id": {
+            "description": "OCPP 1.6 transaction id assigned by the gateway.",
+            "title": "Transaction Id",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "transaction_id",
+          "cp_id",
+          "connector_id",
+          "id_tag",
+          "meter_start_wh",
+          "started_at",
+          "open",
+          "request_id"
+        ],
+        "title": "TransactionDetail",
+        "type": "object"
+      },
+      "TransactionListResponse": {
+        "description": "`GET /api/v1/charge-points/{cp_id}/transactions`.",
+        "example": {
+          "request_id": "9b3c5d18-1f7c-4b6a-8e0e-5b9a3c4f2e10",
+          "transactions": [
+            {
+              "connector_id": 1,
+              "cp_id": "CP_BERLIN_001",
+              "id_tag": "RFID_VALID_001",
+              "meter_start_wh": 1000000,
+              "meter_stop_wh": 1012345,
+              "open": false,
+              "started_at": "2026-05-07T12:00:00+00:00",
+              "stop_reason": "Local",
+              "stopped_at": "2026-05-07T12:30:00+00:00",
+              "transaction_id": 12345
+            }
+          ]
+        },
+        "properties": {
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          },
+          "transactions": {
+            "items": {
+              "$ref": "#/components/schemas/Transaction"
+            },
+            "title": "Transactions",
+            "type": "array"
+          }
+        },
+        "required": [
+          "transactions",
+          "next_cursor",
+          "request_id"
+        ],
+        "title": "TransactionListResponse",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "description": "Inbound REST surface (E3-7 / E3-8). Backend services read charger and transaction state under `/api/v1/charge-points`, `/api/v1/transactions`, etc., and dispatch OCPP commands via `/api/v1/charge-points/{cp_id}/commands/*`. All endpoints require a bearer token (`EVEYS_OCPP_REST_INBOUND_TOKENS`); `/api/v1/health` is exempt. Errors carry the closed-enum envelope `{error, error_code, request_id}` documented in [`docs/integration/02-gateway-rest-api.md`](https://github.com/eveys-mobility/OCPP/blob/main/docs/integration/02-gateway-rest-api.md).",
+    "title": "eveys/ocpp gateway",
+    "version": "0.0.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/api/v1/charge-points": {
+      "get": {
+        "operationId": "list_charge_points_route_api_v1_charge_points_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 10000,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Limit"
+            }
+          },
+          {
+            "in": "query",
+            "name": "online",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Online"
+            }
+          },
+          {
+            "in": "query",
+            "name": "vendor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Vendor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChargePointListResponse",
+                  "additionalProperties": true,
+                  "title": "Response List Charge Points Route Api V1 Charge Points Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List charge points (cursor-paginated)",
+        "tags": [
+          "charge_points"
+        ]
+      }
+    },
+    "/api/v1/charge-points/{cp_id}": {
+      "get": {
+        "operationId": "get_charge_point_route_api_v1_charge_points__cp_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cp_id",
+            "required": true,
+            "schema": {
+              "title": "Cp Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChargePointDetail",
+                  "additionalProperties": true,
+                  "title": "Response Get Charge Point Route Api V1 Charge Points  Cp Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Unknown cp_id (never sent BootNotification)."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Charge-point detail with active reservations + charging profiles",
+        "tags": [
+          "charge_points"
+        ]
+      }
+    },
+    "/api/v1/charge-points/{cp_id}/charging-profiles": {
+      "get": {
+        "operationId": "list_charging_profiles_route_api_v1_charge_points__cp_id__charging_profiles_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cp_id",
+            "required": true,
+            "schema": {
+              "title": "Cp Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 10000,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Limit"
+            }
+          },
+          {
+            "in": "query",
+            "name": "purpose",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Purpose"
+            }
+          },
+          {
+            "in": "query",
+            "name": "stack_level",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Stack Level"
+            }
+          },
+          {
+            "in": "query",
+            "name": "connector_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Connector Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChargingProfileListResponse",
+                  "additionalProperties": true,
+                  "title": "Response List Charging Profiles Route Api V1 Charge Points  Cp Id  Charging Profiles Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List active charging profiles for a charge point (cursor-paginated)",
+        "tags": [
+          "charging_profiles"
+        ]
+      }
+    },
+    "/api/v1/charge-points/{cp_id}/commands/cancel-reservation": {
+      "post": {
+        "operationId": "cancel_reservation_route_api_v1_charge_points__cp_id__commands_cancel_reservation_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cp_id",
+            "required": true,
+            "schema": {
+              "title": "Cp Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Cancel Reservation Route Api V1 Charge Points  Cp Id  Commands Cancel Reservation Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cancel Reservation Route",
+        "tags": [
+          "commands"
+        ]
+      }
+    },
+    "/api/v1/charge-points/{cp_id}/commands/change-configuration": {
+      "post": {
+        "operationId": "change_configuration_api_v1_charge_points__cp_id__commands_change_configuration_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cp_id",
+            "required": true,
+            "schema": {
+              "title": "Cp Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Change Configuration Api V1 Charge Points  Cp Id  Commands Change Configuration Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Change Configuration",
+        "tags": [
+          "commands"
+        ]
+      }
+    },
+    "/api/v1/charge-points/{cp_id}/commands/clear-cache": {
+      "post": {
+        "operationId": "clear_cache_api_v1_charge_points__cp_id__commands_clear_cache_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cp_id",
+            "required": true,
+            "schema": {
+              "title": "Cp Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Clear Cache Api V1 Charge Points  Cp Id  Commands Clear Cache Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Clear Cache",
+        "tags": [
+          "commands"
+        ]
+      }
+    },
+    "/api/v1/charge-points/{cp_id}/commands/clear-charging-profile": {
+      "post": {
+        "operationId": "clear_charging_profile_api_v1_charge_points__cp_id__commands_clear_charging_profile_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cp_id",
+            "required": true,
+            "schema": {
+              "title": "Cp Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Clear Charging Profile Api V1 Charge Points  Cp Id  Commands Clear Charging Profile Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Clear Charging Profile",
+        "tags": [
+          "commands"
+        ]
+      }
+    },
+    "/api/v1/charge-points/{cp_id}/commands/data-transfer": {
+      "post": {
+        "operationId": "data_transfer_api_v1_charge_points__cp_id__commands_data_transfer_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cp_id",
+            "required": true,
+            "schema": {
+              "title": "Cp Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Data Transfer Api V1 Charge Points  Cp Id  Commands Data Transfer Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Data Transfer",
+        "tags": [
+          "commands"
+        ]
+      }
+    },
+    "/api/v1/charge-points/{cp_id}/commands/get-charger-status": {
+      "get": {
+        "description": "Cached charger status from the registry + Postgres. Doesn't dial\nthe WebSocket; safe to call from operator dashboards without\nback-pressuring chargers.",
+        "operationId": "get_charger_status_api_v1_charge_points__cp_id__commands_get_charger_status_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cp_id",
+            "required": true,
+            "schema": {
+              "title": "Cp Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Charger Status Api V1 Charge Points  Cp Id  Commands Get Charger Status Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Charger Status",
+        "tags": [
+          "commands"
+        ]
+      }
+    },
+    "/api/v1/charge-points/{cp_id}/commands/get-composite-schedule": {
+      "post": {
+        "operationId": "get_composite_schedule_api_v1_charge_points__cp_id__commands_get_composite_schedule_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cp_id",
+            "required": true,
+            "schema": {
+              "title": "Cp Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Composite Schedule Api V1 Charge Points  Cp Id  Commands Get Composite Schedule Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Composite Schedule",
+        "tags": [
+          "commands"
+        ]
+      }
+    },
+    "/api/v1/charge-points/{cp_id}/commands/get-configuration": {
+      "post": {
+        "operationId": "get_configuration_api_v1_charge_points__cp_id__commands_get_configuration_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cp_id",
+            "required": true,
+            "schema": {
+              "title": "Cp Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Configuration Api V1 Charge Points  Cp Id  Commands Get Configuration Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Configuration",
+        "tags": [
+          "commands"
+        ]
+      }
+    },
+    "/api/v1/charge-points/{cp_id}/commands/get-diagnostics": {
+      "post": {
+        "operationId": "get_diagnostics_api_v1_charge_points__cp_id__commands_get_diagnostics_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cp_id",
+            "required": true,
+            "schema": {
+              "title": "Cp Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Diagnostics Api V1 Charge Points  Cp Id  Commands Get Diagnostics Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Diagnostics",
+        "tags": [
+          "commands"
+        ]
+      }
+    },
+    "/api/v1/charge-points/{cp_id}/commands/get-local-list-version": {
+      "post": {
+        "operationId": "get_local_list_version_api_v1_charge_points__cp_id__commands_get_local_list_version_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cp_id",
+            "required": true,
+            "schema": {
+              "title": "Cp Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Local List Version Api V1 Charge Points  Cp Id  Commands Get Local List Version Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Local List Version",
+        "tags": [
+          "commands"
+        ]
+      }
+    },
+    "/api/v1/charge-points/{cp_id}/commands/remote-start": {
+      "post": {
+        "operationId": "remote_start_api_v1_charge_points__cp_id__commands_remote_start_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cp_id",
+            "required": true,
+            "schema": {
+              "title": "Cp Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RemoteStartRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandAcceptedResponse",
+                  "additionalProperties": true,
+                  "title": "Response Remote Start Api V1 Charge Points  Cp Id  Commands Remote Start Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Unknown cp_id."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Charger offline."
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Charger did not reply within the per-RPC timeout."
+          }
+        },
+        "summary": "Tell a charger to start a session for an RFID tag",
+        "tags": [
+          "commands"
+        ]
+      }
+    },
+    "/api/v1/charge-points/{cp_id}/commands/remote-stop": {
+      "post": {
+        "operationId": "remote_stop_api_v1_charge_points__cp_id__commands_remote_stop_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cp_id",
+            "required": true,
+            "schema": {
+              "title": "Cp Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RemoteStopRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandAcceptedResponse",
+                  "additionalProperties": true,
+                  "title": "Response Remote Stop Api V1 Charge Points  Cp Id  Commands Remote Stop Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Unknown cp_id."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Charger offline."
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Charger did not reply within the per-RPC timeout."
+          }
+        },
+        "summary": "Tell a charger to stop an in-progress session",
+        "tags": [
+          "commands"
+        ]
+      }
+    },
+    "/api/v1/charge-points/{cp_id}/commands/reserve-now": {
+      "post": {
+        "operationId": "reserve_now_api_v1_charge_points__cp_id__commands_reserve_now_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cp_id",
+            "required": true,
+            "schema": {
+              "title": "Cp Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Reserve Now Api V1 Charge Points  Cp Id  Commands Reserve Now Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reserve Now",
+        "tags": [
+          "commands"
+        ]
+      }
+    },
+    "/api/v1/charge-points/{cp_id}/commands/reset": {
+      "post": {
+        "operationId": "reset_api_v1_charge_points__cp_id__commands_reset_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cp_id",
+            "required": true,
+            "schema": {
+              "title": "Cp Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResetRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandAcceptedResponse",
+                  "additionalProperties": true,
+                  "title": "Response Reset Api V1 Charge Points  Cp Id  Commands Reset Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Unknown cp_id."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Charger offline."
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Charger did not reply within the per-RPC timeout."
+          }
+        },
+        "summary": "Soft or Hard reset of the charger",
+        "tags": [
+          "commands"
+        ]
+      }
+    },
+    "/api/v1/charge-points/{cp_id}/commands/send-local-list": {
+      "post": {
+        "operationId": "send_local_list_api_v1_charge_points__cp_id__commands_send_local_list_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cp_id",
+            "required": true,
+            "schema": {
+              "title": "Cp Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Send Local List Api V1 Charge Points  Cp Id  Commands Send Local List Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Send Local List",
+        "tags": [
+          "commands"
+        ]
+      }
+    },
+    "/api/v1/charge-points/{cp_id}/commands/set-charging-profile": {
+      "post": {
+        "operationId": "set_charging_profile_api_v1_charge_points__cp_id__commands_set_charging_profile_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cp_id",
+            "required": true,
+            "schema": {
+              "title": "Cp Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Set Charging Profile Api V1 Charge Points  Cp Id  Commands Set Charging Profile Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Charging Profile",
+        "tags": [
+          "commands"
+        ]
+      }
+    },
+    "/api/v1/charge-points/{cp_id}/commands/trigger-message": {
+      "post": {
+        "operationId": "trigger_message_api_v1_charge_points__cp_id__commands_trigger_message_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cp_id",
+            "required": true,
+            "schema": {
+              "title": "Cp Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Trigger Message Api V1 Charge Points  Cp Id  Commands Trigger Message Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Trigger Message",
+        "tags": [
+          "commands"
+        ]
+      }
+    },
+    "/api/v1/charge-points/{cp_id}/commands/unlock-connector": {
+      "post": {
+        "operationId": "unlock_connector_api_v1_charge_points__cp_id__commands_unlock_connector_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cp_id",
+            "required": true,
+            "schema": {
+              "title": "Cp Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Unlock Connector Api V1 Charge Points  Cp Id  Commands Unlock Connector Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Unlock Connector",
+        "tags": [
+          "commands"
+        ]
+      }
+    },
+    "/api/v1/charge-points/{cp_id}/commands/update-firmware": {
+      "post": {
+        "operationId": "update_firmware_api_v1_charge_points__cp_id__commands_update_firmware_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cp_id",
+            "required": true,
+            "schema": {
+              "title": "Cp Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Update Firmware Api V1 Charge Points  Cp Id  Commands Update Firmware Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Firmware",
+        "tags": [
+          "commands"
+        ]
+      }
+    },
+    "/api/v1/charge-points/{cp_id}/meter-values": {
+      "get": {
+        "operationId": "list_meter_values_api_v1_charge_points__cp_id__meter_values_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cp_id",
+            "required": true,
+            "schema": {
+              "title": "Cp Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "from",
+            "required": true,
+            "schema": {
+              "title": "From",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "to",
+            "required": true,
+            "schema": {
+              "title": "To",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "connector_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Connector Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "measurand",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Measurand"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 10000,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MeterValuesResponse",
+                  "additionalProperties": true,
+                  "title": "Response List Meter Values Api V1 Charge Points  Cp Id  Meter Values Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Bad from/to or window too large."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Unknown cp_id."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "ClickHouse-backed MeterValues time-series for a charge point",
+        "tags": [
+          "timeseries"
+        ]
+      }
+    },
+    "/api/v1/charge-points/{cp_id}/reservations": {
+      "get": {
+        "operationId": "list_reservations_route_api_v1_charge_points__cp_id__reservations_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cp_id",
+            "required": true,
+            "schema": {
+              "title": "Cp Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 10000,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Limit"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "active",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Active"
+            }
+          },
+          {
+            "in": "query",
+            "name": "id_tag",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Id Tag"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReservationListResponse",
+                  "additionalProperties": true,
+                  "title": "Response List Reservations Route Api V1 Charge Points  Cp Id  Reservations Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List reservations for a charge point (cursor-paginated)",
+        "tags": [
+          "reservations"
+        ]
+      }
+    },
+    "/api/v1/charge-points/{cp_id}/status-history": {
+      "get": {
+        "operationId": "list_status_history_api_v1_charge_points__cp_id__status_history_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cp_id",
+            "required": true,
+            "schema": {
+              "title": "Cp Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "from",
+            "required": true,
+            "schema": {
+              "title": "From",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "to",
+            "required": true,
+            "schema": {
+              "title": "To",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "connector_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Connector Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 10000,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatusHistoryResponse",
+                  "additionalProperties": true,
+                  "title": "Response List Status History Api V1 Charge Points  Cp Id  Status History Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Bad from/to or window too large."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Unknown cp_id."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "ClickHouse-backed StatusNotification history for a charge point",
+        "tags": [
+          "timeseries"
+        ]
+      }
+    },
+    "/api/v1/charge-points/{cp_id}/transactions": {
+      "get": {
+        "operationId": "list_transactions_route_api_v1_charge_points__cp_id__transactions_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cp_id",
+            "required": true,
+            "schema": {
+              "title": "Cp Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 10000,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Limit"
+            }
+          },
+          {
+            "in": "query",
+            "name": "id_tag",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Id Tag"
+            }
+          },
+          {
+            "in": "query",
+            "name": "open",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Open"
+            }
+          },
+          {
+            "in": "query",
+            "name": "from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "From"
+            }
+          },
+          {
+            "in": "query",
+            "name": "to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "To"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TransactionListResponse",
+                  "additionalProperties": true,
+                  "title": "Response List Transactions Route Api V1 Charge Points  Cp Id  Transactions Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Bad cursor or unparseable from/to timestamp."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List transactions for a charge point (cursor-paginated)",
+        "tags": [
+          "transactions"
+        ]
+      }
+    },
+    "/api/v1/health": {
+      "get": {
+        "operationId": "health_api_v1_health_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse",
+                  "additionalProperties": true,
+                  "title": "Response Health Api V1 Health Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Liveness + per-component probe (auth-exempt)",
+        "tags": [
+          "health"
+        ]
+      }
+    },
+    "/api/v1/transactions/{transaction_id}": {
+      "get": {
+        "operationId": "get_transaction_route_api_v1_transactions__transaction_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "transaction_id",
+            "required": true,
+            "schema": {
+              "title": "Transaction Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TransactionDetail",
+                  "additionalProperties": true,
+                  "title": "Response Get Transaction Route Api V1 Transactions  Transaction Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Unknown transaction_id."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Single-transaction detail",
+        "tags": [
+          "transactions"
+        ]
+      }
+    }
+  }
+}

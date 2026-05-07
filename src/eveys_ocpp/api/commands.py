@@ -38,6 +38,13 @@ from eveys_ocpp.api._errors import (
     ERR_UNKNOWN_CP_ID,
     ApiError,
 )
+from eveys_ocpp.api._schemas import (
+    CommandAcceptedResponse,
+    ErrorEnvelope,
+    RemoteStartRequest,
+    RemoteStopRequest,
+    ResetRequest,
+)
 from eveys_ocpp.observability import get_logger
 from eveys_ocpp.persistence.db import session_scope
 from eveys_ocpp.persistence.repositories import (
@@ -122,8 +129,48 @@ def _ok(request: Request, status: str, **extra: Any) -> dict[str, Any]:
 
 # ---- Core remote control ---------------------------------------------------
 
+# OpenAPI annotation note: the routes below parse the raw JSON body
+# themselves (via `_body(request)`) rather than declaring a typed body
+# parameter, so FastAPI can't auto-derive the request schema. We attach
+# a `responses=` map and an `openapi_extra={"requestBody": ...}` blob
+# pointing at the matching Pydantic model. That populates Swagger UI
+# with both the example and the schema without changing the runtime
+# parsing path. (Switching to typed body params is a future-PR cleanup
+# — it'd also tighten validation, but it's a larger surface change.)
 
-@router.post(_BASE + "/remote-start")
+
+def _request_body_schema(model: type[Any]) -> dict[str, Any]:
+    """Build an OpenAPI `requestBody` blob that references the given
+    Pydantic model by name. FastAPI emits the model into `components/
+    schemas` as a side effect of the `responses=` reference, so the
+    `$ref` resolves on the generated OpenAPI document."""
+    return {
+        "content": {
+            "application/json": {
+                "schema": {"$ref": f"#/components/schemas/{model.__name__}"},
+            }
+        },
+        "required": True,
+    }
+
+
+_COMMAND_RESPONSES: dict[int | str, dict[str, Any]] = {
+    200: {"model": CommandAcceptedResponse},
+    404: {"model": ErrorEnvelope, "description": "Unknown cp_id."},
+    503: {"model": ErrorEnvelope, "description": "Charger offline."},
+    504: {
+        "model": ErrorEnvelope,
+        "description": "Charger did not reply within the per-RPC timeout.",
+    },
+}
+
+
+@router.post(
+    _BASE + "/remote-start",
+    summary="Tell a charger to start a session for an RFID tag",
+    responses=_COMMAND_RESPONSES,
+    openapi_extra={"requestBody": _request_body_schema(RemoteStartRequest)},
+)
 async def remote_start(request: Request, cp_id: str) -> dict[str, Any]:
     body = await _body(request)
     id_tag = _require(body, "id_tag")
@@ -140,7 +187,12 @@ async def remote_start(request: Request, cp_id: str) -> dict[str, Any]:
     return _ok(request, ocpp_response.status)
 
 
-@router.post(_BASE + "/remote-stop")
+@router.post(
+    _BASE + "/remote-stop",
+    summary="Tell a charger to stop an in-progress session",
+    responses=_COMMAND_RESPONSES,
+    openapi_extra={"requestBody": _request_body_schema(RemoteStopRequest)},
+)
 async def remote_stop(request: Request, cp_id: str) -> dict[str, Any]:
     body = await _body(request)
     transaction_id = _as_int(_require(body, "transaction_id"), field="transaction_id")
@@ -153,7 +205,12 @@ async def remote_stop(request: Request, cp_id: str) -> dict[str, Any]:
     return _ok(request, ocpp_response.status)
 
 
-@router.post(_BASE + "/reset")
+@router.post(
+    _BASE + "/reset",
+    summary="Soft or Hard reset of the charger",
+    responses=_COMMAND_RESPONSES,
+    openapi_extra={"requestBody": _request_body_schema(ResetRequest)},
+)
 async def reset(request: Request, cp_id: str) -> dict[str, Any]:
     body = await _body(request)
     raw_type = str(_require(body, "type"))

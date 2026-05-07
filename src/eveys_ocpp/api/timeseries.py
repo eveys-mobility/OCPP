@@ -31,6 +31,11 @@ from eveys_ocpp.api._errors import (
     ApiError,
 )
 from eveys_ocpp.api._pagination import clamp_limit
+from eveys_ocpp.api._schemas import (
+    ErrorEnvelope,
+    MeterValuesResponse,
+    StatusHistoryResponse,
+)
 from eveys_ocpp.persistence.db import session_scope
 from eveys_ocpp.persistence.repositories import get_charge_point_pk
 
@@ -97,7 +102,15 @@ def _ch_client(request: Request) -> Any:
     return client
 
 
-@router.get("/charge-points/{cp_id}/meter-values")
+@router.get(
+    "/charge-points/{cp_id}/meter-values",
+    summary="ClickHouse-backed MeterValues time-series for a charge point",
+    responses={
+        200: {"model": MeterValuesResponse},
+        400: {"model": ErrorEnvelope, "description": "Bad from/to or window too large."},
+        404: {"model": ErrorEnvelope, "description": "Unknown cp_id."},
+    },
+)
 async def list_meter_values(
     request: Request,
     cp_id: str,
@@ -135,7 +148,15 @@ async def list_meter_values(
     }
 
 
-@router.get("/charge-points/{cp_id}/status-history")
+@router.get(
+    "/charge-points/{cp_id}/status-history",
+    summary="ClickHouse-backed StatusNotification history for a charge point",
+    responses={
+        200: {"model": StatusHistoryResponse},
+        400: {"model": ErrorEnvelope, "description": "Bad from/to or window too large."},
+        404: {"model": ErrorEnvelope, "description": "Unknown cp_id."},
+    },
+)
 async def list_status_history(
     request: Request,
     cp_id: str,
