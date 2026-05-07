@@ -27,6 +27,7 @@ from operator dashboards without back-pressuring chargers.
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import asdict, is_dataclass
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -40,6 +41,7 @@ from ocpp.v16 import enums as ocpp_enums
 
 from eveys_ocpp._generated.ocpp_gw.v1 import gateway_grpc, gateway_pb2
 from eveys_ocpp.bus import BusReply, CommandBus
+from eveys_ocpp.metrics import registry as metrics_registry
 from eveys_ocpp.observability import bind_contextvars, clear_contextvars, get_logger
 from eveys_ocpp.persistence.db import session_scope
 from eveys_ocpp.persistence.repositories import (
@@ -860,25 +862,50 @@ class OcppGatewayService(gateway_grpc.OcppGatewayBase):
         existing translators only read ``.status`` so both shapes work.
         """
         if not cp_id:
+            metrics_registry.GRPC_REQUESTS_TOTAL.labels(rpc=rpc, code="INVALID_ARGUMENT").inc()
             raise GRPCError(Status.INVALID_ARGUMENT, "cp_id is required")
 
         bind_contextvars(rpc=rpc, cp_id=cp_id, direction="rx")
+        # Manual histogram timing because the outcome label (`code`) is
+        # only known at the return / exception site. `time_outbound`
+        # would lock in the label at entry and miss the actual outcome.
+        start = time.perf_counter()
+        code = "INTERNAL"
+
+        def _observe_latency() -> None:
+            metrics_registry.GRPC_REQUEST_LATENCY_SECONDS.labels(rpc=rpc, code=code).observe(
+                time.perf_counter() - start
+            )
+
         try:
             cp = self.connections.get(cp_id) if self.connections is not None else None
             if cp is not None:
-                return await self._call_local_cp(cp, rpc=rpc, ocpp_request=ocpp_request)
+                metrics_registry.GRPC_DISPATCH_ROUTE_TOTAL.labels(rpc=rpc, route="local").inc()
+                response = await self._call_local_cp(cp, rpc=rpc, ocpp_request=ocpp_request)
+                code = "OK"
+                metrics_registry.GRPC_REQUESTS_TOTAL.labels(rpc=rpc, code=code).inc()
+                _observe_latency()
+                return response
 
             owning_pod: str | None = None
             if self.registry is not None:
                 owning_pod = await self.registry.get_pod(cp_id)
 
             if owning_pod is None:
+                metrics_registry.GRPC_DISPATCH_ROUTE_TOTAL.labels(rpc=rpc, route="offline").inc()
+                metrics_registry.GRPC_CHARGER_OFFLINE_TOTAL.labels(rpc=rpc).inc()
+                code = "NOT_FOUND"
+                metrics_registry.GRPC_REQUESTS_TOTAL.labels(rpc=rpc, code=code).inc()
+                _observe_latency()
                 raise GRPCError(Status.NOT_FOUND, f"charger {cp_id} is offline")
 
             if self.bus is None:
                 # Bus not wired (test fixture or single-pod deployment) —
                 # preserve the pre-E2-10 behaviour so callers see a stable
                 # error rather than a confusing TIMEOUT.
+                code = "UNAVAILABLE"
+                metrics_registry.GRPC_REQUESTS_TOTAL.labels(rpc=rpc, code=code).inc()
+                _observe_latency()
                 raise GRPCError(
                     Status.UNAVAILABLE,
                     (
@@ -887,9 +914,21 @@ class OcppGatewayService(gateway_grpc.OcppGatewayBase):
                     ),
                 )
 
-            return await self._call_via_bus(
+            metrics_registry.GRPC_DISPATCH_ROUTE_TOTAL.labels(rpc=rpc, route="bus").inc()
+            response = await self._call_via_bus(
                 rpc=rpc, cp_id=cp_id, owning_pod=owning_pod, ocpp_request=ocpp_request
             )
+            code = "OK"
+            metrics_registry.GRPC_REQUESTS_TOTAL.labels(rpc=rpc, code=code).inc()
+            _observe_latency()
+            return response
+        except GRPCError as exc:
+            # Latency was already observed at the per-branch typed-
+            # error sites above; nothing more to record. Re-raise
+            # untouched so the surrounding gRPC layer's translator
+            # reaches the wire unchanged.
+            _ = exc  # silence the lint
+            raise
         finally:
             clear_contextvars()
 

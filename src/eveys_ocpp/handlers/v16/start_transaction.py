@@ -52,6 +52,8 @@ from ocpp.v16.datatypes import IdTagInfo
 from ocpp.v16.enums import AuthorizationStatus
 
 from eveys_ocpp._generated.events.v1 import events_pb2
+from eveys_ocpp.metrics import record_handler_error, time_handler
+from eveys_ocpp.metrics import registry as metrics_registry
 from eveys_ocpp.observability import bind_contextvars, get_logger
 from eveys_ocpp.persistence.db import session_scope
 from eveys_ocpp.persistence.repositories import get_charge_point_pk, insert_transaction
@@ -97,6 +99,35 @@ async def handle(
 ) -> call_result.StartTransaction:
     bind_contextvars(cp_id=cp.id, action="StartTransaction", direction="rx")
 
+    with time_handler("StartTransaction"):
+        try:
+            response = await _start_inner(
+                cp,
+                connector_id=connector_id,
+                id_tag=id_tag,
+                meter_start=meter_start,
+                timestamp=timestamp,
+            )
+            # `id_tag_info` is an IdTagInfo dataclass; `.status` is the
+            # AuthorizationStatus enum. The OCPP enum values are the
+            # canonical wire strings (Accepted / Blocked / Invalid /
+            # Expired / ConcurrentTx).
+            decision = getattr(getattr(response.id_tag_info, "status", None), "value", "Unknown")
+            metrics_registry.START_TRANSACTIONS_TOTAL.labels(decision=decision).inc()
+            return response
+        except Exception as exc:
+            record_handler_error("StartTransaction", exc)
+            raise
+
+
+async def _start_inner(
+    cp: EveysChargePoint,
+    *,
+    connector_id: int,
+    id_tag: str,
+    meter_start: int,
+    timestamp: str,
+) -> call_result.StartTransaction:
     if id_tag.upper().startswith("INVALID"):
         return call_result.StartTransaction(
             transaction_id=0,

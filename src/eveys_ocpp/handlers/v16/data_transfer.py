@@ -27,6 +27,8 @@ from typing import TYPE_CHECKING
 from ocpp.v16 import call_result
 from ocpp.v16.enums import DataTransferStatus
 
+from eveys_ocpp.metrics import record_handler_error, time_handler
+from eveys_ocpp.metrics import registry as metrics_registry
 from eveys_ocpp.observability import bind_contextvars, get_logger
 
 if TYPE_CHECKING:
@@ -44,15 +46,24 @@ async def handle(
 ) -> call_result.DataTransfer:
     bind_contextvars(cp_id=cp.id, action="DataTransfer", direction="rx")
 
-    log.info(
-        "data_transfer.received",
-        vendor_id=vendor_id,
-        message_id=message_id,
-        data_len=len(data) if data is not None else 0,
-    )
+    with time_handler("DataTransfer"):
+        try:
+            log.info(
+                "data_transfer.received",
+                vendor_id=vendor_id,
+                message_id=message_id,
+                data_len=len(data) if data is not None else 0,
+            )
 
-    # No vendor handlers wired today — return UnknownVendorId per spec.
-    # If/when operators want to honour a vendor, the dispatch table goes
-    # here. Keeping the surface small means we don't accidentally
-    # accept payloads we can't actually process.
-    return call_result.DataTransfer(status=DataTransferStatus.unknown_vendor_id)
+            # No vendor handlers wired today — return UnknownVendorId per spec.
+            # If/when operators want to honour a vendor, the dispatch table goes
+            # here. Keeping the surface small means we don't accidentally
+            # accept payloads we can't actually process.
+            status = DataTransferStatus.unknown_vendor_id
+            metrics_registry.DATA_TRANSFERS_TOTAL.labels(
+                vendor_id=vendor_id, status=status.value
+            ).inc()
+            return call_result.DataTransfer(status=status)
+        except Exception as exc:
+            record_handler_error("DataTransfer", exc)
+            raise

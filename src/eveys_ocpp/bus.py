@@ -58,6 +58,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from eveys_ocpp.metrics import registry as metrics_registry
 from eveys_ocpp.observability import get_logger
 
 if TYPE_CHECKING:
@@ -239,6 +240,8 @@ class CommandBus:
         loop = asyncio.get_running_loop()
         future: asyncio.Future[BusReply] = loop.create_future()
         self._inflight[request_id] = future
+        metrics_registry.BUS_INFLIGHT.inc()
+        request_started = time.perf_counter()
         try:
             log.info(
                 "bus.request.publish",
@@ -249,9 +252,14 @@ class CommandBus:
             )
             await self._redis.publish(cmd_channel(cp_id), json.dumps(envelope))
             try:
-                return await asyncio.wait_for(future, timeout=deadline)
+                reply = await asyncio.wait_for(future, timeout=deadline)
+                metrics_registry.BUS_REQUESTS_TOTAL.labels(
+                    rpc=rpc, outcome="ok" if reply.ok else "error"
+                ).inc()
+                return reply
             except TimeoutError:
                 log.warning("bus.request.timeout", rpc=rpc, cp_id=cp_id, request_id=request_id)
+                metrics_registry.BUS_REQUESTS_TOTAL.labels(rpc=rpc, outcome="timeout").inc()
                 return BusReply(
                     ok=False,
                     error_code="DEADLINE_EXCEEDED",
@@ -259,6 +267,10 @@ class CommandBus:
                 )
         finally:
             self._inflight.pop(request_id, None)
+            metrics_registry.BUS_INFLIGHT.dec()
+            metrics_registry.BUS_REQUEST_LATENCY_SECONDS.labels(rpc=rpc).observe(
+                time.perf_counter() - request_started
+            )
 
     # ---- owning side ---------------------------------------------------
 

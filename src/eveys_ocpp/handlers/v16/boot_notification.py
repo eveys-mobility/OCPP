@@ -50,6 +50,8 @@ from ocpp.v16 import call_result
 from ocpp.v16.enums import RegistrationStatus
 
 from eveys_ocpp._generated.events.v1 import events_pb2
+from eveys_ocpp.metrics import record_handler_error, time_handler
+from eveys_ocpp.metrics import registry as metrics_registry
 from eveys_ocpp.observability import bind_contextvars, get_logger
 from eveys_ocpp.persistence.db import session_scope
 from eveys_ocpp.persistence.repositories import upsert_charge_point_boot
@@ -125,6 +127,34 @@ async def handle(
 
     received_at = datetime.now(UTC)
 
+    with time_handler("BootNotification") as _set_outcome:
+        try:
+            return await _handle_inner(
+                cp,
+                message_id=message_id,
+                charge_point_vendor=charge_point_vendor,
+                charge_point_model=charge_point_model,
+                firmware_version=firmware_version,
+                charge_point_serial_number=charge_point_serial_number,
+                received_at=received_at,
+                set_outcome=_set_outcome,
+            )
+        except Exception as exc:
+            record_handler_error("BootNotification", exc)
+            raise
+
+
+async def _handle_inner(
+    cp: EveysChargePoint,
+    *,
+    message_id: str | None,
+    charge_point_vendor: str | None,
+    charge_point_model: str | None,
+    firmware_version: str | None,
+    charge_point_serial_number: str | None,
+    received_at: datetime,
+    set_outcome: object,
+) -> call_result.BootNotification:
     # Replay gate (E2-11). If the cache says we've seen this exact
     # message_id within the TTL window, return the same response and
     # skip the DB write, backend call, and Kafka emit. A Redis outage
@@ -141,6 +171,10 @@ async def handle(
             replay = False
         if replay:
             log.info("boot_notification.replay_ignored", message_id=message_id)
+            metrics_registry.BOOT_REPLAYS_TOTAL.inc()
+            metrics_registry.BOOT_NOTIFICATIONS_TOTAL.labels(decision="Accepted").inc()
+            if callable(set_outcome):
+                set_outcome("replay")
             return _response(
                 received_at,
                 RegistrationStatus.accepted,
@@ -196,6 +230,7 @@ async def handle(
         vendor=charge_point_vendor,
         model=charge_point_model,
     )
+    metrics_registry.BOOT_NOTIFICATIONS_TOTAL.labels(decision=status.value).inc()
 
     # Only emit `cp.boot` on Accepted. Pending/Rejected mean the
     # charger isn't actually online for downstream consumers

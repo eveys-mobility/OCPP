@@ -46,6 +46,8 @@ from typing import TYPE_CHECKING, Any
 from ocpp.v16 import call_result
 
 from eveys_ocpp._generated.events.v1 import events_pb2
+from eveys_ocpp.metrics import record_handler_error, time_handler
+from eveys_ocpp.metrics import registry as metrics_registry
 from eveys_ocpp.observability import bind_contextvars, get_logger
 
 if TYPE_CHECKING:
@@ -121,6 +123,27 @@ async def handle(
     """Charger-initiated periodic samples. Forward to Kafka."""
     bind_contextvars(cp_id=cp.id, action="MeterValues", direction="rx")
 
+    metrics_registry.METER_VALUES_TOTAL.inc()
+    with time_handler("MeterValues"):
+        try:
+            return await _meter_values_inner(
+                cp,
+                connector_id=connector_id,
+                meter_value=meter_value,
+                transaction_id=transaction_id,
+            )
+        except Exception as exc:
+            record_handler_error("MeterValues", exc)
+            raise
+
+
+async def _meter_values_inner(
+    cp: EveysChargePoint,
+    *,
+    connector_id: int,
+    meter_value: list[dict[str, Any]],
+    transaction_id: int | None,
+) -> call_result.MeterValues:
     sampled_values: list[events_pb2.SampledValue] = []
     charger_reported_at: str = ""
     quarantined = 0
@@ -144,6 +167,8 @@ async def handle(
                     unit=raw.get("unit"),
                 )
                 continue
+            measurand = str(raw.get("measurand") or "Energy.Active.Import.Register")
+            metrics_registry.METER_VALUE_SAMPLES_TOTAL.labels(measurand=measurand).inc()
             sampled_values.append(_to_proto_sampled_value(raw))
 
     log.info(

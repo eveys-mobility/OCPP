@@ -27,9 +27,9 @@ def time_handler(action: str) -> Iterator[Callable[[str], None]]:
     on `OCPP_HANDLER_LATENCY_SECONDS`.
 
     Yields a setter the caller uses to override the outcome label
-    before the block exits. The default outcome is "ok"; raising lets
-    `instrument_handler` (below) tag it as "error" instead. Idiomatic
-    use:
+    before the block exits. Default outcome is "ok"; if the body raises,
+    the outcome is automatically tagged "error" before the latency
+    observation fires (no caller plumbing needed). Idiomatic use:
 
         with time_handler("Heartbeat") as set_outcome:
             ...
@@ -48,6 +48,12 @@ def time_handler(action: str) -> Iterator[Callable[[str], None]]:
 
     try:
         yield set_outcome
+    except BaseException:
+        # Auto-tag error before the finally fires so the histogram
+        # observation carries `outcome="error"`. Caller's outcome
+        # override (if any) is preserved when no exception happened.
+        outcome_holder[0] = "error"
+        raise
     finally:
         elapsed = time.perf_counter() - start
         m.OCPP_HANDLER_LATENCY_SECONDS.labels(

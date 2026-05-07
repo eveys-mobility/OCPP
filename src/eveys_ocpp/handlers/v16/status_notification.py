@@ -41,6 +41,8 @@ from typing import TYPE_CHECKING
 from ocpp.v16 import call_result
 
 from eveys_ocpp._generated.events.v1 import events_pb2
+from eveys_ocpp.metrics import record_handler_error, time_handler
+from eveys_ocpp.metrics import registry as metrics_registry
 from eveys_ocpp.observability import bind_contextvars, get_logger
 from eveys_ocpp.persistence.db import session_scope
 from eveys_ocpp.persistence.repositories import update_status
@@ -76,37 +78,45 @@ async def handle(
 ) -> call_result.StatusNotification:
     bind_contextvars(cp_id=cp.id, action="StatusNotification", direction="rx")
 
-    received_at = datetime.now(UTC)
-    async with session_scope(cp.session_factory) as session:
-        await update_status(session, cp_id=cp.id, status=status)
-
-    log.info(
-        "status_notification",
-        connector_id=connector_id,
-        status=status,
-        error_code=error_code,
-    )
-
-    if cp.event_producer is not None:
-        payload = events_pb2.CpStatus(
-            connector_id=connector_id,
-            status=status,
-            error_code=error_code,
-            info=info or "",
-            vendor_id=vendor_id or "",
-            vendor_error_code=vendor_error_code or "",
-            charger_reported_at=timestamp or "",
-        )
-        envelope_bytes = _build_envelope(cp_id=cp.id, payload=payload, occurred_at=received_at)
-        # Best-effort: a Kafka publish failure must not crash the OCPP
-        # handler. Same rationale as meter_values.
+    metrics_registry.STATUS_NOTIFICATIONS_TOTAL.labels(status=status, error_code=error_code).inc()
+    with time_handler("StatusNotification"):
         try:
-            await cp.event_producer.publish(
-                topic=cp.settings.kafka_topic_cp_status,
-                key=cp.id,
-                value=envelope_bytes,
-            )
-        except Exception as exc:
-            log.warning("status_notification.publish_failed", error=str(exc))
+            received_at = datetime.now(UTC)
+            async with session_scope(cp.session_factory) as session:
+                await update_status(session, cp_id=cp.id, status=status)
 
-    return call_result.StatusNotification()
+            log.info(
+                "status_notification",
+                connector_id=connector_id,
+                status=status,
+                error_code=error_code,
+            )
+
+            if cp.event_producer is not None:
+                payload = events_pb2.CpStatus(
+                    connector_id=connector_id,
+                    status=status,
+                    error_code=error_code,
+                    info=info or "",
+                    vendor_id=vendor_id or "",
+                    vendor_error_code=vendor_error_code or "",
+                    charger_reported_at=timestamp or "",
+                )
+                envelope_bytes = _build_envelope(
+                    cp_id=cp.id, payload=payload, occurred_at=received_at
+                )
+                # Best-effort: a Kafka publish failure must not crash the OCPP
+                # handler. Same rationale as meter_values.
+                try:
+                    await cp.event_producer.publish(
+                        topic=cp.settings.kafka_topic_cp_status,
+                        key=cp.id,
+                        value=envelope_bytes,
+                    )
+                except Exception as exc:
+                    log.warning("status_notification.publish_failed", error=str(exc))
+
+            return call_result.StatusNotification()
+        except Exception as exc:
+            record_handler_error("StatusNotification", exc)
+            raise

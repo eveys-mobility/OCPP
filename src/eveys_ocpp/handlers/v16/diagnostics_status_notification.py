@@ -24,6 +24,8 @@ from typing import TYPE_CHECKING
 
 from ocpp.v16 import call_result
 
+from eveys_ocpp.metrics import record_handler_error, time_handler
+from eveys_ocpp.metrics import registry as metrics_registry
 from eveys_ocpp.observability import bind_contextvars, get_logger
 from eveys_ocpp.persistence.db import session_scope
 from eveys_ocpp.persistence.repositories import update_diagnostics_status
@@ -39,8 +41,14 @@ async def handle(
 ) -> call_result.DiagnosticsStatusNotification:
     bind_contextvars(cp_id=cp.id, action="DiagnosticsStatusNotification", direction="rx")
 
-    async with session_scope(cp.session_factory) as session:
-        await update_diagnostics_status(session, cp_id=cp.id, status=status)
+    metrics_registry.DIAGNOSTICS_STATUS_TOTAL.labels(status=status).inc()
+    with time_handler("DiagnosticsStatusNotification"):
+        try:
+            async with session_scope(cp.session_factory) as session:
+                await update_diagnostics_status(session, cp_id=cp.id, status=status)
 
-    log.info("diagnostics_status_notification", status=status)
-    return call_result.DiagnosticsStatusNotification()
+            log.info("diagnostics_status_notification", status=status)
+            return call_result.DiagnosticsStatusNotification()
+        except Exception as exc:
+            record_handler_error("DiagnosticsStatusNotification", exc)
+            raise
