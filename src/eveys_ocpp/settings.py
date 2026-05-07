@@ -637,6 +637,30 @@ class Settings(BaseSettings):
             "stability": "tunable",
         },
     )
+    clickhouse_ingestor_max_flush_failures: int = Field(
+        default=10,
+        ge=1,
+        le=10_000,
+        description=(
+            "Consecutive INSERT failures before the ingestor exits "
+            "non-zero so the supervisor (docker compose, kubernetes) "
+            "restarts it. Without this the process loops forever on a "
+            "wedged pipeline (wrong CH instance, missing schema, "
+            "type mismatch) and silently drops fresh events while the "
+            "Kafka consumer-group offset never advances."
+        ),
+        json_schema_extra={
+            "category": "clickhouse_ingest",
+            "impact": (
+                "Lower → faster CrashLoopBackOff signal at the cost of "
+                "tolerating fewer transient blips. Higher → more "
+                "patience for a flaky CH at the cost of a longer dead "
+                "window before the operator finds out."
+            ),
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
 
     # ---- Backend integration (ADR-0023, E3-2..E3-6) ---------------------
     backend_base_url: str = Field(

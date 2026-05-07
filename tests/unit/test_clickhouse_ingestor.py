@@ -603,3 +603,113 @@ async def test_ingest_loop_continues_when_poll_returns_no_records() -> None:
     # 3 polls, all empty → no flushes, no commits.
     assert flushed == []
     fake_consumer.commit.assert_not_called()
+
+
+# ---- bail-out on sustained flush failure --------------------------------
+
+
+@pytest.mark.asyncio
+async def test_ingest_loop_raises_fatal_after_n_consecutive_flush_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When `_flush_batch` keeps raising for `max_flush_failures` polls
+    in a row, the loop raises `IngestorFatalError` so the supervisor
+    restarts the process. Without this an unrecoverable misconfig
+    (wrong CH host, missing schema) loops silently forever — see #24."""
+    from eveys_ocpp.clickhouse.ingestor import IngestorFatalError, _Row
+
+    settings = Settings(clickhouse_ingestor_max_flush_failures=3)
+    ingestor = ClickHouseIngestor(settings)
+
+    env = events_pb2.EventEnvelope(
+        event_id="evt-1",
+        occurred_at="2026-05-04T00:00:00.000+00:00",
+        cp_id="CP_TEST",
+        cp_boot=events_pb2.CpBoot(vendor="ACME"),
+    )
+    record = SimpleNamespace(value=env.SerializeToString(), topic="cp.boot", offset=0)
+
+    async def fake_getmany(timeout_ms: int, max_records: int) -> dict[object, list[object]]:
+        # Every poll yields the same record so each iteration attempts
+        # a flush — without that, a poll that returns no records would
+        # `continue` past the failure-counter increment.
+        return {"part-0": [record]}
+
+    fake_consumer = AsyncMock()
+    fake_consumer.getmany = fake_getmany
+    fake_consumer.commit = AsyncMock()
+    ingestor._consumer = fake_consumer
+
+    async def failing_flush(rows: list[_Row]) -> None:
+        raise RuntimeError("ClickHouse exploded")
+
+    ingestor._flush_batch = failing_flush  # type: ignore[method-assign]
+
+    async def fake_sleep(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr("eveys_ocpp.clickhouse.ingestor.asyncio.sleep", fake_sleep)
+
+    with pytest.raises(IngestorFatalError, match="3 times in a row"):
+        await ingestor.ingest_loop()
+
+
+@pytest.mark.asyncio
+async def test_ingest_loop_resets_failure_counter_on_successful_flush(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The counter only catches *sustained* failure. A single transient
+    flush failure followed by a successful one must reset the counter
+    so we don't fail-fast on the occasional CH hiccup."""
+    from eveys_ocpp.clickhouse.ingestor import _Row
+
+    # Limit set to 3 — fail twice (resetting once), then keep going.
+    # If reset didn't happen, two more failures would tip us over.
+    settings = Settings(clickhouse_ingestor_max_flush_failures=3)
+    ingestor = ClickHouseIngestor(settings)
+
+    env = events_pb2.EventEnvelope(
+        event_id="evt-1",
+        occurred_at="2026-05-04T00:00:00.000+00:00",
+        cp_id="CP_TEST",
+        cp_boot=events_pb2.CpBoot(vendor="ACME"),
+    )
+    record = SimpleNamespace(value=env.SerializeToString(), topic="cp.boot", offset=0)
+
+    poll_count = {"n": 0}
+
+    async def fake_getmany(timeout_ms: int, max_records: int) -> dict[object, list[object]]:
+        poll_count["n"] += 1
+        if poll_count["n"] >= 6:
+            ingestor._shutdown.set()
+            return {}
+        return {"part-0": [record]}
+
+    fake_consumer = AsyncMock()
+    fake_consumer.getmany = fake_getmany
+    fake_consumer.commit = AsyncMock()
+    ingestor._consumer = fake_consumer
+
+    flush_calls = {"n": 0}
+
+    async def flaky_flush(rows: list[_Row]) -> None:
+        flush_calls["n"] += 1
+        # Fail on calls 1, 2 — succeed on 3 (resets counter to 0) —
+        # fail on 4, 5. Counter at end-of-loop = 2, well under 3.
+        if flush_calls["n"] in {1, 2, 4, 5}:
+            raise RuntimeError("transient")
+
+    ingestor._flush_batch = flaky_flush  # type: ignore[method-assign]
+
+    async def fake_sleep(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr("eveys_ocpp.clickhouse.ingestor.asyncio.sleep", fake_sleep)
+
+    # Loop should drain all polls without raising — the success on
+    # call 3 reset the counter so 2 more failures don't trip the limit.
+    await ingestor.ingest_loop()
+
+    # Sanity: we exercised the path we claimed to.
+    assert flush_calls["n"] == 5
+    assert ingestor._consecutive_flush_failures == 2

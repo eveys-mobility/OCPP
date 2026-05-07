@@ -58,6 +58,15 @@ if TYPE_CHECKING:
 log = get_logger(__name__)
 
 
+class IngestorFatalError(RuntimeError):
+    """Raised by the ingest loop when a misconfiguration is wedging
+    the pipeline — too many consecutive INSERT failures, schema
+    mismatch, etc. Surfaces a non-zero exit code so the orchestrator
+    (docker compose, kubernetes) restarts the process and the operator
+    sees a CrashLoopBackOff instead of a green container that's
+    silently broken."""
+
+
 # Mapping from Kafka topic → (table name, payload-extractor function).
 # The extractor pulls the right `oneof` variant from the envelope and
 # returns a dict suitable for ClickHouse INSERT. Centralizing the
@@ -183,6 +192,14 @@ class ClickHouseIngestor:
         self._consumer: AIOKafkaConsumer | None = None
         self._conn: Connection | None = None
         self._shutdown = asyncio.Event()
+        # Counter of consecutive `_flush_batch` failures, reset on every
+        # successful INSERT. When the count reaches
+        # ``settings.clickhouse_ingestor_max_flush_failures`` the loop
+        # raises ``IngestorFatalError`` so compose / k8s restart the
+        # process and the misconfiguration becomes visible as a
+        # CrashLoopBackOff. Without this the process logs forever and
+        # silently fails to deliver events — see issue #24.
+        self._consecutive_flush_failures = 0
 
     async def start(self) -> None:
         topics = (
@@ -349,9 +366,31 @@ class ClickHouseIngestor:
                 # ClickHouse INSERT failed. Don't commit offsets — the
                 # next poll re-delivers. Backoff briefly to avoid a hot
                 # loop against a misbehaving broker/CH.
-                log.exception("clickhouse.ingestor.flush_failed", error=str(exc))
+                self._consecutive_flush_failures += 1
+                limit = self._settings.clickhouse_ingestor_max_flush_failures
+                log.exception(
+                    "clickhouse.ingestor.flush_failed",
+                    error=str(exc),
+                    consecutive_failures=self._consecutive_flush_failures,
+                    max_failures=limit,
+                )
+                if self._consecutive_flush_failures >= limit:
+                    # We've been failing in a row for `limit` polls.
+                    # Most likely the schema is missing / wrong, or
+                    # we're pointed at the wrong CH instance — neither
+                    # heals on its own. Bail so the supervisor restarts
+                    # and the misconfiguration surfaces.
+                    raise IngestorFatalError(
+                        f"flush failed {self._consecutive_flush_failures} "
+                        f"times in a row (limit {limit}); aborting"
+                    ) from exc
                 await asyncio.sleep(1.0)
                 continue
+
+            # The batch landed — flush failures don't count once we
+            # see green. The counter only catches sustained failure,
+            # not the occasional transient hiccup.
+            self._consecutive_flush_failures = 0
 
             # Commit only after the batch landed successfully.
             try:
@@ -382,6 +421,13 @@ def main() -> None:
         asyncio.run(_run())
     except KeyboardInterrupt:
         sys.exit(0)
+    except IngestorFatalError as exc:
+        # Non-zero exit so docker compose / kubernetes restart us.
+        # Already logged in the loop with the rolling counter; here we
+        # just emit a single line so an operator tailing the container
+        # sees the cause without scrolling.
+        log.error("clickhouse.ingestor.exit_fatal", error=str(exc))
+        sys.exit(1)
 
 
 if __name__ == "__main__":
@@ -389,4 +435,4 @@ if __name__ == "__main__":
 
 
 # Re-export for tests + make __all__ explicit.
-__all__ = ["ClickHouseIngestor", "main"]
+__all__ = ["ClickHouseIngestor", "IngestorFatalError", "main"]
