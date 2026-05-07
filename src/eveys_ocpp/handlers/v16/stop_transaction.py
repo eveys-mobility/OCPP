@@ -55,6 +55,8 @@ from ocpp.v16 import call_result
 from ocpp.v16.datatypes import IdTagInfo
 from ocpp.v16.enums import AuthorizationStatus
 
+from eveys_ocpp.metrics import record_handler_error, time_handler
+from eveys_ocpp.metrics import registry as metrics_registry
 from eveys_ocpp.observability import bind_contextvars, get_logger
 from eveys_ocpp.persistence.db import session_scope
 from eveys_ocpp.persistence.repositories import stop_transaction
@@ -111,6 +113,35 @@ async def handle(
         transaction_id=transaction_id,
     )
 
+    metrics_registry.STOP_TRANSACTIONS_TOTAL.labels(reason=reason or "unknown").inc()
+    with time_handler("StopTransaction") as set_outcome:
+        try:
+            return await _stop_inner(
+                cp,
+                message_id=message_id,
+                transaction_id=transaction_id,
+                meter_stop=meter_stop,
+                timestamp=timestamp,
+                reason=reason,
+                id_tag=id_tag,
+                set_outcome=set_outcome,
+            )
+        except Exception as exc:
+            record_handler_error("StopTransaction", exc)
+            raise
+
+
+async def _stop_inner(
+    cp: EveysChargePoint,
+    *,
+    message_id: str | None,
+    transaction_id: int,
+    meter_stop: int,
+    timestamp: str,
+    reason: str | None,
+    id_tag: str | None,
+    set_outcome: object,
+) -> call_result.StopTransaction:
     # Redis replay gate (E2-11). Cache hit → return the canonical
     # response without DB work, AND skip the backend call (the first
     # request already settled the session backend-side). Falls through
@@ -124,6 +155,9 @@ async def handle(
             replay = False
         if replay:
             log.info("stop_transaction.replay_ignored_cache", message_id=message_id)
+            metrics_registry.STOP_TRANSACTION_REPLAYS_TOTAL.inc()
+            if callable(set_outcome):
+                set_outcome("replay")
             return _response(_local_status(id_tag))
 
     reported_at = datetime.fromisoformat(timestamp)
@@ -147,6 +181,9 @@ async def handle(
         # DB-layer dedup said "we've already stopped this transaction."
         # Don't double-bill the backend.
         log.info("stop_transaction.replay_ignored_db")
+        metrics_registry.STOP_TRANSACTION_REPLAYS_TOTAL.inc()
+        if callable(set_outcome):
+            set_outcome("replay")
         return _response(_local_status(id_tag))
 
     log.info("stop_transaction.applied", reason=reason, meter_stop=meter_stop)

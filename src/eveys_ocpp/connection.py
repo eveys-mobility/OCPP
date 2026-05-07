@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from ocpp.messages import MessageType, unpack
 from ocpp.routing import on
 from ocpp.v16 import ChargePoint as Cpv16
 from ocpp.v16 import call_result
@@ -26,6 +27,7 @@ from eveys_ocpp.handlers.v16 import (
     status_notification,
     stop_transaction,
 )
+from eveys_ocpp.metrics import registry as metrics_registry
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -139,3 +141,55 @@ class EveysChargePoint(Cpv16):
         self, **kwargs: Any
     ) -> call_result.FirmwareStatusNotification:
         return await firmware_status_notification.handle(self, **kwargs)
+
+    # ---- Prometheus instrumentation hooks (E4-1) ----------------------------
+    # Override the library's inbound and outbound dispatch points so we
+    # can count every OCPP CALL crossing this connection without
+    # touching each handler. The library handles the actual routing /
+    # response queueing — we just observe.
+
+    async def route_message(self, raw_msg: str) -> None:
+        """Tap the inbound dispatch path for the WS_MESSAGES_IN counter.
+
+        We unpack twice (once here for the action label, once again
+        inside `super().route_message`); a second `unpack` call on the
+        same string is cheap and avoids reimplementing the library's
+        Call/CallResult/CallError branching.
+
+        Malformed frames raise during the first unpack — we count them
+        under action="_invalid" so the metric stays bounded and the
+        library's own error path runs unchanged.
+        """
+        action = "_invalid"
+        try:
+            msg = unpack(raw_msg)
+            # CALLRESULT / CALLERROR don't carry an action; bucket
+            # them under "_response" to keep cardinality bounded.
+            action = msg.action if msg.message_type_id == MessageType.Call else "_response"
+        except Exception:
+            # Library logs + ignores malformed frames; we mirror by
+            # tagging _invalid so the count stays visible.
+            pass
+        metrics_registry.WS_MESSAGES_IN_TOTAL.labels(action=action).inc()
+        await super().route_message(raw_msg)
+
+    async def call(
+        self,
+        payload: Any,
+        suppress: bool = True,
+        unique_id: str | None = None,
+        skip_schema_validation: bool = False,
+    ) -> Any:
+        """Tap the outbound dispatch path for the WS_MESSAGES_OUT counter.
+
+        The action name is the payload's class name, mirroring the
+        library's own derivation in `ChargePoint.call`.
+        """
+        action = type(payload).__name__
+        metrics_registry.WS_MESSAGES_OUT_TOTAL.labels(action=action).inc()
+        return await super().call(
+            payload,
+            suppress=suppress,
+            unique_id=unique_id,
+            skip_schema_validation=skip_schema_validation,
+        )

@@ -49,6 +49,8 @@ from ocpp.v16 import call_result
 from ocpp.v16.datatypes import IdTagInfo
 from ocpp.v16.enums import AuthorizationStatus
 
+from eveys_ocpp.metrics import record_handler_error, time_handler
+from eveys_ocpp.metrics import registry as metrics_registry
 from eveys_ocpp.observability import bind_contextvars, get_logger
 from eveys_ocpp.platform import (
     AuthorizeResult,
@@ -91,56 +93,75 @@ async def handle(
 ) -> call_result.Authorize:
     bind_contextvars(cp_id=cp.id, action="Authorize", direction="rx")
 
-    # No backend client — stub `Accepted` for dev / W1.
-    if cp.backend_client is None:
-        log.info("authorize.no_backend_client", id_tag=id_tag, decision="Accepted")
-        return call_result.Authorize(id_tag_info=IdTagInfo(status=AuthorizationStatus.accepted))
+    with time_handler("Authorize"):
+        try:
+            # No backend client — stub `Accepted` for dev / W1.
+            if cp.backend_client is None:
+                log.info("authorize.no_backend_client", id_tag=id_tag, decision="Accepted")
+                metrics_registry.AUTHORIZE_TOTAL.labels(decision="Accepted", source="offline").inc()
+                return call_result.Authorize(
+                    id_tag_info=IdTagInfo(status=AuthorizationStatus.accepted)
+                )
 
-    # Cache lookup. Hit → forward immediately, no backend round-trip
-    # (the OCPP hot-path P99 budget collapses to whatever Redis takes,
-    # ~sub-ms). Miss / cache outage → fall through to the backend.
-    if cp.authorize_cache is not None:
-        cached = await cp.authorize_cache.get(cp_id=cp.id, id_tag=id_tag)
-        if cached is not None:
-            log.info(
-                "authorize.cache_hit",
-                id_tag=id_tag,
-                decision=cached.status,
-            )
-            return _id_tag_info_to_response(cached)
+            # Cache lookup. Hit → forward immediately, no backend round-trip
+            # (the OCPP hot-path P99 budget collapses to whatever Redis takes,
+            # ~sub-ms). Miss / cache outage → fall through to the backend.
+            if cp.authorize_cache is not None:
+                cached = await cp.authorize_cache.get(cp_id=cp.id, id_tag=id_tag)
+                if cached is not None:
+                    metrics_registry.AUTHORIZE_CACHE_HITS_TOTAL.inc()
+                    metrics_registry.AUTHORIZE_TOTAL.labels(
+                        decision=cached.status, source="cache"
+                    ).inc()
+                    log.info(
+                        "authorize.cache_hit",
+                        id_tag=id_tag,
+                        decision=cached.status,
+                    )
+                    return _id_tag_info_to_response(cached)
+                metrics_registry.AUTHORIZE_CACHE_MISSES_TOTAL.inc()
 
-    idempotency_key = f"ocpp-auth-{cp.id}-{id_tag}-{message_id or 'no-msg-id'}"
+            idempotency_key = f"ocpp-auth-{cp.id}-{id_tag}-{message_id or 'no-msg-id'}"
 
-    try:
-        result = await cp.backend_client.authorize(
-            id_tag=id_tag,
-            cp_id=cp.id,
-            idempotency_key=idempotency_key,
-        )
-    except BackendUnavailableError as exc:
-        return _fallback(cp, id_tag, exc)
-    except BackendBusinessError as exc:
-        # Backend understood the request and refused (e.g.
-        # `UNKNOWN_ID_TAG`). Pass that through as Invalid — the
-        # charger doesn't need the error_code, just the OCPP-level
-        # outcome. We deliberately do NOT cache this: a backend
-        # fix landing for an id_tag should reach the charger on
-        # the next tap, not after the cache TTL.
-        log.warning(
-            "authorize.business_rejected",
-            id_tag=id_tag,
-            error_code=exc.error_code,
-            message=str(exc),
-        )
-        return call_result.Authorize(id_tag_info=IdTagInfo(status=AuthorizationStatus.invalid))
+            try:
+                result = await cp.backend_client.authorize(
+                    id_tag=id_tag,
+                    cp_id=cp.id,
+                    idempotency_key=idempotency_key,
+                )
+            except BackendUnavailableError as exc:
+                return _fallback(cp, id_tag, exc)
+            except BackendBusinessError as exc:
+                # Backend understood the request and refused (e.g.
+                # `UNKNOWN_ID_TAG`). Pass that through as Invalid — the
+                # charger doesn't need the error_code, just the OCPP-level
+                # outcome. We deliberately do NOT cache this: a backend
+                # fix landing for an id_tag should reach the charger on
+                # the next tap, not after the cache TTL.
+                log.warning(
+                    "authorize.business_rejected",
+                    id_tag=id_tag,
+                    error_code=exc.error_code,
+                    message=str(exc),
+                )
+                metrics_registry.AUTHORIZE_TOTAL.labels(decision="Invalid", source="backend").inc()
+                return call_result.Authorize(
+                    id_tag_info=IdTagInfo(status=AuthorizationStatus.invalid)
+                )
 
-    # Cache the freshly-resolved result (Accepted/Blocked/Expired/Invalid/
-    # ConcurrentTx all alike — caching `Blocked` is just as valuable
-    # as caching `Accepted` for refusing repeated taps).
-    if cp.authorize_cache is not None:
-        await cp.authorize_cache.set(cp_id=cp.id, id_tag=id_tag, info=result.id_tag_info)
+            # Cache the freshly-resolved result (Accepted/Blocked/Expired/Invalid/
+            # ConcurrentTx all alike — caching `Blocked` is just as valuable
+            # as caching `Accepted` for refusing repeated taps).
+            if cp.authorize_cache is not None:
+                await cp.authorize_cache.set(cp_id=cp.id, id_tag=id_tag, info=result.id_tag_info)
 
-    return _result_to_response(result)
+            metrics_registry.AUTHORIZE_TOTAL.labels(
+                decision=result.id_tag_info.status, source="backend"
+            ).inc()
+            return _result_to_response(result)
+        except Exception as exc:
+            record_handler_error("Authorize", exc)
+            raise
 
 
 def _id_tag_info_to_response(info: PlatformIdTagInfo) -> call_result.Authorize:
@@ -195,6 +216,7 @@ def _fallback(
 
     if policy == "accept_offline":
         expiry = datetime.now(UTC) + timedelta(seconds=_OFFLINE_ACCEPT_WINDOW_SECONDS)
+        metrics_registry.AUTHORIZE_TOTAL.labels(decision="Accepted", source="offline").inc()
         return call_result.Authorize(
             id_tag_info=IdTagInfo(
                 status=AuthorizationStatus.accepted,
@@ -203,4 +225,5 @@ def _fallback(
         )
 
     # Default `reject` — return Invalid; charger refuses the session.
+    metrics_registry.AUTHORIZE_TOTAL.labels(decision="Invalid", source="offline").inc()
     return call_result.Authorize(id_tag_info=IdTagInfo(status=AuthorizationStatus.invalid))

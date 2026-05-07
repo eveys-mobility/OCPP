@@ -25,6 +25,8 @@ from typing import TYPE_CHECKING
 
 from ocpp.v16 import call_result
 
+from eveys_ocpp.metrics import record_handler_error, time_handler
+from eveys_ocpp.metrics import registry as metrics_registry
 from eveys_ocpp.observability import bind_contextvars, get_logger
 from eveys_ocpp.persistence.db import session_scope
 from eveys_ocpp.persistence.repositories import update_heartbeat
@@ -38,17 +40,23 @@ log = get_logger(__name__)
 async def handle(cp: EveysChargePoint) -> call_result.Heartbeat:
     bind_contextvars(cp_id=cp.id, action="Heartbeat", direction="rx")
 
-    now = datetime.now(UTC)
-    async with session_scope(cp.session_factory) as session:
-        await update_heartbeat(session, cp_id=cp.id, at=now)
+    metrics_registry.HEARTBEATS_TOTAL.inc()
+    with time_handler("Heartbeat"):
+        try:
+            now = datetime.now(UTC)
+            async with session_scope(cp.session_factory) as session:
+                await update_heartbeat(session, cp_id=cp.id, at=now)
 
-    if cp.registry is not None:
-        refreshed = await cp.registry.refresh(cp.id)
-        if not refreshed:
-            # Key expired between heartbeats. Re-claim ownership.
-            await cp.registry.mark_online(cp.id)
-            log.info("heartbeat.registry_reclaimed")
+            if cp.registry is not None:
+                refreshed = await cp.registry.refresh(cp.id)
+                if not refreshed:
+                    # Key expired between heartbeats. Re-claim ownership.
+                    await cp.registry.mark_online(cp.id)
+                    metrics_registry.HEARTBEAT_REGISTRY_RECLAIMS_TOTAL.inc()
+                    log.info("heartbeat.registry_reclaimed")
 
-    log.debug("heartbeat.tick")
-
-    return call_result.Heartbeat(current_time=now.isoformat())
+            log.debug("heartbeat.tick")
+            return call_result.Heartbeat(current_time=now.isoformat())
+        except Exception as exc:
+            record_handler_error("Heartbeat", exc)
+            raise

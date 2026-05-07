@@ -26,6 +26,8 @@ from typing import TYPE_CHECKING
 
 from ocpp.v16 import call_result
 
+from eveys_ocpp.metrics import record_handler_error, time_handler
+from eveys_ocpp.metrics import registry as metrics_registry
 from eveys_ocpp.observability import bind_contextvars, get_logger
 from eveys_ocpp.persistence.db import session_scope
 from eveys_ocpp.persistence.repositories import update_firmware_status
@@ -41,8 +43,14 @@ async def handle(
 ) -> call_result.FirmwareStatusNotification:
     bind_contextvars(cp_id=cp.id, action="FirmwareStatusNotification", direction="rx")
 
-    async with session_scope(cp.session_factory) as session:
-        await update_firmware_status(session, cp_id=cp.id, status=status)
+    metrics_registry.FIRMWARE_STATUS_TOTAL.labels(status=status).inc()
+    with time_handler("FirmwareStatusNotification"):
+        try:
+            async with session_scope(cp.session_factory) as session:
+                await update_firmware_status(session, cp_id=cp.id, status=status)
 
-    log.info("firmware_status_notification", status=status)
-    return call_result.FirmwareStatusNotification()
+            log.info("firmware_status_notification", status=status)
+            return call_result.FirmwareStatusNotification()
+        except Exception as exc:
+            record_handler_error("FirmwareStatusNotification", exc)
+            raise

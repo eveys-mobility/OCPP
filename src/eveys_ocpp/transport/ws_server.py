@@ -15,6 +15,7 @@ from websockets import Subprotocol
 from websockets.asyncio.server import ServerConnection, serve
 
 from eveys_ocpp.connection import EveysChargePoint
+from eveys_ocpp.metrics import registry as metrics_registry
 from eveys_ocpp.observability import bind_contextvars, clear_contextvars, get_logger
 
 if TYPE_CHECKING:
@@ -47,19 +48,24 @@ async def _on_connect(
     """Per-connection coroutine. Lives for the duration of the WS."""
     if connection.subprotocol != OCPP_SUBPROTOCOL:
         log.warning("ws.subprotocol_mismatch", got=connection.subprotocol)
+        metrics_registry.WS_HANDSHAKE_FAILURES_TOTAL.labels(reason="subprotocol").inc()
         await connection.close(1002, f"unsupported subprotocol; want {OCPP_SUBPROTOCOL}")
         return
 
     if connection.request is None:  # defensive — should never happen post-handshake
+        metrics_registry.WS_HANDSHAKE_FAILURES_TOTAL.labels(reason="no_request").inc()
         await connection.close(1008, "no request handshake")
         return
     cp_id = connection.request.path.strip("/")
     if not cp_id:
+        metrics_registry.WS_HANDSHAKE_FAILURES_TOTAL.labels(reason="empty_cp_id").inc()
         await connection.close(1008, "cp_id missing in URL path")
         return
 
     bind_contextvars(cp_id=cp_id)
     log.info("ws.connected")
+    metrics_registry.WS_CONNECTS_TOTAL.inc()
+    metrics_registry.WS_CONNECTIONS_ACTIVE.inc()
 
     if registry is not None:
         await registry.mark_online(cp_id)
@@ -77,8 +83,16 @@ async def _on_connect(
     )
     if connections is not None:
         connections.add(cp)
+    disconnect_reason = "clean"
     try:
         await cp.start()
+    except Exception:
+        # Any unhandled exception out of cp.start() means the
+        # connection terminated abnormally — broker error, runtime
+        # bug, etc. Tag the metric so an alert can fire on a sustained
+        # `error` rate distinct from clean disconnects.
+        disconnect_reason = "error"
+        raise
     finally:
         if connections is not None:
             connections.remove(cp)
@@ -87,6 +101,8 @@ async def _on_connect(
             # A reconnect to a different pod between disconnect and
             # this call must not clobber the new owner.
             await registry.mark_offline(cp_id)
+        metrics_registry.WS_CONNECTIONS_ACTIVE.dec()
+        metrics_registry.WS_DISCONNECTS_TOTAL.labels(reason=disconnect_reason).inc()
         log.info("ws.disconnected")
         clear_contextvars()
 
