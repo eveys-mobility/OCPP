@@ -54,7 +54,11 @@ def _settings_for_test(**overrides: Any) -> Settings:
         "backend_circuit_breaker_cooldown_seconds": 30.0,
     }
     base.update(overrides)
-    return Settings(**base)
+    # `_env_file=None` so a developer's local `.env` (which may flip
+    # `outbound_tls_verify=false` for self-signed dev backends) doesn't
+    # leak in and fail TLS-defaults-related tests. CI has no `.env`
+    # checked in, so this only manifests locally.
+    return Settings(_env_file=None, **base)
 
 
 def _client_against_mock(
@@ -385,6 +389,7 @@ def test_from_settings_propagates_tls_verify_flag() -> None:
     import ssl
 
     settings = Settings(
+        _env_file=None,
         backend_base_url="https://backend.test",
         backend_token="t",
         outbound_tls_verify=False,
@@ -405,6 +410,7 @@ def test_from_settings_keeps_tls_verify_on_by_default() -> None:
     import ssl
 
     settings = Settings(
+        _env_file=None,
         backend_base_url="https://backend.test",
         backend_token="t",
     )
