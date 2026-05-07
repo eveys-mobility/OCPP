@@ -1,0 +1,353 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {"type": "grafana", "uid": "-- Grafana --"},
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "description": "SLO compliance per `docs/14-slos.md`. Each panel pairs the long-window SLI (the headline number — what we promise) with a fast 5-minute series so operators can spot a regression before the 7d / 30d window catches up.",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "links": [
+    {"title": "Fleet overview", "type": "link", "url": "/d/eveys-ocpp-fleet", "targetBlank": false},
+    {"title": "SLO catalog", "type": "link", "url": "../docs/14-slos.md", "targetBlank": true}
+  ],
+  "liveNow": false,
+  "panels": [
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "type": "text",
+      "gridPos": {"h": 3, "w": 24, "x": 0, "y": 0},
+      "id": 100,
+      "options": {
+        "mode": "markdown",
+        "content": "**SLO compliance** — see [`docs/14-slos.md`](../docs/14-slos.md) for SLI definitions, targets, windows, and consequences. Each row pairs the headline (long-window) value with a `5m` short-window proxy so operators see regressions early. The error-budget column is `100% - target` minus current consumption."
+      }
+    },
+
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "unit": "percentunit",
+          "min": 0.95,
+          "max": 1.0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "red", "value": null},
+              {"color": "yellow", "value": 0.99},
+              {"color": "green", "value": 0.995}
+            ]
+          }
+        }
+      },
+      "gridPos": {"h": 5, "w": 12, "x": 0, "y": 3},
+      "id": 1,
+      "options": {
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "textMode": "value_and_name"
+      },
+      "title": "SLO 1 — Charger connection availability (30d, target ≥ 99.5%)",
+      "type": "stat",
+      "targets": [
+        {
+          "expr": "slo:boot_acceptance:ratio_30d",
+          "legendFormat": "30d",
+          "refId": "A",
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        },
+        {
+          "expr": "slo:boot_acceptance:ratio_5m",
+          "legendFormat": "5m",
+          "refId": "B",
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        }
+      ]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {
+        "defaults": {"color": {"mode": "palette-classic"}, "unit": "percentunit", "min": 0.95, "max": 1.0}
+      },
+      "gridPos": {"h": 5, "w": 12, "x": 12, "y": 3},
+      "id": 2,
+      "title": "SLO 1 trend (5m series)",
+      "type": "timeseries",
+      "options": {"legend": {"displayMode": "list", "placement": "bottom"}},
+      "targets": [
+        {
+          "expr": "slo:boot_acceptance:ratio_5m",
+          "legendFormat": "boot acceptance",
+          "refId": "A",
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        },
+        {
+          "expr": "0.995",
+          "legendFormat": "target",
+          "refId": "B",
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        }
+      ]
+    },
+
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "yellow", "value": 0.4},
+              {"color": "red", "value": 0.5}
+            ]
+          }
+        }
+      },
+      "gridPos": {"h": 5, "w": 12, "x": 0, "y": 8},
+      "id": 3,
+      "options": {
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "textMode": "value_and_name"
+      },
+      "title": "SLO 2 — Authorize P95 latency (7d, target ≤ 500ms)",
+      "type": "stat",
+      "targets": [
+        {
+          "expr": "slo:authorize_latency:p95_7d",
+          "legendFormat": "7d",
+          "refId": "A",
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        },
+        {
+          "expr": "slo:authorize_latency:p95_5m",
+          "legendFormat": "5m",
+          "refId": "B",
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        }
+      ]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "unit": "s"}},
+      "gridPos": {"h": 5, "w": 12, "x": 12, "y": 8},
+      "id": 4,
+      "title": "SLO 2 trend (5m P95)",
+      "type": "timeseries",
+      "options": {"legend": {"displayMode": "list", "placement": "bottom"}},
+      "targets": [
+        {
+          "expr": "slo:authorize_latency:p95_5m",
+          "legendFormat": "authorize P95",
+          "refId": "A",
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        },
+        {
+          "expr": "0.5",
+          "legendFormat": "target",
+          "refId": "B",
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        }
+      ]
+    },
+
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "yellow", "value": 2.5},
+              {"color": "red", "value": 3.0}
+            ]
+          }
+        }
+      },
+      "gridPos": {"h": 5, "w": 12, "x": 0, "y": 13},
+      "id": 5,
+      "options": {
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "textMode": "value_and_name"
+      },
+      "title": "SLO 3 — RemoteStart end-to-end P95 (7d, target ≤ 3s)",
+      "type": "stat",
+      "targets": [
+        {
+          "expr": "slo:remote_start_latency:p95_7d",
+          "legendFormat": "7d",
+          "refId": "A",
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        },
+        {
+          "expr": "slo:remote_start_latency:p95_5m",
+          "legendFormat": "5m",
+          "refId": "B",
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        }
+      ]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "unit": "s"}},
+      "gridPos": {"h": 5, "w": 12, "x": 12, "y": 13},
+      "id": 6,
+      "title": "SLO 3 trend (5m P95)",
+      "type": "timeseries",
+      "options": {"legend": {"displayMode": "list", "placement": "bottom"}},
+      "targets": [
+        {
+          "expr": "slo:remote_start_latency:p95_5m",
+          "legendFormat": "RemoteStart P95",
+          "refId": "A",
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        },
+        {
+          "expr": "3.0",
+          "legendFormat": "target",
+          "refId": "B",
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        }
+      ]
+    },
+
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "unit": "percentunit",
+          "min": 0.99,
+          "max": 1.0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "red", "value": null},
+              {"color": "yellow", "value": 0.999},
+              {"color": "green", "value": 1.0}
+            ]
+          }
+        }
+      },
+      "gridPos": {"h": 5, "w": 24, "x": 0, "y": 18},
+      "id": 7,
+      "options": {
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "textMode": "value_and_name"
+      },
+      "title": "SLO 4 — Transaction durability (30d, target = 100%)",
+      "type": "stat",
+      "targets": [
+        {
+          "expr": "slo:transaction_durability:ratio_30d",
+          "legendFormat": "30d",
+          "refId": "A",
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        }
+      ]
+    },
+
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "unit": "percentunit",
+          "min": 0.95,
+          "max": 1.0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "red", "value": null},
+              {"color": "yellow", "value": 0.98},
+              {"color": "green", "value": 0.99}
+            ]
+          }
+        }
+      },
+      "gridPos": {"h": 5, "w": 12, "x": 0, "y": 23},
+      "id": 8,
+      "options": {
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "textMode": "value_and_name"
+      },
+      "title": "SLO 5 — Webhook delivery success (7d, target ≥ 99%)",
+      "type": "stat",
+      "targets": [
+        {
+          "expr": "slo:webhook_delivery:ratio_7d",
+          "legendFormat": "7d",
+          "refId": "A",
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        },
+        {
+          "expr": "slo:webhook_delivery:ratio_5m",
+          "legendFormat": "5m",
+          "refId": "B",
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        }
+      ]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "unit": "percentunit", "min": 0.95, "max": 1.0}},
+      "gridPos": {"h": 5, "w": 12, "x": 12, "y": 23},
+      "id": 9,
+      "title": "SLO 5 trend (5m series)",
+      "type": "timeseries",
+      "options": {"legend": {"displayMode": "list", "placement": "bottom"}},
+      "targets": [
+        {
+          "expr": "slo:webhook_delivery:ratio_5m",
+          "legendFormat": "delivery success",
+          "refId": "A",
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        },
+        {
+          "expr": "0.99",
+          "legendFormat": "target",
+          "refId": "B",
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        }
+      ]
+    },
+
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "type": "text",
+      "gridPos": {"h": 6, "w": 24, "x": 0, "y": 28},
+      "id": 200,
+      "title": "Error-budget reference",
+      "options": {
+        "mode": "markdown",
+        "content": "Per [docs/14-slos.md](../docs/14-slos.md), error budgets are derived as `1 - target`:\n\n| SLO | Target | Error budget (window) |\n| --- | --- | --- |\n| 1 — Boot acceptance | ≥ 99.5% | 0.5% — ~3.6 hours of refused boots per 30d |\n| 2 — Authorize latency | ≤ 500ms (P95) | 5% of authorizes may exceed 500ms |\n| 3 — RemoteStart e2e | ≤ 3s (P95) | 5% of RemoteStarts may exceed 3s |\n| 4 — Transaction durability | = 100% | 0% — zero-tolerance; any miss is a billing incident |\n| 5 — Webhook delivery | ≥ 99% | 1% — the dispatcher's retries should absorb most transient hiccups |\n\nAlerting on SLO breach is intentionally **not** wired here — that's an operations task that depends on Alertmanager + paging integration, deferred until on-call is staffed (Phase 7)."
+      }
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 38,
+  "tags": ["eveys", "ocpp", "slo"],
+  "templating": {"list": []},
+  "time": {"from": "now-7d", "to": "now"},
+  "timepicker": {},
+  "timezone": "",
+  "title": "eveys/ocpp — SLOs",
+  "uid": "eveys-ocpp-slos",
+  "version": 1,
+  "weekStart": ""
+}

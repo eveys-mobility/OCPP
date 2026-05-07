@@ -101,6 +101,18 @@ When prod is on fire:
 5. Merge → tag → deploy.
 6. **Within 24h**, file a follow-up PR with the proper tests, docs, and post-mortem.
 
+## Breaking an SLO
+
+The five SLOs are catalogued in [`docs/14-slos.md`](./14-slos.md). When a panel on the [SLO dashboard](../deploy/grafana/dashboards/06-slos.json) goes red, follow the runbook:
+
+1. **Confirm it's real** — flick the dashboard's time-range to the long window (7d / 30d). Spikes in the 5m series often self-resolve before they touch the headline number.
+2. **Identify the SLI**. Each panel names which SLO it tracks; `docs/14-slos.md` has a per-SLO "common causes" sentence pointing at the right drill-down dashboard (Per-pod, Per-charger, Reconnect storms, Transactions).
+3. **Stop the bleed first**. If error-budget consumption is fast, prioritise stopping the regression over diagnosing it: revert the last deploy, scale the gateway out, etc.
+4. **Burn-rate triage**. SLO 4 (transaction durability) is **zero-tolerance** — wake the on-call engineer regardless of hour. The other four allow a measurable error budget; the rule of thumb is to act when ~25% of the window's budget is consumed in the first 10% of the window.
+5. **Post-mortem.** Any SLO breach gets a PIR within 48h per the [Communication](#communication) section. Even self-recovered breaches — the post-mortem documents *why* it self-recovered so we don't rely on luck twice.
+
+Today (Phase 4) the dashboard panels are the only signal. **Alerting on SLO breach is wired in Phase 7** when on-call is staffed (Alertmanager + paging integration). Until then this runbook assumes a human noticed the dashboard went red.
+
 ## Things that are easy to get wrong
 
 A few footguns in this codebase that have bitten contributors. Read once.

@@ -1,0 +1,107 @@
+groups:
+  - name: eveys_ocpp_slos
+    interval: 30s
+    rules:
+      # SLO 1 — Charger connection availability.
+      # SLI: fraction of BootNotifications the gateway accepted.
+      # Window: 30 days. Target: >= 99.5%.
+      - record: slo:boot_acceptance:ratio_30d
+        expr: |
+          sum(rate(eveys_ocpp_boot_notifications_total{decision="Accepted"}[30d]))
+          /
+          clamp_min(sum(rate(eveys_ocpp_boot_notifications_total[30d])), 1)
+      - record: slo:boot_acceptance:ratio_5m
+        # Faster-moving short-window proxy for the dashboard's "current"
+        # column. Doesn't drive the SLO directly — the 30d series does —
+        # but lets operators see if a regression is brewing without
+        # waiting a month for the headline number to dip.
+        expr: |
+          sum(rate(eveys_ocpp_boot_notifications_total{decision="Accepted"}[5m]))
+          /
+          clamp_min(sum(rate(eveys_ocpp_boot_notifications_total[5m])), 1)
+
+      # SLO 2 — Authorize latency.
+      # SLI: P95 of backend `authorize` HTTP latency over 7 days.
+      # Target: <= 500ms.
+      - record: slo:authorize_latency:p95_7d
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le) (
+              rate(eveys_ocpp_backend_request_latency_seconds_bucket{endpoint="authorize"}[7d])
+            )
+          )
+      - record: slo:authorize_latency:p95_5m
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le) (
+              rate(eveys_ocpp_backend_request_latency_seconds_bucket{endpoint="authorize"}[5m])
+            )
+          )
+
+      # SLO 3 — RemoteStart end-to-end latency.
+      # SLI: P95 of gRPC RemoteStart latency over 7 days. Target: <= 3s.
+      # The histogram already includes the OCPP CALL round-trip to the
+      # charger (per registry.py:258), so this measures the user-visible
+      # "tap RemoteStart, see charger respond" timeline.
+      - record: slo:remote_start_latency:p95_7d
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le) (
+              rate(eveys_ocpp_grpc_request_latency_seconds_bucket{rpc="RemoteStart"}[7d])
+            )
+          )
+      - record: slo:remote_start_latency:p95_5m
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le) (
+              rate(eveys_ocpp_grpc_request_latency_seconds_bucket{rpc="RemoteStart"}[5m])
+            )
+          )
+
+      # SLO 4 — Transaction durability.
+      # SLI: fraction of StopTransactions that landed in Postgres.
+      # Target: 100% (any miss is a billing incident).
+      #
+      # Caveat: we don't currently emit a separate "received but not
+      # persisted" counter — `eveys_ocpp_stop_transactions_total` is
+      # incremented after the handler's DB commit, so a stop that
+      # fails to persist gets counted in `eveys_ocpp_handler_errors_total
+      # {action="StopTransaction"}` instead. The SLI sums both as the
+      # denominator and only the persisted total as the numerator. If a
+      # future task adds a dedicated `received` counter, switch the
+      # denominator to that — see docs/14-slos.md.
+      - record: slo:transaction_durability:ratio_30d
+        expr: |
+          sum(rate(eveys_ocpp_stop_transactions_total[30d]))
+          /
+          clamp_min(
+            sum(rate(eveys_ocpp_stop_transactions_total[30d]))
+            +
+            sum(rate(eveys_ocpp_handler_errors_total{action="StopTransaction"}[30d])),
+            1
+          )
+
+      # SLO 5 — Webhook delivery success.
+      # SLI: fraction of webhook envelopes successfully delivered,
+      # *excluding* `rejected` (4xx — the backend's bug, not ours).
+      # Target: >= 99% over 7 days.
+      - record: slo:webhook_delivery:ratio_7d
+        expr: |
+          sum(rate(eveys_ocpp_webhook_deliveries_total{outcome="delivered"}[7d]))
+          /
+          clamp_min(
+            sum(rate(eveys_ocpp_webhook_deliveries_total{outcome=~"delivered|failed"}[7d])),
+            1
+          )
+      - record: slo:webhook_delivery:ratio_5m
+        expr: |
+          sum(rate(eveys_ocpp_webhook_deliveries_total{outcome="delivered"}[5m]))
+          /
+          clamp_min(
+            sum(rate(eveys_ocpp_webhook_deliveries_total{outcome=~"delivered|failed"}[5m])),
+            1
+          )

@@ -46,6 +46,7 @@ dev = [
     "pre-commit>=3.8",
     "freezegun>=1.5",              # deterministic timestamps in tests
     "grpcio-tools>=1.66",          # protoc + grpc_tools.protoc for codegen (dev only)
+    "pyyaml>=6.0",                 # parse `deploy/prometheus/rules.yml` in the SLO sanity test (E4-8). Transitively present today via pre-commit, but declared here so the test stays green if pre-commit drops the dep.
 ]
 
 [project.scripts]
