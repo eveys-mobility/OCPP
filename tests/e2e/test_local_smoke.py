@@ -37,6 +37,10 @@ _PG_HOST = os.environ.get("E2E_PG_HOST", "localhost")
 _REDIS_HOST = os.environ.get("E2E_REDIS_HOST", "localhost")
 _KAFKA_HOST = os.environ.get("E2E_KAFKA_HOST", "localhost")
 _CH_HOST = os.environ.get("E2E_CH_HOST", "localhost")
+# Compose remaps CH HTTP from 8123 to 8124 to dodge a Homebrew
+# `clickhouse server` already on the laptop (see issue #24). CI binds
+# CH directly on 8123, so it overrides via E2E_CH_HTTP_PORT=8123.
+_CH_HTTP_PORT = int(os.environ.get("E2E_CH_HTTP_PORT", "8124"))
 
 
 def _can_connect(host: str, port: int, timeout: float = 0.5) -> bool:
@@ -54,7 +58,7 @@ for _name, _host, _port in (
     ("postgres", _PG_HOST, 5432),
     ("redis", _REDIS_HOST, 6379),
     ("kafka", _KAFKA_HOST, 9092),
-    ("clickhouse-http", _CH_HOST, 8123),
+    ("clickhouse-http", _CH_HOST, _CH_HTTP_PORT),
 ):
     if not _can_connect(_host, _port):
         _unreachable_services.append(f"{_name} ({_host}:{_port})")
@@ -87,7 +91,7 @@ def compose_endpoints() -> Iterator[dict[str, str]]:
         "postgres": f"{_PG_HOST}:5432",
         "redis": f"{_REDIS_HOST}:6379",
         "kafka": f"{_KAFKA_HOST}:9092",
-        "clickhouse": f"{_CH_HOST}:8123",
+        "clickhouse": f"{_CH_HOST}:{_CH_HTTP_PORT}",
     }
 
 
@@ -101,7 +105,7 @@ def test_clickhouse_responds_ok() -> None:
     """ClickHouse `/ping` must return `Ok.\\n`."""
     import urllib.request
 
-    with urllib.request.urlopen(f"http://{_CH_HOST}:8123/ping", timeout=2) as resp:
+    with urllib.request.urlopen(f"http://{_CH_HOST}:{_CH_HTTP_PORT}/ping", timeout=2) as resp:
         body = resp.read().decode()
     assert body.strip() == "Ok."
 

@@ -78,10 +78,12 @@ Slower (~5 minutes cold start). Not the default.
 | Postgres 16 | `postgres:16-alpine` | `5432` | Transactional state (`charge_points`, `transactions`) |
 | Redis 7 | `redis:7-alpine` | `6379` | Online registry, idempotency cache, pub/sub |
 | Kafka (KRaft mode) | `apache/kafka:3.7.0` | `9092` | Event firehose |
-| ClickHouse | `clickhouse/clickhouse-server:24` (Ubuntu base; the `:24-alpine` variant is broken on Apple Silicon) | `8123` (HTTP), `9000` (native) | Time-series store ([ADR-0004](./adr/0004-clickhouse-timeseries-store.md)) |
-| `eveys/ocpp` | built locally | `19000` (WS, container 9000), `50051` (gRPC), `9100` (metrics) | This service |
+| ClickHouse | `clickhouse/clickhouse-server:24` (Ubuntu base; the `:24-alpine` variant is broken on Apple Silicon) | `8124` (HTTP, container 8123), `9001` (native, container 9000) | Time-series store ([ADR-0004](./adr/0004-clickhouse-timeseries-store.md)) |
+| `eveys/ocpp` | built locally | `19000` (WS, container 9000), `50051` (gRPC), `9100` (metrics), `8080` (REST) | This service |
 
-> **Note**: ClickHouse native protocol normally listens on `9000`. Our service also wants `9000` inside its container for the WebSocket port. The compose file remaps both onto host ports to avoid the collision: ClickHouse native to `9001`, gateway WS to **`19000`** (container `9000` for both, host published differently). HTTP (`8123`) is unchanged. So a charger or test client connects to `ws://<host>:19000/<cp_id>`.
+> **Note**: ClickHouse native protocol normally listens on `9000`. Our service also wants `9000` inside its container for the WebSocket port. The compose file remaps both onto host ports to avoid the collision: ClickHouse native to `9001`, gateway WS to **`19000`** (container `9000` for both, host published differently).
+>
+> ClickHouse HTTP (canonical `8123`) is also remapped — to **`8124`** — so that a Homebrew `clickhouse server` already running on the laptop (common on machines that touch other ClickHouse projects) can't quietly intercept queries: the loopback bind on the Homebrew side wins over docker's `*:8123`, and migrations end up in the wrong server with no error. `make doctor` flags the collision; `make ch-migrate` defaults to `8124`. CI environments that don't run a host-side CH override via `E2E_CH_HTTP_PORT=8123`.
 
 ### Bring it up
 
@@ -140,8 +142,8 @@ redis-cli -p 6379 PING
 echo "hello" | kcat -P -b localhost:9092 -t test
 kcat -C -b localhost:9092 -t test -c 1
 
-# ClickHouse — HTTP interface
-curl 'http://localhost:8123/?query=SELECT%201'
+# ClickHouse — HTTP interface (remapped from 8123 to 8124)
+curl 'http://localhost:8124/?query=SELECT%201'
 
 # eveys/ocpp metrics
 curl http://localhost:9100/metrics | head -20

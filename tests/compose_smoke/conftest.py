@@ -64,7 +64,9 @@ _EXPECTED_CONTAINERS = (
 # real WS / gRPC / DB / ClickHouse from outside the docker network.
 HOST_WS_PORT = 19000
 HOST_PG_PORT = 5432
-HOST_CH_HTTP_PORT = 8123
+# Compose remaps CH HTTP from the canonical 8123 to 8124 to dodge a
+# Homebrew `clickhouse server` already on the laptop (issue #24).
+HOST_CH_HTTP_PORT = 8124
 
 # Where the published ports actually answer. On a laptop this is
 # `localhost`. Under GitLab Docker-in-Docker the test process and the
