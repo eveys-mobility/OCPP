@@ -240,3 +240,33 @@ def test_classify_op_buckets_known_verbs() -> None:
     assert _classify_op("DELETE FROM x") == "delete"
     assert _classify_op("CREATE TABLE x()") == "other"
     assert _classify_op("") == "other"
+
+
+def test_query_timer_observes_against_real_engine() -> None:
+    """Wire `_attach_query_timer` to a real sync sqlite engine and run a
+    query — the histogram count for `select` must increment by 1.
+
+    Regression guard: an earlier version stored the timer on
+    `cursor.info`, which works for sync DBAPI cursors but blew up under
+    asyncpg's adapted cursor (`AsyncAdapt_asyncpg_cursor` has no
+    `.info`). Storing on `connection.info` works on every dialect.
+    """
+    from sqlalchemy import create_engine, text
+
+    from eveys_ocpp.persistence.db import _attach_query_timer
+
+    def _select_count() -> float:
+        for family in m.DB_QUERY_LATENCY_SECONDS.collect():
+            for sample in family.samples:
+                if sample.name.endswith("_count") and sample.labels.get("op") == "select":
+                    return float(sample.value)
+        return 0.0
+
+    eng = create_engine("sqlite:///:memory:")
+    _attach_query_timer(eng)
+    before = _select_count()
+    with eng.connect() as conn:
+        conn.execute(text("SELECT 1"))
+    after = _select_count()
+
+    assert after - before >= 1.0

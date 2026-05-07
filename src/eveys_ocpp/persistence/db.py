@@ -46,31 +46,36 @@ def _attach_query_timer(sync_engine: Any) -> None:
     so every statement observes one latency sample.
 
     Events fire on the synchronous core engine (the async engine wraps
-    it). Time is stored on the cursor's `info` mapping — SA's
-    documented per-statement bag — to survive pool checkout/checkin.
+    it). Time is stored on the connection's `info` mapping — SA's
+    documented per-connection scratch dict, present on every dialect
+    including the asyncpg adapter. We can't use `cursor.info` because
+    asyncpg's adapted cursor (`AsyncAdapt_asyncpg_cursor`) doesn't
+    expose one. A single SA connection only executes one statement at
+    a time within the engine's execution model, so the per-connection
+    scope is correct for matching before/after.
     """
 
     @event.listens_for(sync_engine, "before_cursor_execute")
     def _before(
-        _conn: Any,
-        cursor: Any,
+        conn: Any,
+        _cursor: Any,
         _statement: str,
         _params: Any,
         _context: Any,
         _executemany: bool,
     ) -> None:
-        cursor.info["_eveys_query_started"] = time.perf_counter()
+        conn.info["_eveys_query_started"] = time.perf_counter()
 
     @event.listens_for(sync_engine, "after_cursor_execute")
     def _after(
-        _conn: Any,
-        cursor: Any,
+        conn: Any,
+        _cursor: Any,
         statement: str,
         _params: Any,
         _context: Any,
         _executemany: bool,
     ) -> None:
-        started = cursor.info.pop("_eveys_query_started", None)
+        started = conn.info.pop("_eveys_query_started", None)
         if started is None:
             return  # mismatched pair (executemany re-entry); skip rather than mislabel
         metrics_registry.DB_QUERY_LATENCY_SECONDS.labels(op=_classify_op(statement)).observe(
