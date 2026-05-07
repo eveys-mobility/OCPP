@@ -20,7 +20,12 @@ from eveys_ocpp.events import KafkaEventProducer
 from eveys_ocpp.idempotency import IdempotencyCache
 from eveys_ocpp.metrics import MetricsServer
 from eveys_ocpp.metrics import registry as metrics_registry
-from eveys_ocpp.observability import configure_logging, get_logger
+from eveys_ocpp.observability import (
+    configure_logging,
+    configure_tracing,
+    get_logger,
+    shutdown_tracing,
+)
 from eveys_ocpp.persistence.db import make_engine, make_session_factory
 from eveys_ocpp.platform import AuthorizeCache, BackendHTTPClient
 from eveys_ocpp.registry import Registry
@@ -180,6 +185,10 @@ async def _serve_all(
         await redis.aclose()
         if metrics_server is not None:
             await metrics_server.stop()
+        # Flush in-flight spans to the OTLP exporter. No-op when
+        # tracing was never configured. Last in the teardown so spans
+        # for the shutdown sequence itself are exported.
+        shutdown_tracing()
 
 
 def main() -> None:
@@ -197,8 +206,16 @@ def main() -> None:
 
     settings = get_settings()
     configure_logging(level=settings.log_level, json=settings.log_json)
+    # Tracing must be set up before any handler emits a span. Idempotent
+    # and a no-op when `tracing_enabled=False`, so safe to call early.
+    # The shutdown path in the run() finally block flushes pending spans.
+    configure_tracing(settings)
     log = get_logger(__name__)
-    log.info("startup", version=__version__)
+    log.info(
+        "startup",
+        version=__version__,
+        tracing_enabled=settings.tracing_enabled,
+    )
 
     engine = make_engine(
         settings.db_url,

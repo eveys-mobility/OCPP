@@ -190,6 +190,15 @@ sensitivity.
 | `EVEYS_OCPP_METRICS_PATH` | `/metrics` | string | tunable | no | Path the scrape endpoint serves on. Lets ops mount it at `/internal/metrics` behind a path-based proxy without a code change. Path is matched exactly; trailing slashes are not normalised. | Cosmetic + access-control via reverse-proxy rules. |
 | `EVEYS_OCPP_METRICS_INCLUDE_PYTHON_COLLECTORS` | `true` | bool | tunable | no | Whether prometheus_client's default GC / process / platform collectors stay registered. They emit ~12 series an operator rarely needs (`python_gc_objects_collected_total`, `process_resident_memory_bytes`, etc.). Set False to trim them in resource-tight environments. Most fleets keep True — they're free and they catch GC stalls. | False removes `python_*` and `process_*` series from the scrape output. No instrumentation we own depends on them; Grafana dashboards built off our `eveys_ocpp_*` namespace are unaffected. |
 
+## OpenTelemetry tracing (Phase 4 / E4-3)
+
+| Variable | Default | Range | Stability | Secret | What it does | Impact of changing |
+|---|---|---|---|---|---|---|
+| `EVEYS_OCPP_TRACING_ENABLED` | `false` | bool | structural | no | Master switch for OpenTelemetry tracing. Default False — tracing is opt-in because most environments don't have an OTLP collector listening, and a tracer with a misconfigured exporter quietly buffers spans until OOM. Flip to True only when `tracing_otlp_endpoint` points at a real collector. | False keeps the global `NoOpTracerProvider` — every `tracer.start_as_current_span(...)` is a few-ns no-op. True activates the SDK; spans flow to the configured OTLP endpoint. |
+| `EVEYS_OCPP_TRACING_OTLP_ENDPOINT` | `http://localhost:4317` | string | structural | no | OTLP/gRPC endpoint for span export. Standard collector port is 4317 (gRPC) and 4318 (HTTP); we use gRPC. Honoured only when `tracing_enabled=True`. The dotted-default makes it obvious this isn't yet pointing at a real collector. | Pointing at an unreachable endpoint silently buffers spans (the OTLP exporter retries with backoff). The SDK logs export failures at WARNING — watch for `Failed to export batch` in stderr at boot. |
+| `EVEYS_OCPP_TRACING_SAMPLE_RATE` | `1.0` | 0.0–1.0 | tunable | no | Head-based sample rate in `[0.0, 1.0]`. 1.0 traces every request — fine in dev. In production set this to 0.01-0.1 unless your collector is sized for full-rate. | Lowering this drops spans uniformly across all operations. Errors are *not* preferentially kept (no tail-based sampling at the SDK layer); use a collector-side tail sampler if you need that. |
+| `EVEYS_OCPP_TRACING_SERVICE_NAME` | `eveys-ocpp` | string | structural | no | `service.name` resource attribute attached to every span. Identifies this service in the trace UI; default matches the python package name. Multiple replicas of the same service share this — `service.instance.id` (auto-set from `pod_id`) discriminates between replicas. | Changing this re-bins all spans under a new service in your trace backend; existing saved searches break. Treat as fixed once a deployment is live. |
+
 ---
 
 ## Common operations

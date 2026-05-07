@@ -1270,6 +1270,90 @@ class Settings(BaseSettings):
         },
     )
 
+    # ---- Tracing (Phase 4 / E4-3) ---------------------------------------
+    tracing_enabled: bool = Field(
+        default=False,
+        description=(
+            "Master switch for OpenTelemetry tracing. Default False — "
+            "tracing is opt-in because most environments don't have an "
+            "OTLP collector listening, and a tracer with a misconfigured "
+            "exporter quietly buffers spans until OOM. Flip to True only "
+            "when `tracing_otlp_endpoint` points at a real collector."
+        ),
+        json_schema_extra={
+            "category": "tracing",
+            "impact": (
+                "False keeps the global `NoOpTracerProvider` — every "
+                "`tracer.start_as_current_span(...)` is a few-ns no-op. "
+                "True activates the SDK; spans flow to the configured "
+                "OTLP endpoint."
+            ),
+            "secret": False,
+            "stability": "structural",
+        },
+    )
+    tracing_otlp_endpoint: str = Field(
+        default="http://localhost:4317",
+        description=(
+            "OTLP/gRPC endpoint for span export. Standard collector port "
+            "is 4317 (gRPC) and 4318 (HTTP); we use gRPC. Honoured only "
+            "when `tracing_enabled=True`. The dotted-default makes it "
+            "obvious this isn't yet pointing at a real collector."
+        ),
+        json_schema_extra={
+            "category": "tracing",
+            "impact": (
+                "Pointing at an unreachable endpoint silently buffers "
+                "spans (the OTLP exporter retries with backoff). The SDK "
+                "logs export failures at WARNING — watch for "
+                "`Failed to export batch` in stderr at boot."
+            ),
+            "secret": False,
+            "stability": "structural",
+        },
+    )
+    tracing_sample_rate: float = Field(
+        default=1.0,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Head-based sample rate in `[0.0, 1.0]`. 1.0 traces every "
+            "request — fine in dev. In production set this to "
+            "0.01-0.1 unless your collector is sized for full-rate."
+        ),
+        json_schema_extra={
+            "category": "tracing",
+            "impact": (
+                "Lowering this drops spans uniformly across all "
+                "operations. Errors are *not* preferentially kept (no "
+                "tail-based sampling at the SDK layer); use a collector-"
+                "side tail sampler if you need that."
+            ),
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+    tracing_service_name: str = Field(
+        default="eveys-ocpp",
+        description=(
+            "`service.name` resource attribute attached to every span. "
+            "Identifies this service in the trace UI; default matches "
+            "the python package name. Multiple replicas of the same "
+            "service share this — `service.instance.id` (auto-set from "
+            "`pod_id`) discriminates between replicas."
+        ),
+        json_schema_extra={
+            "category": "tracing",
+            "impact": (
+                "Changing this re-bins all spans under a new service in "
+                "your trace backend; existing saved searches break. "
+                "Treat as fixed once a deployment is live."
+            ),
+            "secret": False,
+            "stability": "structural",
+        },
+    )
+
 
 def get_settings() -> Settings:
     """Build a fresh `Settings` from the current environment.

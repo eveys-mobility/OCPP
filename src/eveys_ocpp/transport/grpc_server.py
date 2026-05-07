@@ -38,6 +38,9 @@ from grpclib.exceptions import GRPCError
 from grpclib.server import Server, Stream
 from ocpp.v16 import call as ocpp_call
 from ocpp.v16 import enums as ocpp_enums
+from opentelemetry import trace as _otel_trace
+from opentelemetry.trace import Status as _OtelStatus
+from opentelemetry.trace import StatusCode as _OtelStatusCode
 
 from eveys_ocpp._generated.ocpp_gw.v1 import gateway_grpc, gateway_pb2
 from eveys_ocpp.bus import BusReply, CommandBus
@@ -65,6 +68,10 @@ if TYPE_CHECKING:
     from eveys_ocpp.settings import Settings
 
 log = get_logger(__name__)
+
+# Resolve per-call against the current global TracerProvider — see the
+# matching note in `metrics/instrumentation.py`.
+_TRACER_NAME = "eveys_ocpp.transport.grpc_server"
 
 # Cap on how long we'll wait for an OCPP charger to reply before giving up
 # on a CSMS-initiated request. OCPP 1.6 doesn't mandate a value; chargers
@@ -877,6 +884,14 @@ class OcppGatewayService(gateway_grpc.OcppGatewayBase):
                 time.perf_counter() - start
             )
 
+        # Span around the whole dispatch — covers local-path, bus-route,
+        # and offline branches. The status code only resolves at exit
+        # so we set the span status in the finally below.
+        span_ctx = _otel_trace.get_tracer(_TRACER_NAME).start_as_current_span(
+            f"grpc.{rpc}",
+            attributes={"rpc": rpc, "cp_id": cp_id},
+        )
+        span = span_ctx.__enter__()
         try:
             cp = self.connections.get(cp_id) if self.connections is not None else None
             if cp is not None:
@@ -927,9 +942,19 @@ class OcppGatewayService(gateway_grpc.OcppGatewayBase):
             # error sites above; nothing more to record. Re-raise
             # untouched so the surrounding gRPC layer's translator
             # reaches the wire unchanged.
-            _ = exc  # silence the lint
+            span.set_attribute("grpc.code", code)
+            span.set_status(_OtelStatus(_OtelStatusCode.ERROR, exc.message or code))
             raise
+        except BaseException as exc:
+            span.record_exception(exc)
+            span.set_status(_OtelStatus(_OtelStatusCode.ERROR, type(exc).__name__))
+            raise
+        else:
+            span.set_attribute("grpc.code", code)
+            if code != "OK":
+                span.set_status(_OtelStatus(_OtelStatusCode.ERROR, code))
         finally:
+            span_ctx.__exit__(None, None, None)
             clear_contextvars()
 
     async def _call_local_cp(self, cp: EveysChargePoint, *, rpc: str, ocpp_request: Any) -> Any:

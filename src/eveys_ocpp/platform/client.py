@@ -241,6 +241,15 @@ class BackendHTTPClient:
         headers: dict[str, str] = {"X-Request-ID": request_id}
         if idempotency_key is not None:
             headers["Idempotency-Key"] = idempotency_key
+        # Propagate W3C trace context into the outbound request so the
+        # backend's spans are children of ours. No-op when tracing is
+        # disabled (no `traceparent` written). Per-attempt: retries get
+        # fresh `traceparent` sample IDs by virtue of being the same
+        # span context, which is what we want — one span covers all
+        # retries of the same logical request.
+        from eveys_ocpp.observability import inject_context
+
+        inject_context(headers)
 
         last_exc: Exception | None = None
         for attempt in range(max_retries + 1):
