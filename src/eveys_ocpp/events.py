@@ -22,10 +22,12 @@ Two implementations:
 
 from __future__ import annotations
 
+import time
 from typing import TYPE_CHECKING, Protocol
 
 from aiokafka import AIOKafkaProducer
 
+from eveys_ocpp.metrics import registry as metrics_registry
 from eveys_ocpp.observability import get_logger
 
 if TYPE_CHECKING:
@@ -122,7 +124,19 @@ class KafkaEventProducer:
     async def publish(self, *, topic: str, key: str, value: bytes) -> None:
         if self._producer is None:
             raise RuntimeError("KafkaEventProducer.publish called before start()")
-        await self._producer.send_and_wait(topic, value=value, key=key.encode("utf-8"))
+        start = time.perf_counter()
+        try:
+            await self._producer.send_and_wait(topic, value=value, key=key.encode("utf-8"))
+        except Exception:
+            metrics_registry.KAFKA_PUBLISH_TOTAL.labels(topic=topic, outcome="error").inc()
+            raise
+        else:
+            metrics_registry.KAFKA_PUBLISH_TOTAL.labels(topic=topic, outcome="ok").inc()
+            metrics_registry.KAFKA_PUBLISH_BYTES_TOTAL.labels(topic=topic).inc(len(value))
+        finally:
+            metrics_registry.KAFKA_PUBLISH_LATENCY_SECONDS.labels(topic=topic).observe(
+                time.perf_counter() - start
+            )
 
 
 class NullEventProducer:

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -26,6 +27,7 @@ import httpx
 from aiokafka import AIOKafkaConsumer
 
 from eveys_ocpp._generated.events.v1 import events_pb2
+from eveys_ocpp.metrics import registry as metrics_registry
 from eveys_ocpp.observability import get_logger
 from eveys_ocpp.webhooks.signer import compute_signature
 
@@ -210,6 +212,7 @@ class WebhookDispatcher:
 
         max_attempts = self._settings.webhook_max_attempts
         for attempt in range(1, max_attempts + 1):
+            metrics_registry.WEBHOOK_ATTEMPTS_TOTAL.labels(event_type=event_type).inc()
             headers = {
                 "Content-Type": "application/json",
                 "X-Eveys-Signature": signature,
@@ -218,9 +221,13 @@ class WebhookDispatcher:
                 "X-Eveys-Delivered-At": datetime.now(UTC).isoformat(),
                 "X-Eveys-Attempt": str(attempt),
             }
+            attempt_started = time.perf_counter()
             try:
                 response = await self._http.post(url, content=body_bytes, headers=headers)
             except (httpx.TimeoutException, httpx.NetworkError) as exc:
+                metrics_registry.WEBHOOK_DELIVERY_LATENCY_SECONDS.labels(
+                    event_type=event_type
+                ).observe(time.perf_counter() - attempt_started)
                 log.warning(
                     "webhook.delivery_attempt_failed",
                     url=url,
@@ -234,6 +241,10 @@ class WebhookDispatcher:
                 await asyncio.sleep(_BACKOFF_SECONDS[attempt - 1])
                 continue
 
+            metrics_registry.WEBHOOK_DELIVERY_LATENCY_SECONDS.labels(event_type=event_type).observe(
+                time.perf_counter() - attempt_started
+            )
+
             if 200 <= response.status_code < 300:
                 log.info(
                     "webhook.delivered",
@@ -243,6 +254,9 @@ class WebhookDispatcher:
                     attempt=attempt,
                     status=response.status_code,
                 )
+                metrics_registry.WEBHOOK_DELIVERIES_TOTAL.labels(
+                    event_type=event_type, outcome="delivered"
+                ).inc()
                 return
 
             if response.status_code == 429 or response.status_code >= 500:
@@ -269,6 +283,9 @@ class WebhookDispatcher:
                 status=response.status_code,
                 body=response.text[:200],
             )
+            metrics_registry.WEBHOOK_DELIVERIES_TOTAL.labels(
+                event_type=event_type, outcome="rejected"
+            ).inc()
             return
 
         log.error(
@@ -278,6 +295,9 @@ class WebhookDispatcher:
             event_type=event_type,
             max_attempts=max_attempts,
         )
+        metrics_registry.WEBHOOK_DELIVERIES_TOTAL.labels(
+            event_type=event_type, outcome="failed"
+        ).inc()
 
     # ---- envelope → wire body ---------------------------------------------
 

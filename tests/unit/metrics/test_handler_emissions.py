@@ -150,3 +150,49 @@ async def test_status_notification_emits_status_and_error_label(
     )
     after = _counter_sample(m.STATUS_NOTIFICATIONS_TOTAL, status="Charging", error_code="NoError")
     assert after == before + 1
+
+
+# ---- Circuit breaker -----------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_circuit_breaker_records_open_transition() -> None:
+    """Two consecutive failures past the threshold trip the breaker
+    and bump the transitions counter."""
+    from eveys_ocpp.platform.circuit_breaker import CircuitBreaker
+
+    breaker = CircuitBreaker(name="test_breaker_open", threshold=2, cooldown_seconds=60)
+
+    before = _counter_sample(
+        m.BACKEND_CIRCUIT_TRANSITIONS_TOTAL, name="test_breaker_open", to_state="open"
+    )
+    await breaker.record_failure()
+    await breaker.record_failure()
+    after = _counter_sample(
+        m.BACKEND_CIRCUIT_TRANSITIONS_TOTAL, name="test_breaker_open", to_state="open"
+    )
+    assert after == before + 1
+
+
+# ---- Kafka producer ------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_kafka_publish_records_ok_count_and_bytes() -> None:
+    """KafkaEventProducer.publish bumps the ok counter and adds the
+    byte count."""
+    from eveys_ocpp.events import KafkaEventProducer
+
+    producer = KafkaEventProducer(bootstrap_servers="ignored:0")
+    fake = AsyncMock()
+    producer._producer = fake  # type: ignore[assignment]
+
+    before_count = _counter_sample(m.KAFKA_PUBLISH_TOTAL, topic="cp.boot", outcome="ok")
+    before_bytes = _counter_sample(m.KAFKA_PUBLISH_BYTES_TOTAL, topic="cp.boot")
+
+    await producer.publish(topic="cp.boot", key="CP_X", value=b"\x00\x01\x02")
+
+    assert _counter_sample(m.KAFKA_PUBLISH_TOTAL, topic="cp.boot", outcome="ok") == (
+        before_count + 1
+    )
+    assert _counter_sample(m.KAFKA_PUBLISH_BYTES_TOTAL, topic="cp.boot") == before_bytes + 3

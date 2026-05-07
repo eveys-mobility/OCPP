@@ -29,12 +29,14 @@ concern. The client just raises typed exceptions.
 
 from __future__ import annotations
 
+import time
 import uuid
 from dataclasses import dataclass
 from typing import Any
 
 import httpx
 
+from eveys_ocpp.metrics import registry as metrics_registry
 from eveys_ocpp.observability import get_logger
 from eveys_ocpp.platform.circuit_breaker import CircuitBreaker
 from eveys_ocpp.platform.errors import (
@@ -190,6 +192,18 @@ class BackendHTTPClient:
 
     # ---- HTTP plumbing -----------------------------------------------------
 
+    @staticmethod
+    def _endpoint_label(path: str) -> str:
+        """Bound the cardinality of the `endpoint` metric label.
+
+        `path` looks like `/api/eveys/authorize` or
+        `/api/eveys/sessions/open`. The label space is small and
+        well-known (5 endpoints) — strip the prefix and use the
+        remainder. Strip leading slash + replace internal slashes
+        with underscores so Prometheus accepts the label literally.
+        """
+        return path.removeprefix("/api/eveys/").lstrip("/").replace("/", "_") or "root"
+
     async def _request(
         self,
         *,
@@ -214,6 +228,15 @@ class BackendHTTPClient:
         """
         await self._breaker.before_call()
 
+        endpoint = self._endpoint_label(path)
+        request_started = time.perf_counter()
+        outcome = "internal_error"
+
+        def _observe_latency() -> None:
+            metrics_registry.BACKEND_REQUEST_LATENCY_SECONDS.labels(
+                endpoint=endpoint, outcome=outcome
+            ).observe(time.perf_counter() - request_started)
+
         request_id = _new_request_id()
         headers: dict[str, str] = {"X-Request-ID": request_id}
         if idempotency_key is not None:
@@ -221,6 +244,8 @@ class BackendHTTPClient:
 
         last_exc: Exception | None = None
         for attempt in range(max_retries + 1):
+            if attempt > 0:
+                metrics_registry.BACKEND_RETRIES_TOTAL.labels(endpoint=endpoint).inc()
             try:
                 response = await self._http.request(
                     method,
@@ -241,6 +266,11 @@ class BackendHTTPClient:
                 if attempt < max_retries:
                     continue
                 await self._breaker.record_failure()
+                outcome = "timeout"
+                metrics_registry.BACKEND_REQUESTS_TOTAL.labels(
+                    endpoint=endpoint, outcome=outcome
+                ).inc()
+                _observe_latency()
                 raise BackendTimeoutError(
                     f"backend timeout after {max_retries + 1} attempts on {path}"
                 ) from exc
@@ -256,6 +286,11 @@ class BackendHTTPClient:
                 if attempt < max_retries:
                     continue
                 await self._breaker.record_failure()
+                outcome = "network_error"
+                metrics_registry.BACKEND_REQUESTS_TOTAL.labels(
+                    endpoint=endpoint, outcome=outcome
+                ).inc()
+                _observe_latency()
                 raise BackendNetworkError(
                     f"backend network error after {max_retries + 1} attempts on {path}"
                 ) from exc
@@ -272,7 +307,17 @@ class BackendHTTPClient:
                 # is wrong).
                 await self._breaker.record_success()
                 if status in (401, 403):
+                    outcome = "auth_error"
+                    metrics_registry.BACKEND_REQUESTS_TOTAL.labels(
+                        endpoint=endpoint, outcome=outcome
+                    ).inc()
+                    _observe_latency()
                     raise BackendAuthError(message, error_code=error_code, http_status=status)
+                outcome = "business_error"
+                metrics_registry.BACKEND_REQUESTS_TOTAL.labels(
+                    endpoint=endpoint, outcome=outcome
+                ).inc()
+                _observe_latency()
                 raise BackendBusinessError(message, error_code=error_code, http_status=status)
 
             # 5xx — retryable transport failure.
@@ -291,6 +336,11 @@ class BackendHTTPClient:
                 if attempt < max_retries:
                     continue
                 await self._breaker.record_failure()
+                outcome = "server_error"
+                metrics_registry.BACKEND_REQUESTS_TOTAL.labels(
+                    endpoint=endpoint, outcome=outcome
+                ).inc()
+                _observe_latency()
                 raise last_exc
 
             # 2xx — happy path.
@@ -304,14 +354,27 @@ class BackendHTTPClient:
                 # transport, and shouldn't trip the breaker.
                 error_code = str(envelope.get("error_code") or "BUSINESS_REJECTION")
                 message = str(envelope.get("message") or "rejected")
+                outcome = "business_error"
+                metrics_registry.BACKEND_REQUESTS_TOTAL.labels(
+                    endpoint=endpoint, outcome=outcome
+                ).inc()
+                _observe_latency()
                 raise BackendBusinessError(message, error_code=error_code, http_status=status)
             data = envelope.get("data")
             if not isinstance(data, dict):
+                outcome = "malformed"
+                metrics_registry.BACKEND_REQUESTS_TOTAL.labels(
+                    endpoint=endpoint, outcome=outcome
+                ).inc()
+                _observe_latency()
                 raise BackendBusinessError(
                     "backend returned success but `data` was missing or non-object",
                     error_code="MALFORMED_RESPONSE",
                     http_status=status,
                 )
+            outcome = "ok"
+            metrics_registry.BACKEND_REQUESTS_TOTAL.labels(endpoint=endpoint, outcome=outcome).inc()
+            _observe_latency()
             return data
 
         # Unreachable — the loop either returns or raises.
