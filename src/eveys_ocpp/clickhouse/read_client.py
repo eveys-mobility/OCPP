@@ -146,19 +146,30 @@ class ClickHouseReadClient:
         if not cp_ids:
             return {}
 
-        sql = """
+        # `asynch` substitutes parameters via `str.format(**escape_params(params))`,
+        # so placeholders are `{name}` not the DB-API `%(name)s` paramstyle. The
+        # IN list expands as one named placeholder per id — `escape_params`
+        # quotes each value, so user-controlled cp_ids cannot break out of
+        # the IN expression.
+        placeholders = ", ".join(f"{{cp_id_{i}}}" for i in range(len(cp_ids)))
+        # Fully-qualified table name — ClickHouse 24's analyzer does not
+        # always honour the connection's `currentDatabase()` for unqualified
+        # references in subqueries; spelling the database keeps both old
+        # and new analyzers happy.
+        db = self._settings.clickhouse_db
+        sql = f"""
             SELECT
                 cp_id,
                 connector_id,
                 argMax(status, occurred_at) AS status,
                 argMax(error_code, occurred_at) AS error_code,
                 max(occurred_at) AS last_changed_at
-            FROM cp_status
-            WHERE cp_id IN %(cp_ids)s
+            FROM {db}.cp_status
+            WHERE cp_id IN ({placeholders})
             GROUP BY cp_id, connector_id
             ORDER BY cp_id, connector_id
         """
-        params: dict[str, Any] = {"cp_ids": tuple(cp_ids)}
+        params: dict[str, Any] = {f"cp_id_{i}": cp_id for i, cp_id in enumerate(cp_ids)}
 
         async with self._conn.cursor() as cursor:
             await cursor.execute(sql, params)
