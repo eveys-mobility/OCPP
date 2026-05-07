@@ -42,7 +42,8 @@ def _settings(**overrides: Any) -> Settings:
         "webhook_secret": "shared-secret",
     }
     base.update(overrides)
-    return Settings(**base)
+    # See test_dispatcher._settings for why `_env_file=None`.
+    return Settings(_env_file=None, **base)
 
 
 def _make_boot_envelope() -> events_pb2.EventEnvelope:

@@ -28,7 +28,12 @@ def _settings(**overrides: Any) -> Settings:
         "webhook_secret": "shared-secret",
     }
     base.update(overrides)
-    return Settings(**base)
+    # `_env_file=None` so a developer's local `.env` (which may set
+    # `webhook_url_cp_boot=...` overrides for their dev backend) doesn't
+    # leak in and fail this test. CI has no `.env` checked in, so this
+    # only manifests on local laptops; the explicit None makes the test
+    # behave the same in both environments.
+    return Settings(_env_file=None, **base)
 
 
 def _envelope(payload_kind: str, **fields: Any) -> events_pb2.EventEnvelope:

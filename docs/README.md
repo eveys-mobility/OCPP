@@ -46,7 +46,7 @@ Current:
 | Field | Value |
 |---|---|
 | Project | `eveys/ocpp` |
-| Phase | Phase 3 (platform integration) — Phase 0 + 2 closed; long-tail E2-1 + Phase 3 in progress |
+| Phase | Phase 5 (hardening) next — Phases 0–4 complete (2026-05-07); long-tail OCPP 1.6 Core handlers (E2-1) continue alongside as new handlers slot into the existing pipeline |
 | Tech lead | TBD |
 | Source of architecture truth | The ADRs (see [Architecture decisions](./05-architecture-decisions.md)) |
 | License | Proprietary — Eveys |
