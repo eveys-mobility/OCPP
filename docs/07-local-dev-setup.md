@@ -324,6 +324,33 @@ clickhouse:
         memory: 4G
 ```
 
+### `eveys-ocpp-clickhouse-ingestor` keeps restarting (`CrashLoopBackOff` in k8s)
+
+Per [ADR-0028](./adr/0028-ingestor-fail-fast-policy.md), the ingestor exits non-zero after `EVEYS_OCPP_CLICKHOUSE_INGESTOR_MAX_FLUSH_FAILURES` consecutive INSERT failures (default 10). The supervisor — docker compose or kubernetes — restarts it, and the next round of failures crashes it again. That's the **fail-fast** signal that something is wedged: the alternative was the silent-loop that bit us in [issue #24](https://github.com/eveys-mobility/OCPP/issues/24).
+
+To diagnose, look at the **last `flush_failed` log line** before the `exit_fatal`:
+
+```bash
+docker logs eveys-ocpp-clickhouse-ingestor --tail 50 | grep -E "flush_failed|exit_fatal" | tail -5
+```
+
+The `error` field in that log carries the ClickHouse error code. The common causes:
+
+| ClickHouse error | What's wrong | Fix |
+|---|---|---|
+| `Code: 60. DB::Exception: Table eveys_ocpp.cp_status does not exist` | Schema not applied to the CH instance the ingestor reaches | `make ch-migrate`. If that says "up to date" but tables are missing, check for a [Homebrew-CH port collision](#manual-checks) — `lsof -iTCP:8123 -sTCP:LISTEN` on the host. |
+| `Code: 53. DB::Exception: ... Type mismatch in column ...` | Ingestor and CH disagree on column types (proto evolution mid-deploy) | Check that `src/eveys_ocpp/clickhouse/ddl/` matches the row extractors in `src/eveys_ocpp/clickhouse/ingestor.py`. Roll the ingestor image and the CH schema together. |
+| `Code: 192. DB::Exception: Unknown user 'eveys_writer'` | CH user/role mis-provisioned | Verify `CLICKHOUSE_USER` env var matches a real user in CH. |
+| Network errors (`Connection refused`, `getaddrinfo failed`) | Ingestor pointed at the wrong host or CH not yet healthy | Check `make compose-status` shows `clickhouse` `healthy`; ingestor depends on it but a startup race can still bite. |
+
+If you genuinely want the old log-and-loop behaviour during a long debugging session (e.g. you're tailing for a specific error pattern across many failures), bump the threshold for that one process:
+
+```bash
+EVEYS_OCPP_CLICKHOUSE_INGESTOR_MAX_FLUSH_FAILURES=1000000 make compose-up
+```
+
+Don't ship that to production — silent loops are the failure mode this policy exists to prevent.
+
 ### k3d: `unable to import image — image not found`
 
 Build the image locally first:
