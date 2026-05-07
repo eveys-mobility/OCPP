@@ -31,6 +31,7 @@ ALLOWED_CATEGORIES = {
     "webhooks",
     "metrics",
     "tracing",
+    "sentry",
 }
 
 ALLOWED_STABILITY = {"tunable", "structural", "dev-only"}

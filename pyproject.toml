@@ -31,6 +31,7 @@ dependencies = [
     "opentelemetry-api>=1.27",     # Phase 4 / E4-3: tracing API. The api/sdk split is intentional — non-app code can `import opentelemetry.trace` and create spans without pulling the SDK; the SDK only loads in __main__ when tracing is enabled.
     "opentelemetry-sdk>=1.27",     # Phase 4 / E4-3: TracerProvider + processors + samplers. Activated by `configure_tracing` at boot; otherwise the no-op tracer hands out no-op spans (~ns).
     "opentelemetry-exporter-otlp-proto-grpc>=1.27",  # Phase 4 / E4-3: OTLP/gRPC exporter to a collector (Tempo, Jaeger, Honeycomb, etc.). Pinned to the gRPC variant — the http/protobuf variant doubles serialisation cost on the hot path and lacks streaming.
+    "sentry-sdk>=2.18",            # Phase 4 / E4-4: error tracking. SDK only initialises when `EVEYS_OCPP_SENTRY_DSN` is set; empty DSN = pure no-op (no transport, no breadcrumbs, no monkey-patches). traces_sample_rate is left at 0 by default so OTel keeps tracing — Sentry's job here is errors only.
 ]
 
 [project.optional-dependencies]

@@ -1354,6 +1354,110 @@ class Settings(BaseSettings):
         },
     )
 
+    # ---- Sentry (Phase 4 / E4-4) ----------------------------------------
+    sentry_dsn: str = Field(
+        default="",
+        description=(
+            "Sentry DSN for error tracking. Empty disables the SDK "
+            "entirely (no init, no transport, no monkey-patches) so "
+            "the gateway behaves identically to a Sentry-free build. "
+            "Set in production to capture unhandled exceptions and "
+            "structured `error`-level logs."
+        ),
+        json_schema_extra={
+            "category": "sentry",
+            "impact": (
+                "Empty → Sentry is a hard no-op. Non-empty → SDK boots "
+                "at startup; any later DSN typo surfaces as a "
+                "`Bad DSN` log line on stderr (the SDK refuses to "
+                "init silently)."
+            ),
+            "secret": True,
+            "stability": "structural",
+        },
+    )
+    sentry_environment: str = Field(
+        default="development",
+        description=(
+            "`environment` tag attached to every Sentry event. "
+            "Conventionally `production`, `staging`, `development`. "
+            "Sentry alert rules and saved searches typically pivot "
+            "on this — keep it stable per deployment."
+        ),
+        json_schema_extra={
+            "category": "sentry",
+            "impact": (
+                "Changing splits the Sentry issue stream — the same "
+                "exception on the same release line appears as two "
+                "issues if `environment` differs."
+            ),
+            "secret": False,
+            "stability": "structural",
+        },
+    )
+    sentry_release: str = Field(
+        default="",
+        description=(
+            "`release` tag attached to every Sentry event. Empty "
+            "lets the gateway default to the package `__version__` "
+            "at boot. Override only when CI injects a richer label "
+            "(commit SHA, deploy id)."
+        ),
+        json_schema_extra={
+            "category": "sentry",
+            "impact": (
+                "Drives Sentry's regression detection — an issue marked "
+                "resolved in release X reopens automatically when "
+                "release Y emits the same fingerprint."
+            ),
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+    sentry_traces_sample_rate: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Sentry performance / tracing sample rate. Default 0.0 — "
+            "OTel (E4-3) owns tracing; Sentry's job here is errors only. "
+            "Setting > 0 doubles the tracing instrumentation cost and "
+            "fragments traces across two backends; only flip if you "
+            "specifically want Sentry's `Performance` view."
+        ),
+        json_schema_extra={
+            "category": "sentry",
+            "impact": (
+                "Above 0 → Sentry SDK monkey-patches httpx / fastapi / "
+                "asyncio to record spans. May overlap with OTel's "
+                "instrumentation depending on import order."
+            ),
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+    sentry_profiles_sample_rate: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Sentry profiling sample rate. Default 0.0 (off). Profiling "
+            "samples Python frames at ~100 Hz per traced transaction; "
+            "ignored unless `sentry_traces_sample_rate > 0` since "
+            "profiling attaches to traces."
+        ),
+        json_schema_extra={
+            "category": "sentry",
+            "impact": (
+                "Above 0 → SIGPROF-driven sampler runs; ~3-5% steady-"
+                "state CPU overhead on traced requests. Only useful "
+                "when chasing per-frame latency."
+            ),
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+
 
 def get_settings() -> Settings:
     """Build a fresh `Settings` from the current environment.

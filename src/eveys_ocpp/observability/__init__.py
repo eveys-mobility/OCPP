@@ -21,8 +21,10 @@ import structlog
 from structlog.contextvars import bind_contextvars, clear_contextvars
 from structlog.types import EventDict, Processor
 
-# Re-export the tracing helpers so callers can `from eveys_ocpp.observability
-# import get_tracer, configure_tracing` without knowing the submodule layout.
+# Re-export the tracing + sentry helpers so callers can
+# `from eveys_ocpp.observability import get_tracer, configure_tracing,
+# init_sentry` without knowing the submodule layout.
+from eveys_ocpp.observability.sentry import bind_sentry_scope, init_sentry
 from eveys_ocpp.observability.tracing import (
     configure_tracing,
     current_span_id,
@@ -35,6 +37,7 @@ from eveys_ocpp.observability.tracing import (
 
 __all__ = [
     "bind_contextvars",
+    "bind_sentry_scope",
     "clear_contextvars",
     "configure_logging",
     "configure_tracing",
@@ -43,6 +46,7 @@ __all__ = [
     "extract_context",
     "get_logger",
     "get_tracer",
+    "init_sentry",
     "inject_context",
     "shutdown_tracing",
 ]
@@ -78,6 +82,7 @@ def configure_logging(*, level: str = "INFO", json: bool = True) -> None:
         structlog.processors.add_log_level,
         structlog.processors.TimeStamper(fmt="iso", utc=True),
         _inject_trace_context,
+        bind_sentry_scope,
         structlog.processors.StackInfoRenderer(),
         structlog.processors.format_exc_info,
     ]
