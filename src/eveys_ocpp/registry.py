@@ -24,10 +24,14 @@ from this one — we must not delete the new pod's key.
 
 from __future__ import annotations
 
+import contextlib
+import time
+from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
 from redis.asyncio import Redis
 
+from eveys_ocpp.metrics import registry as metrics_registry
 from eveys_ocpp.observability import get_logger
 
 if TYPE_CHECKING:
@@ -39,6 +43,24 @@ log = get_logger(__name__)
 def _key(cp_id: str) -> str:
     """Redis key for a charger's online presence."""
     return f"cp:online:{cp_id}"
+
+
+@contextlib.contextmanager
+def _timed_redis(op: str) -> Iterator[None]:
+    """Context manager that observes the registry's Redis call latency.
+
+    `op` is one of get / set / expire / eval / exists — bounded enum,
+    no risk of cardinality blow-up. Defined locally so registry callers
+    don't pull a generic helper through metrics/instrumentation.py for
+    two lines of context-manager work.
+    """
+    started = time.perf_counter()
+    try:
+        yield
+    finally:
+        metrics_registry.REDIS_COMMAND_LATENCY_SECONDS.labels(op=op).observe(
+            time.perf_counter() - started
+        )
 
 
 # Lua script for atomic compare-and-delete: only delete the key if its
@@ -81,11 +103,13 @@ class Registry:
 
     async def mark_online(self, cp_id: str) -> None:
         """Record this pod as the owner of `cp_id`'s WS. Resets TTL."""
-        await self._redis.set(
-            _key(cp_id),
-            self._settings.pod_id,
-            ex=self._settings.redis_online_ttl_seconds,
-        )
+        with _timed_redis("set"):
+            await self._redis.set(
+                _key(cp_id),
+                self._settings.pod_id,
+                ex=self._settings.redis_online_ttl_seconds,
+            )
+        metrics_registry.REGISTRY_ONLINE_CHARGERS.inc()
         log.debug(
             "registry.mark_online",
             cp_id=cp_id,
@@ -100,7 +124,8 @@ class Registry:
         expired (probably because heartbeats stopped briefly) — the
         caller should re-`mark_online` to recover.
         """
-        result = await self._redis.expire(_key(cp_id), self._settings.redis_online_ttl_seconds)
+        with _timed_redis("expire"):
+            result = await self._redis.expire(_key(cp_id), self._settings.redis_online_ttl_seconds)
         return bool(result)
 
     async def mark_offline(self, cp_id: str) -> bool:
@@ -109,13 +134,19 @@ class Registry:
         # (sync/async dual-API typing leak). It's actually awaitable on the
         # asyncio client. The int() cast at the boundary keeps our caller's
         # type strict; the ignore is targeted to this one call.
-        deleted_raw = await self._redis.eval(  # type: ignore[misc]
-            _DEL_IF_OWNER,
-            1,
-            _key(cp_id),
-            self._settings.pod_id,
-        )
+        with _timed_redis("eval"):
+            deleted_raw = await self._redis.eval(  # type: ignore[misc]
+                _DEL_IF_OWNER,
+                1,
+                _key(cp_id),
+                self._settings.pod_id,
+            )
         was_ours = bool(int(deleted_raw or 0))
+        if was_ours:
+            # Per-pod gauge — only decrement when *we* released the key.
+            # The reconnect-to-different-pod race never decrements here;
+            # the new pod's mark_online incremented its own gauge.
+            metrics_registry.REGISTRY_ONLINE_CHARGERS.dec()
         log.debug(
             "registry.mark_offline",
             cp_id=cp_id,
@@ -126,10 +157,12 @@ class Registry:
 
     async def get_pod(self, cp_id: str) -> str | None:
         """Return the pod_id currently holding cp_id's WS, or None if offline."""
-        value = await self._redis.get(_key(cp_id))
+        with _timed_redis("get"):
+            value = await self._redis.get(_key(cp_id))
         return str(value) if value else None
 
     async def is_online(self, cp_id: str) -> bool:
         """Convenience wrapper — True if any pod holds the WS."""
-        count = await self._redis.exists(_key(cp_id))
+        with _timed_redis("exists"):
+            count = await self._redis.exists(_key(cp_id))
         return int(count) > 0

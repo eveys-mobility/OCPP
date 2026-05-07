@@ -196,3 +196,47 @@ async def test_kafka_publish_records_ok_count_and_bytes() -> None:
         before_count + 1
     )
     assert _counter_sample(m.KAFKA_PUBLISH_BYTES_TOTAL, topic="cp.boot") == before_bytes + 3
+
+
+# ---- Idempotency cache ----------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_idempotency_increments_miss_and_replay() -> None:
+    """First call is a miss, second is a replay — both bump the
+    matching outcome label."""
+    from eveys_ocpp.idempotency import IdempotencyCache
+    from eveys_ocpp.settings import Settings
+
+    fake_redis = MagicMock()
+    # First write returns truthy (key created); second returns None
+    # because the key already exists.
+    fake_redis.set = AsyncMock(side_effect=[True, None])
+
+    cache = IdempotencyCache(redis=fake_redis, settings=Settings())
+
+    miss_before = _counter_sample(m.IDEMPOTENCY_LOOKUPS_TOTAL, outcome="miss")
+    replay_before = _counter_sample(m.IDEMPOTENCY_LOOKUPS_TOTAL, outcome="replay")
+
+    seen1 = await cache.check_and_record(cp_id="CP_X", message_id="m-1")
+    seen2 = await cache.check_and_record(cp_id="CP_X", message_id="m-1")
+
+    assert seen1 is False
+    assert seen2 is True
+    assert _counter_sample(m.IDEMPOTENCY_LOOKUPS_TOTAL, outcome="miss") == miss_before + 1
+    assert _counter_sample(m.IDEMPOTENCY_LOOKUPS_TOTAL, outcome="replay") == replay_before + 1
+
+
+# ---- DB query latency histogram -------------------------------------------
+
+
+def test_classify_op_buckets_known_verbs() -> None:
+    """Bounded enum — anything we don't recognise lands in `other`."""
+    from eveys_ocpp.persistence.db import _classify_op
+
+    assert _classify_op("SELECT * FROM x") == "select"
+    assert _classify_op("  insert into x") == "insert"
+    assert _classify_op("UPDATE x SET y=1") == "update"
+    assert _classify_op("DELETE FROM x") == "delete"
+    assert _classify_op("CREATE TABLE x()") == "other"
+    assert _classify_op("") == "other"

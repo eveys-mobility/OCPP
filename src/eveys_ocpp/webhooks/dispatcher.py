@@ -154,9 +154,39 @@ class WebhookDispatcher:
                 # Commit after each batch — at-least-once, same as the
                 # ClickHouse ingestor pattern.
                 await consumer.commit()
+                # Sample the per-partition lag right after committing.
+                # Cheap (one Kafka API call per assigned partition) and
+                # only fires when there was traffic this iteration —
+                # idle partitions don't poll the broker for nothing.
+                await self._sample_consumer_lag(consumer)
         except asyncio.CancelledError:
             log.info("webhook_dispatcher.cancelled")
             raise
+
+    async def _sample_consumer_lag(self, consumer: AIOKafkaConsumer) -> None:
+        """Update WEBHOOK_CONSUMER_LAG_MESSAGES{topic,partition} for
+        every assigned partition: lag = end_offset - position.
+
+        Errors are swallowed — the lag gauge is best-effort observability
+        and a transient broker hiccup must not crash the delivery loop.
+        """
+        try:
+            assigned = consumer.assignment()
+            if not assigned:
+                return
+            end_offsets = await consumer.end_offsets(list(assigned))
+        except Exception as exc:
+            log.debug("webhook_dispatcher.lag_sample_failed", error=str(exc))
+            return
+        for tp, end in end_offsets.items():
+            try:
+                position = await consumer.position(tp)
+            except Exception:
+                continue
+            lag = max(0, int(end) - int(position))
+            metrics_registry.WEBHOOK_CONSUMER_LAG_MESSAGES.labels(
+                topic=tp.topic, partition=str(tp.partition)
+            ).set(lag)
 
     # ---- per-record delivery ----------------------------------------------
 

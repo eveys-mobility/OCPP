@@ -43,6 +43,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from eveys_ocpp.metrics import registry as metrics_registry
 from eveys_ocpp.observability import get_logger
 
 if TYPE_CHECKING:
@@ -77,15 +78,22 @@ class IdempotencyCache:
         """
         # ``SET key value NX EX ttl`` returns truthy on first write,
         # None when the key already exists. One round-trip; atomic.
-        first_write = await self._redis.set(
-            _key(cp_id, message_id),
-            "1",
-            ex=self._settings.idempotency_ttl_seconds,
-            nx=True,
-        )
+        try:
+            first_write = await self._redis.set(
+                _key(cp_id, message_id),
+                "1",
+                ex=self._settings.idempotency_ttl_seconds,
+                nx=True,
+            )
+        except Exception:
+            metrics_registry.IDEMPOTENCY_LOOKUPS_TOTAL.labels(outcome="error").inc()
+            raise
         already_seen = not first_write
         if already_seen:
             log.info("idempotency.replay_detected", cp_id=cp_id, message_id=message_id)
+            metrics_registry.IDEMPOTENCY_LOOKUPS_TOTAL.labels(outcome="replay").inc()
+        else:
+            metrics_registry.IDEMPOTENCY_LOOKUPS_TOTAL.labels(outcome="miss").inc()
         return already_seen
 
 
