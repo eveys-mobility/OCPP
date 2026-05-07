@@ -21,6 +21,7 @@ Documentation for **eveys/ocpp**, the OCPP gateway service of the Eveys EV-charg
 | 10 | [Testing strategy](./10-testing-strategy.md) | The four-tier test trust ladder — what each CI job guarantees and what bug class it catches (see ADR-0024) | Engineers, anyone debugging a CI failure |
 | 11 | [Configuration reference](./11-configuration-reference.md) | Every env var: category, default, range, stability, secret-flag, what it does, what changes if you change it (see ADR-0025) | Operators, SREs, anyone tuning the service |
 | 12 | [Connecting a real charger](./12-connecting-real-charger.md) | Operator/integrator guide: install, connect a real OCPP 1.6 device, watch activity in logs/Postgres/ClickHouse/Kafka, use the REST API from `curl` or Postman | Operators, integrators, anyone connecting a charger for the first time |
+| 13 | [Load testing](./13-load-testing.md) | The `tools/load` rig — how to drive the gateway at scale and capture pass/fail evidence per the Phase 4 exit criteria (E4-6) | SREs, anyone planning a staging load run |
 
 ## ADRs
 
@@ -150,6 +151,7 @@ The two hidden `{toctree}` directives below this section define the navigation. 
 10-testing-strategy
 11-configuration-reference
 12-connecting-real-charger
+13-load-testing
 ```
 
 ```{toctree}
