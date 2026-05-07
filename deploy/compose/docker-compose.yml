@@ -140,6 +140,13 @@ services:
       - "19000:9000"     # WebSocket (host 19000 → container 9000)
       - "50051:50051"    # gRPC (lands with E2-4)
       - "9100:9100"      # Prometheus metrics (lands with E4-1)
+      - "8080:8080"      # Backend-facing REST surface (ADR-0026)
+    # Make the developer's host backend (e.g. https://toger.test or
+    # http://localhost) reachable from inside the container. On Docker
+    # Desktop macOS / Windows, host-gateway resolves to the host's NIC.
+    extra_hosts:
+      - "toger.test:host-gateway"
+      - "host.docker.internal:host-gateway"
     environment:
       EVEYS_OCPP_DB_URL: postgresql+asyncpg://eveys:eveys@postgres:5432/eveys_ocpp
       EVEYS_OCPP_REDIS_URL: redis://redis:6379/0
@@ -152,6 +159,19 @@ services:
       EVEYS_OCPP_CLICKHOUSE_DB: eveys_ocpp
       EVEYS_OCPP_LOG_JSON: "true"
       EVEYS_OCPP_LOG_LEVEL: "INFO"
+      # Backend integration: each variable is read from the developer's
+      # shell or .env at compose-up time. Empty values disable cleanly
+      # (the gateway falls back to its offline policies).
+      EVEYS_OCPP_REST_INBOUND_TOKENS: ${EVEYS_OCPP_REST_INBOUND_TOKENS:-}
+      EVEYS_OCPP_BACKEND_BASE_URL: ${EVEYS_OCPP_BACKEND_BASE_URL:-}
+      EVEYS_OCPP_BACKEND_TOKEN: ${EVEYS_OCPP_BACKEND_TOKEN:-}
+      EVEYS_OCPP_BACKEND_AUTHORIZE_FALLBACK: ${EVEYS_OCPP_BACKEND_AUTHORIZE_FALLBACK:-reject}
+      EVEYS_OCPP_WEBHOOK_BASE_URL: ${EVEYS_OCPP_WEBHOOK_BASE_URL:-}
+      EVEYS_OCPP_WEBHOOK_SECRET: ${EVEYS_OCPP_WEBHOOK_SECRET:-}
+      EVEYS_OCPP_WEBHOOK_URL_CP_BOOT: ${EVEYS_OCPP_WEBHOOK_URL_CP_BOOT:-}
+      EVEYS_OCPP_WEBHOOK_URL_CP_ONLINE: ${EVEYS_OCPP_WEBHOOK_URL_CP_ONLINE:-}
+      EVEYS_OCPP_WEBHOOK_URL_CP_STATUS: ${EVEYS_OCPP_WEBHOOK_URL_CP_STATUS:-}
+      EVEYS_OCPP_WEBHOOK_URL_TX_STARTED: ${EVEYS_OCPP_WEBHOOK_URL_TX_STARTED:-}
     depends_on:
       postgres: { condition: service_healthy }
       redis: { condition: service_healthy }

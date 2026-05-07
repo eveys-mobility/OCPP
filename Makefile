@@ -9,7 +9,12 @@ SHELL := /usr/bin/env bash
 VENV       ?= .venv
 PYTHON     ?= $(shell command -v python3.13 || command -v python3.12)
 UV         ?= $(shell command -v uv)
-COMPOSE    := docker compose -f deploy/compose/docker-compose.yml
+# `--env-file .env` is conditional: present when the developer has
+# created a repo-root .env, absent otherwise (so CI / fresh checkouts
+# don't fail because the file is missing). Compose's own variable
+# substitution still uses the file when it's there.
+COMPOSE_ENV := $(if $(wildcard .env),--env-file .env,)
+COMPOSE    := docker compose -f deploy/compose/docker-compose.yml $(COMPOSE_ENV)
 
 .PHONY: help doctor install format lint types tests e2e smoke compose-smoke precommit clean distclean \
         compose-up compose-down compose-status compose-down-volumes compose-wait \
