@@ -132,6 +132,7 @@ sensitivity.
 | `EVEYS_OCPP_CLICKHOUSE_INGESTOR_GROUP` | `eveys-ocpp-clickhouse-ingestor` | string | structural | no | Kafka consumer-group ID for the ingestor. Multiple replicas share this group; Kafka rebalances partitions across them. | Renaming forces all consumers to re-read from the configured offset (typically earliest). |
 | `EVEYS_OCPP_CLICKHOUSE_INGESTOR_BATCH_SIZE` | `500` | 1–10000 | tunable | no | Flush threshold in rows. | Lower → smaller batches, more INSERT round-trips, lower tail latency. Higher → opposite. ADR-0020 § 'Batch size vs latency'. |
 | `EVEYS_OCPP_CLICKHOUSE_INGESTOR_BATCH_MAX_SECONDS` | `5.0` | 0.1–60.0 | tunable | no | Flush threshold in seconds (whichever-comes-first with `BATCH_SIZE`). | Lower → less worst-case ingestion delay; ClickHouse handles many small batches less efficiently than a few large ones. |
+| `EVEYS_OCPP_CLICKHOUSE_INGESTOR_MAX_FLUSH_FAILURES` | `10` | 1–10000 | tunable | no | Consecutive INSERT failures before the ingestor exits non-zero so the supervisor (docker compose, kubernetes) restarts it. Without this the process loops forever on a wedged pipeline (wrong CH instance, missing schema, type mismatch) and silently drops fresh events while the Kafka consumer-group offset never advances. | Lower → faster CrashLoopBackOff signal at the cost of tolerating fewer transient blips. Higher → more patience for a flaky CH at the cost of a longer dead window before the operator finds out. |
 
 ## Backend integration (ADR-0023, E3-2..E3-6)
 
