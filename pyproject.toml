@@ -51,6 +51,13 @@ dev = [
 [project.scripts]
 eveys-ocpp = "eveys_ocpp.__main__:main"
 
+# `eveys-ocpp-sim` is intentionally NOT a script entry — the simulator
+# lives in the top-level `tools/sim/` package which isn't included in
+# `[tool.hatch.build.targets.wheel] packages`. A script entry pointing
+# at `tools.sim` would be a dangling pointer in production wheels.
+# Invoke from a dev checkout via `python -m tools.sim` instead. See
+# `tools/sim/README.md`.
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
