@@ -1,20 +1,69 @@
-"""Structured logging setup.
+"""Structured logging setup + tracing re-exports.
 
 Every log line carries `cp_id`, `message_id`, `action`, `direction` when
 those are bound into the contextvars. Per `AGENTS.md` rule and OCPP project
 conventions.
+
+When tracing is active, every log line also picks up `trace_id` and
+`span_id` from the current OpenTelemetry context — see the
+`_inject_trace_context` processor below. Trace correlation works
+*regardless* of whether `configure_tracing` was called: when tracing is
+disabled the processor is a no-op (current span is `INVALID`).
 """
 
 from __future__ import annotations
 
 import logging
 import sys
+from typing import Any
 
 import structlog
 from structlog.contextvars import bind_contextvars, clear_contextvars
-from structlog.types import Processor
+from structlog.types import EventDict, Processor
 
-__all__ = ["bind_contextvars", "clear_contextvars", "configure_logging", "get_logger"]
+# Re-export the tracing helpers so callers can `from eveys_ocpp.observability
+# import get_tracer, configure_tracing` without knowing the submodule layout.
+from eveys_ocpp.observability.tracing import (
+    configure_tracing,
+    current_span_id,
+    current_trace_id,
+    extract_context,
+    get_tracer,
+    inject_context,
+    shutdown_tracing,
+)
+
+__all__ = [
+    "bind_contextvars",
+    "clear_contextvars",
+    "configure_logging",
+    "configure_tracing",
+    "current_span_id",
+    "current_trace_id",
+    "extract_context",
+    "get_logger",
+    "get_tracer",
+    "inject_context",
+    "shutdown_tracing",
+]
+
+
+def _inject_trace_context(_logger: Any, _name: str, event_dict: EventDict) -> EventDict:
+    """structlog processor that adds `trace_id` / `span_id` to every log
+    line when there's an active OpenTelemetry span.
+
+    Cheap when tracing is off — `current_trace_id()` reads a contextvar
+    and bails on `INVALID`. Doesn't add the keys at all in that case
+    (vs `trace_id="0"`), so log lines stay tidy in tracing-disabled
+    environments.
+    """
+    trace_id = current_trace_id()
+    if trace_id is not None:
+        event_dict["trace_id"] = trace_id
+        span_id = current_span_id()
+        if span_id is not None:
+            event_dict["span_id"] = span_id
+    return event_dict
 
 
 def configure_logging(*, level: str = "INFO", json: bool = True) -> None:
@@ -28,6 +77,7 @@ def configure_logging(*, level: str = "INFO", json: bool = True) -> None:
         structlog.contextvars.merge_contextvars,
         structlog.processors.add_log_level,
         structlog.processors.TimeStamper(fmt="iso", utc=True),
+        _inject_trace_context,
         structlog.processors.StackInfoRenderer(),
         structlog.processors.format_exc_info,
     ]

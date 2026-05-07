@@ -28,6 +28,9 @@ dependencies = [
     "fastapi>=0.115",              # ASGI framework for the inbound gateway REST API (E3-7, ADR-0026); also used by the dev-only mock backend (E3-10).
     "uvicorn[standard]>=0.32",     # ASGI server. Run programmatically (not the CLI) inside the existing TaskGroup so the WS/gRPC/REST servers share one event loop and structured-logging context (ADR-0026).
     "prometheus-client>=0.21",     # Phase 4 / E4-1: scrape-style metrics on /metrics:9100. Sync API; instrumentation calls (~µs) are safe from inside asyncio handlers without an await.
+    "opentelemetry-api>=1.27",     # Phase 4 / E4-3: tracing API. The api/sdk split is intentional — non-app code can `import opentelemetry.trace` and create spans without pulling the SDK; the SDK only loads in __main__ when tracing is enabled.
+    "opentelemetry-sdk>=1.27",     # Phase 4 / E4-3: TracerProvider + processors + samplers. Activated by `configure_tracing` at boot; otherwise the no-op tracer hands out no-op spans (~ns).
+    "opentelemetry-exporter-otlp-proto-grpc>=1.27",  # Phase 4 / E4-3: OTLP/gRPC exporter to a collector (Tempo, Jaeger, Honeycomb, etc.). Pinned to the gRPC variant — the http/protobuf variant doubles serialisation cost on the hot path and lacks streaming.
 ]
 
 [project.optional-dependencies]

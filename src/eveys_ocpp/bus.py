@@ -227,6 +227,15 @@ class CommandBus:
         """
         request_id = str(uuid.uuid4())
         deadline = self._request_timeout if timeout is None else timeout
+        # Carry W3C trace context with the envelope so the receiving
+        # pod's handler attaches its spans as children of the requester's
+        # trace. `inject_context` writes `traceparent` (and `tracestate`
+        # when set) into the carrier dict; absent on tracing-disabled
+        # gateways, in which case the receiver starts a root span.
+        trace_carrier: dict[str, str] = {}
+        from eveys_ocpp.observability import inject_context
+
+        inject_context(trace_carrier)
         envelope = {
             "v": ENVELOPE_VERSION,
             "request_id": request_id,
@@ -235,6 +244,7 @@ class CommandBus:
             "cp_id": cp_id,
             "payload": payload,
             "deadline_ms": int((time.time() + deadline) * 1000),
+            "trace": trace_carrier,
         }
 
         loop = asyncio.get_running_loop()
@@ -338,15 +348,35 @@ class CommandBus:
             )
             return
 
+        # Re-attach the requester's trace context so the dispatched
+        # handler's spans are children of the original RemoteStart trace.
+        # `extract_context` returns the original (root) context when the
+        # envelope has no `trace` key (envelope from a tracing-disabled
+        # publisher, or pre-E4-3 envelope).
+        from opentelemetry import context as _otel_context
+        from opentelemetry import trace as _otel_trace
+
+        from eveys_ocpp.observability import extract_context
+
+        carrier = envelope.get("trace") or {}
+        parent_ctx = extract_context(carrier)
+        token = _otel_context.attach(parent_ctx)
         try:
-            reply = await self._local_dispatcher(rpc, cp_id, payload)
-        except Exception as exc:
-            log.exception("bus.cmd.dispatch_failed", rpc=rpc, cp_id=cp_id)
-            reply = BusReply(
-                ok=False,
-                error_code="INTERNAL",
-                error_message=f"{type(exc).__name__}: {exc}",
-            )
+            with _otel_trace.get_tracer("eveys_ocpp.bus").start_as_current_span(
+                f"bus.dispatch.{rpc}",
+                attributes={"rpc": rpc, "cp_id": cp_id},
+            ):
+                try:
+                    reply = await self._local_dispatcher(rpc, cp_id, payload)
+                except Exception as exc:
+                    log.exception("bus.cmd.dispatch_failed", rpc=rpc, cp_id=cp_id)
+                    reply = BusReply(
+                        ok=False,
+                        error_code="INTERNAL",
+                        error_message=f"{type(exc).__name__}: {exc}",
+                    )
+        finally:
+            _otel_context.detach(token)
         await self._publish_reply(request_id, reply)
 
     async def _publish_reply(self, request_id: str, reply: BusReply) -> None:

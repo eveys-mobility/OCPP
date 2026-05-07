@@ -30,6 +30,7 @@ ALLOWED_CATEGORIES = {
     "authorize_cache",
     "webhooks",
     "metrics",
+    "tracing",
 }
 
 ALLOWED_STABILITY = {"tunable", "structural", "dev-only"}
