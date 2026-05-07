@@ -157,6 +157,8 @@ The rollout ramp (Phase 7) is **gate-driven** — moving from W1 → W5 only hap
 
 ## W4-W5 — Platform integration (Phase 3) + start OCPP 2.0.1 parallel track
 
+**Status**: ✅ complete (2026-05-07). Every E3 task shipped; see [`02-tasks.md`](./02-tasks.md#phase-3--platform-integration) for details and PR links.
+
 **Goal**: wire the gateway to the Eveys backend.
 
 Integration shape: REST in both directions plus async webhooks. Specced in [`docs/integration/`](./integration/README.md); decisions in [ADR-0023](./adr/0023-backend-rest-integration.md).
@@ -193,6 +195,8 @@ Integration shape: REST in both directions plus async webhooks. Specced in [`doc
 ---
 
 ## W6 — Observability + load test (Phase 4)
+
+**Status**: ✅ E4-1 through E4-8 shipped (2026-05-07); see [`02-tasks.md`](./02-tasks.md#phase-4--observability--load-test) for details and PR links. **Caveat**: the headline "10k chargers + 1k tx/min, P95 RemoteStart < 3s" run is *not* yet captured — the load-test rig (E4-6) ships v0 with one scenario and the harness for adding the rest; the actual full-scale staging run is operator-driven and out of scope for the rig PR.
 
 **Goal**: see what we have; prove it scales to 10k chargers.
 
