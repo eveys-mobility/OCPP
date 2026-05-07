@@ -14,12 +14,13 @@ import sys
 
 from tools.load.report import render_markdown
 from tools.load.scenario import ScenarioResult
-from tools.load.scenarios import boot_storm
+from tools.load.scenarios import boot_storm, reconnect_storm
 
 # Closed registry of scenarios. Adding a new scenario means a one-line
 # edit here plus a new module under `tools/load/scenarios/`.
 _SCENARIOS = {
     "boot_storm": boot_storm,
+    "reconnect_storm": reconnect_storm,
 }
 
 
@@ -28,8 +29,8 @@ def _build_parser() -> argparse.ArgumentParser:
         prog="python -m tools.load",
         description=(
             "Drive the simulator (`tools.sim`) at scale and emit a "
-            "pass/fail Markdown report. v0 ships one scenario "
-            "(`boot_storm`); add more under `tools/load/scenarios/`."
+            "pass/fail Markdown report. Add scenarios under "
+            "`tools/load/scenarios/` and register them in `_SCENARIOS`."
         ),
     )
     parser.add_argument(

@@ -76,6 +76,12 @@ class VirtualCharger:
     _next_heartbeat_at: float = 0.0
     _next_meter_at: float = 0.0
     _meter_value_wh: int = 0
+    # Reference to the *current* python-ocpp ChargePoint so external
+    # code (the reconnect-storm scenario) can force a WS close. None
+    # while reconnecting between sessions; reset on every new
+    # `_one_session`. The outer `run()` loop reconnects automatically
+    # when the close fires, so this is safe to call any time.
+    _current_cp: object | None = None
 
     async def run(self) -> None:
         """Run forever (caller cancels). Reconnect-on-drop is part of
@@ -100,10 +106,12 @@ class VirtualCharger:
             cp = _SimChargePoint(self.cp_id, ws)
             recv_task = asyncio.create_task(cp.start(), name=f"sim-recv-{self.cp_id}")
             self.counters.connected += 1
+            self._current_cp = cp
             try:
                 await self._boot(cp)
-                await self._tick_loop(cp)
+                await self._tick_loop(cp, recv_task)
             finally:
+                self._current_cp = None
                 recv_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError, Exception):
                     await recv_task
@@ -123,17 +131,27 @@ class VirtualCharger:
         loop = asyncio.get_running_loop()
         self._next_heartbeat_at = loop.time() + interval
 
-    async def _tick_loop(self, cp: _SimChargePoint) -> None:
+    async def _tick_loop(self, cp: _SimChargePoint, recv_task: asyncio.Task[None]) -> None:
         """One pass per `_TICK_INTERVAL_SECONDS`. Fires whichever
         time-driven actions are due, then samples the per-minute
         probabilities for non-time-driven actions (transaction start,
-        disconnect)."""
+        disconnect).
+
+        Exits early when `recv_task` finishes — that signals the WS
+        closed (cleanly via 1000, or torn by the network). Without
+        this check, an IDLE profile with a 60s heartbeat could sit
+        idle for a minute past a force_drop before noticing.
+        """
         loop = asyncio.get_running_loop()
         # Per-tick probability = (per-minute / 60) since each tick is 1s.
         per_tick_start = self.profile.transaction_start_per_minute / 60.0
         per_tick_disconnect = self.profile.disconnect_per_minute / 60.0
         while True:
             await asyncio.sleep(_TICK_INTERVAL_SECONDS)
+            if recv_task.done():
+                # WS closed or recv loop crashed. Bail so the outer
+                # `run()` loop reconnects.
+                raise ConnectionError("ws recv loop ended")
             now = loop.time()
 
             # Heartbeat — always when interval elapses.
@@ -225,3 +243,19 @@ class VirtualCharger:
         )
         self._transaction_id = None
         self._session_ends_at = None
+
+    async def force_drop(self) -> bool:
+        """Close the current WS now, simulating a power blip / pod kill.
+
+        Returns True if a session was dropped, False if the charger
+        was mid-reconnect (no live WS to close). The outer `run()`
+        loop reconnects automatically — the reconnect counts as
+        one fleet error (the WS close raises inside `_one_session`,
+        gets counted, then a new session opens).
+        """
+        cp = self._current_cp
+        if cp is None:
+            return False
+        with contextlib.suppress(Exception):
+            await cp._connection.close()
+        return True

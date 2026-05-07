@@ -50,6 +50,36 @@ class Fleet:
         self._rng = rng or random.Random()
         self._chargers: list[VirtualCharger] = list(self._build_chargers())
 
+    @property
+    def chargers(self) -> list[VirtualCharger]:
+        """Read-only view of the charger list. Used by scenarios that
+        need to operate on individual chargers (e.g. `reconnect_storm`
+        force-drops a subset). Returns the underlying list — callers
+        that mutate it earn whatever they get."""
+        return self._chargers
+
+    async def drop_random(self, fraction: float, *, rng: random.Random | None = None) -> int:
+        """Force-close `fraction` (0..1) of the fleet's currently-live
+        WS sessions. Returns the count actually dropped (chargers in
+        mid-reconnect have no WS to close).
+
+        Used by the reconnect-storm scenario to simulate "half the
+        fleet drops at once". A real pod kill would drop the WSes
+        the dead pod owned; this simulates the same shock at the
+        WS layer without needing a multi-pod orchestration setup.
+        """
+        if not 0.0 <= fraction <= 1.0:
+            raise ValueError(f"fraction must be in [0, 1], got {fraction}")
+        rng = rng or self._rng
+        target_count = round(len(self._chargers) * fraction)
+        if target_count == 0:
+            return 0
+        sample = rng.sample(self._chargers, target_count)
+        # Fire all closes concurrently so the storm hits the gateway
+        # within a single asyncio scheduling round, not strung out.
+        results = await asyncio.gather(*(c.force_drop() for c in sample), return_exceptions=True)
+        return sum(1 for r in results if r is True)
+
     def _build_chargers(self) -> Iterable[VirtualCharger]:
         for i in range(self.config.count):
             # Per-charger RNG seeded from the fleet RNG so the whole

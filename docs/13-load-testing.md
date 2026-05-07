@@ -67,8 +67,33 @@ The rig measures these explicitly:
 | 4 | Zero lost transactions | scenario TODO (`durability`) |
 | 5 | Postgres pool not exhausted | covered indirectly by `boot_storm` (no fleet errors); explicit scenario TODO |
 | 6 | Kafka consumer lag < 30s steady-state | scenario TODO (`webhook_lag`) |
+| 7 | Fleet recovers within 60s after 50% pod kill | covered by `reconnect_storm --full` (E4-7) |
 
 The "TODO" scenarios are deliberate gaps — adding each is one new file under `tools/load/scenarios/` plus one line in `__main__._SCENARIOS`. The rig is built so the next operator/engineer can land a scenario in an hour.
+
+## Scenarios
+
+### `boot_storm`
+
+N chargers connect inside a window, then idle. Asserts:
+
+- All chargers booted (proxy for "fleet ramped to size")
+- BootNotification handler P99 latency stays under threshold
+- No fleet-side errors during the run
+
+`--full` shape: 10k chargers, 5-minute ramp, 1-hour hold.
+
+### `reconnect_storm` (E4-7)
+
+Settle → drop 50% of WS connections → measure recovery. Asserts:
+
+- Fleet settled to ≥95% of count before the storm
+- Re-boots arrive within the recovery window (default 60s)
+- Each dropped charger booted again
+
+**Single-pod compose limitation.** A single-pod compose stack exercises the **WS-layer** part of the recovery story (re-register storm, idempotency-cache absorption, per-pod registry gauge) but **not** the cross-pod registry rebalance that fires when an actual pod dies. For the cross-pod path, run the same scenario against a multi-pod k3d / staging deployment — the scenario code is identical, only `--target` changes.
+
+`--full` shape: 2k chargers, 60s settle, 60s recovery window.
 
 ## Where the simulator runs
 
