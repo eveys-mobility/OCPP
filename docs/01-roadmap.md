@@ -38,6 +38,8 @@
 
 ## Phase 1 — Protocol skeleton (week 1)
 
+**Status**: ✅ complete. Detail in [`02-tasks.md`](./02-tasks.md#phase-1--protocol-skeleton).
+
 **Goal**: prove the protocol layer works end-to-end against a real charger or simulator.
 
 | Deliverable | Done when |
@@ -55,6 +57,8 @@
 
 ## Phase 2 — Full OCPP 1.6 Core (weeks 2–3)
 
+**Status**: ✅ exit gate met 2026-05-04. The remaining ~20 long-tail OCPP 1.6 Core handlers ship alongside Phase 3+ as new handlers slot into the existing pipeline. Detail in [`02-tasks.md`](./02-tasks.md#phase-2--full-ocpp-16-core).
+
 **Goal**: complete protocol coverage + clean internal API.
 
 | Deliverable | Done when |
@@ -71,6 +75,8 @@
 ---
 
 ## Phase 3 — Platform integration (weeks 4–5)
+
+**Status**: ✅ complete (2026-05-07). Detail in [`02-tasks.md`](./02-tasks.md#phase-3--platform-integration).
 
 **Goal**: wire the gateway to the Eveys backend.
 
@@ -90,6 +96,8 @@ The integration shape is documented in [`docs/integration/`](./integration/READM
 ---
 
 ## Phase 4 — Observability + load test (week 6)
+
+**Status**: ✅ complete (2026-05-07). Detail in [`02-tasks.md`](./02-tasks.md#phase-4--observability--load-test).
 
 **Goal**: see what we have; prove it scales.
 
