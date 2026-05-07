@@ -170,3 +170,138 @@ async def test_detail_returns_full_shape_with_inlined_collections(
     assert isinstance(body["active_reservations"][0]["expiry_date"], str)
     assert len(body["active_charging_profiles"]) == 1
     assert body["active_charging_profiles"][0]["purpose"] == "TxDefaultProfile"
+
+
+# ---- per-connector status enrichment ---------------------------------
+
+
+@pytest.mark.asyncio
+async def test_list_includes_per_connector_status_from_clickhouse(
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+    fake_ch_client: MagicMock,
+) -> None:
+    """Each charger in the list response carries a `connectors` array
+    populated from the latest StatusNotification per connector. Multi-
+    connector chargers no longer collapse onto a single `last_status`
+    slot — managers see every connector's true state."""
+    from eveys_ocpp.api import charge_points as cp_module
+
+    rows = [_cp_row(cp_id="CP_MULTI", internal_id=1)]
+    monkeypatch.setattr(cp_module, "list_charge_points", AsyncMock(return_value=rows))
+    fake_ch_client.fetch_latest_connector_statuses = AsyncMock(
+        return_value={
+            "CP_MULTI": [
+                {
+                    "connector_id": 1,
+                    "status": "Charging",
+                    "error_code": "NoError",
+                    "last_changed_at": datetime(2026, 5, 5, 14, 30, tzinfo=UTC),
+                },
+                {
+                    "connector_id": 2,
+                    "status": "Available",
+                    "error_code": "NoError",
+                    "last_changed_at": datetime(2026, 5, 5, 14, 25, tzinfo=UTC),
+                },
+            ]
+        }
+    )
+
+    response = await client.get("/api/v1/charge-points")
+
+    body = response.json()
+    cp = body["charge_points"][0]
+    assert cp["cp_id"] == "CP_MULTI"
+    connectors = cp["connectors"]
+    assert len(connectors) == 2
+    assert {c["connector_id"]: c["status"] for c in connectors} == {
+        1: "Charging",
+        2: "Available",
+    }
+    # last_changed_at serialized as ISO-8601.
+    assert all(isinstance(c["last_changed_at"], str) for c in connectors)
+
+
+@pytest.mark.asyncio
+async def test_list_returns_empty_connectors_when_clickhouse_silent(
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When ClickHouse has no per-connector data for a charger (e.g.
+    the charger has booted but never sent a StatusNotification), the
+    response still includes a `connectors` field — empty list, never
+    missing — so consumers can rely on the shape."""
+    from eveys_ocpp.api import charge_points as cp_module
+
+    rows = [_cp_row(cp_id="CP_SILENT", internal_id=1)]
+    monkeypatch.setattr(cp_module, "list_charge_points", AsyncMock(return_value=rows))
+
+    response = await client.get("/api/v1/charge-points")
+
+    body = response.json()
+    assert body["charge_points"][0]["connectors"] == []
+
+
+@pytest.mark.asyncio
+async def test_list_survives_clickhouse_failure(
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+    fake_ch_client: MagicMock,
+) -> None:
+    """A flaky ClickHouse must not 500 the /charge-points list. The
+    metadata is the load-bearing data; the per-connector breakdown is
+    enrichment — degrade gracefully to []."""
+    from eveys_ocpp.api import charge_points as cp_module
+
+    rows = [_cp_row(cp_id="CP_OK", internal_id=1)]
+    monkeypatch.setattr(cp_module, "list_charge_points", AsyncMock(return_value=rows))
+    fake_ch_client.fetch_latest_connector_statuses = AsyncMock(
+        side_effect=RuntimeError("clickhouse exploded"),
+    )
+
+    response = await client.get("/api/v1/charge-points")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["charge_points"][0]["connectors"] == []
+
+
+@pytest.mark.asyncio
+async def test_detail_includes_per_connector_status(
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+    fake_registry: MagicMock,
+    fake_ch_client: MagicMock,
+) -> None:
+    from eveys_ocpp.api import charge_points as cp_module
+
+    detail = _cp_row(cp_id="CP_001", internal_id=1)
+    detail["active_reservations"] = []
+    detail["active_charging_profiles"] = []
+    monkeypatch.setattr(cp_module, "get_charge_point_detail", AsyncMock(return_value=detail))
+    fake_registry.get_pod = AsyncMock(return_value="pod-1")
+    fake_ch_client.fetch_latest_connector_statuses = AsyncMock(
+        return_value={
+            "CP_001": [
+                {
+                    "connector_id": 1,
+                    "status": "Faulted",
+                    "error_code": "GroundFailure",
+                    "last_changed_at": datetime(2026, 5, 5, 14, 30, tzinfo=UTC),
+                },
+            ]
+        }
+    )
+
+    response = await client.get("/api/v1/charge-points/CP_001")
+
+    body = response.json()
+    assert body["connectors"] == [
+        {
+            "connector_id": 1,
+            "status": "Faulted",
+            "error_code": "GroundFailure",
+            "last_changed_at": "2026-05-05T14:30:00+00:00",
+        }
+    ]

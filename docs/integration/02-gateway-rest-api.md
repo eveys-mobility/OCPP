@@ -48,7 +48,21 @@ List chargers known to the gateway. Cursor-paginated.
       "last_heartbeat_at": "2026-05-05T15:14:30.000+00:00",
       "last_status": "Available",
       "last_diagnostics_status": null,
-      "last_firmware_status": "Installed"
+      "last_firmware_status": "Installed",
+      "connectors": [
+        {
+          "connector_id": 1,
+          "status": "Charging",
+          "error_code": "NoError",
+          "last_changed_at": "2026-05-05T14:30:00.000+00:00"
+        },
+        {
+          "connector_id": 2,
+          "status": "Available",
+          "error_code": "NoError",
+          "last_changed_at": "2026-05-05T14:25:00.000+00:00"
+        }
+      ]
     }
   ],
   "next_cursor": "eyJpZCI6MTAwfQ==",
@@ -57,6 +71,23 @@ List chargers known to the gateway. Cursor-paginated.
 ```
 
 `next_cursor` is `null` on the last page.
+
+#### `connectors[]` vs `last_status`
+
+`connectors[]` is the source of truth for **per-connector state** — one
+entry per connector with the most recent `StatusNotification` data
+sourced from ClickHouse `cp_status`. Empty array (`[]`) when the
+charger has never sent a `StatusNotification`, when the gateway is
+running without a ClickHouse client wired (tests, dev laptops), or
+when ClickHouse is briefly unavailable — the route degrades gracefully
+rather than 500.
+
+`last_status` is a **scalar convenience field** carrying the most
+recent status across **any** connector. For single-connector chargers
+(the common case) it matches the device's current state. For
+multi-connector chargers it is **last-write-wins** across connectors
+and should not be read as "the device is currently X" — read
+`connectors[]` instead.
 
 ### `GET /api/v1/charge-points/{cp_id}`
 
@@ -78,6 +109,20 @@ Single charger detail. Same per-charger object as the list endpoint, plus active
   "last_status": "Charging",
   "last_diagnostics_status": null,
   "last_firmware_status": "Installed",
+  "connectors": [
+    {
+      "connector_id": 1,
+      "status": "Charging",
+      "error_code": "NoError",
+      "last_changed_at": "2026-05-05T14:30:00.000+00:00"
+    },
+    {
+      "connector_id": 2,
+      "status": "Available",
+      "error_code": "NoError",
+      "last_changed_at": "2026-05-05T14:25:00.000+00:00"
+    }
+  ],
   "active_reservations": [
     {
       "reservation_id": 8842,
