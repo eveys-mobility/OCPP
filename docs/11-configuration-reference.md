@@ -180,6 +180,16 @@ sensitivity.
 | `EVEYS_OCPP_WEBHOOK_REQUEST_TIMEOUT_SECONDS` | `10.0` | 1.0–120.0 | tunable | no | HTTP timeout for a single webhook delivery attempt. Backend must respond within this window or the gateway treats the attempt as a transient failure and retries. | Lower = faster failure detection; higher = tolerates slower backends. 10 s matches the backend's documented response budget per `docs/integration/03-webhooks.md`. |
 | `EVEYS_OCPP_WEBHOOK_MAX_ATTEMPTS` | `5` | 1–20 | tunable | no | Total delivery attempts before the gateway gives up and logs `webhook.delivery_failed`. Includes the first attempt. | Retries follow exponential backoff: 1 s, 5 s, 30 s, 2 min, 10 min for the default of 5. Lowering reduces the longest in-flight tail; raising tolerates longer backend outages. |
 
+## Prometheus metrics (Phase 4 / E4-1)
+
+| Variable | Default | Range | Stability | Secret | What it does | Impact of changing |
+|---|---|---|---|---|---|---|
+| `EVEYS_OCPP_METRICS_ENABLED` | `true` | bool | structural | no | Master switch for the Prometheus metrics server. True in production and local dev. Unit tests flip this to False via an autouse fixture so a `pytest -k something` invocation doesn't try to bind 9100 once per test process. | False removes the /metrics endpoint entirely. Counters/histograms still increment in-process — they just become unscrapeable, so no operational signal. |
+| `EVEYS_OCPP_METRICS_HOST` | `0.0.0.0` | string | structural | no | Bind address for the Prometheus scrape server. Default `0.0.0.0` so a sidecar Prometheus scraper inside the same k8s namespace can reach it. | Restrict to `127.0.0.1` if scraping happens inside the same pod (sidecar pattern). In production we expose to the cluster network; the port is not in the public ingress. |
+| `EVEYS_OCPP_METRICS_PORT` | `9100` | 1–65535 | structural | no | Scrape port. 9100 by convention (canonically `node_exporter`'s port — we own the gateway port in our deployment). Compose publishes this and Prometheus' ServiceMonitor in k8s targets the same. | Changing this requires updating compose `ports:`, the Helm chart's Service, and the ServiceMonitor selector. The default is fine in 99% of environments. |
+| `EVEYS_OCPP_METRICS_PATH` | `/metrics` | string | tunable | no | Path the scrape endpoint serves on. Lets ops mount it at `/internal/metrics` behind a path-based proxy without a code change. Path is matched exactly; trailing slashes are not normalised. | Cosmetic + access-control via reverse-proxy rules. |
+| `EVEYS_OCPP_METRICS_INCLUDE_PYTHON_COLLECTORS` | `true` | bool | tunable | no | Whether prometheus_client's default GC / process / platform collectors stay registered. They emit ~12 series an operator rarely needs (`python_gc_objects_collected_total`, `process_resident_memory_bytes`, etc.). Set False to trim them in resource-tight environments. Most fleets keep True — they're free and they catch GC stalls. | False removes `python_*` and `process_*` series from the scrape output. No instrumentation we own depends on them; Grafana dashboards built off our `eveys_ocpp_*` namespace are unaffected. |
+
 ---
 
 ## Common operations

@@ -56,6 +56,7 @@ _CATEGORY_ORDER: Final[tuple[str, ...]] = (
     "backend_integration",
     "authorize_cache",
     "webhooks",
+    "metrics",
 )
 
 # Human-readable H2 heading per category. Mirrors the hand-written seed.
@@ -76,6 +77,7 @@ _SECTION_TITLES: Final[dict[str, str]] = {
     "backend_integration": "Backend integration (ADR-0023, E3-2..E3-6)",
     "authorize_cache": "Authorize cache (E3-4)",
     "webhooks": "Outbound webhooks (E3-9)",
+    "metrics": "Prometheus metrics (Phase 4 / E4-1)",
 }
 
 # Optional per-section blockquote shown immediately under the H2.

@@ -1172,6 +1172,104 @@ class Settings(BaseSettings):
         },
     )
 
+    # ---- Metrics (Phase 4 / E4-1) ---------------------------------------
+    metrics_enabled: bool = Field(
+        default=True,
+        description=(
+            "Master switch for the Prometheus metrics server. True in "
+            "production and local dev. Unit tests flip this to False "
+            "via an autouse fixture so a `pytest -k something` invocation "
+            "doesn't try to bind 9100 once per test process."
+        ),
+        json_schema_extra={
+            "category": "metrics",
+            "impact": (
+                "False removes the /metrics endpoint entirely. "
+                "Counters/histograms still increment in-process — they "
+                "just become unscrapeable, so no operational signal."
+            ),
+            "secret": False,
+            "stability": "structural",
+        },
+    )
+    metrics_host: str = Field(
+        default="0.0.0.0",
+        description=(
+            "Bind address for the Prometheus scrape server. Default "
+            "`0.0.0.0` so a sidecar Prometheus scraper inside the same "
+            "k8s namespace can reach it."
+        ),
+        json_schema_extra={
+            "category": "metrics",
+            "impact": (
+                "Restrict to `127.0.0.1` if scraping happens inside the "
+                "same pod (sidecar pattern). In production we expose to "
+                "the cluster network; the port is not in the public "
+                "ingress."
+            ),
+            "secret": False,
+            "stability": "structural",
+        },
+    )
+    metrics_port: int = Field(
+        default=9100,
+        ge=1,
+        le=65535,
+        description=(
+            "Scrape port. 9100 by convention (canonically `node_exporter`'s "
+            "port — we own the gateway port in our deployment). Compose "
+            "publishes this and Prometheus' ServiceMonitor in k8s targets "
+            "the same."
+        ),
+        json_schema_extra={
+            "category": "metrics",
+            "impact": (
+                "Changing this requires updating compose `ports:`, the "
+                "Helm chart's Service, and the ServiceMonitor selector. "
+                "The default is fine in 99% of environments."
+            ),
+            "secret": False,
+            "stability": "structural",
+        },
+    )
+    metrics_path: str = Field(
+        default="/metrics",
+        description=(
+            "Path the scrape endpoint serves on. Lets ops mount it at "
+            "`/internal/metrics` behind a path-based proxy without a "
+            "code change. Path is matched exactly; trailing slashes are "
+            "not normalised."
+        ),
+        json_schema_extra={
+            "category": "metrics",
+            "impact": "Cosmetic + access-control via reverse-proxy rules.",
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+    metrics_include_python_collectors: bool = Field(
+        default=True,
+        description=(
+            "Whether prometheus_client's default GC / process / platform "
+            "collectors stay registered. They emit ~12 series an operator "
+            "rarely needs (`python_gc_objects_collected_total`, "
+            "`process_resident_memory_bytes`, etc.). Set False to trim "
+            "them in resource-tight environments. Most fleets keep True "
+            "— they're free and they catch GC stalls."
+        ),
+        json_schema_extra={
+            "category": "metrics",
+            "impact": (
+                "False removes `python_*` and `process_*` series from "
+                "the scrape output. No instrumentation we own depends on "
+                "them; Grafana dashboards built off our `eveys_ocpp_*` "
+                "namespace are unaffected."
+            ),
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+
 
 def get_settings() -> Settings:
     """Build a fresh `Settings` from the current environment.

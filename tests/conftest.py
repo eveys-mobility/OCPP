@@ -2,12 +2,33 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from eveys_ocpp.settings import Settings
+
+
+@pytest.fixture(autouse=True)
+def _disable_metrics_server(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Force the Prometheus scrape server off across the unit suite.
+
+    Boots are short-lived in tests and `prometheus_client.start_http_server`
+    binds a real socket on port 9100. Two test processes overlapping (or
+    one process's `_serve_all` running twice in pytest's same interpreter)
+    would race on the bind. The `metrics_enabled=False` path skips the
+    bind cleanly; counters/histograms still increment in-process so
+    every per-emitter assertion still works.
+
+    Tests that specifically exercise `MetricsServer` (e.g.
+    `tests/unit/metrics/test_server.py`) override this on a fixture-by-
+    fixture basis by monkeypatching the env var back on, OR construct
+    the `MetricsServer` with an ephemeral port directly.
+    """
+    monkeypatch.setenv("EVEYS_OCPP_METRICS_ENABLED", "false")
+    yield
 
 
 @pytest.fixture
