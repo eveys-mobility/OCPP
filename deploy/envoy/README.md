@@ -27,7 +27,7 @@ URL-shape change with an Envoy config change.
 
 | Filter | Purpose | Status |
 |---|---|---|
-| `envoy.filters.http.local_ratelimit` | Per-IP WS-upgrade rate cap (E5-2). Bucket per `remote_address`: 60 burst, 30/min sustained. `X-RateLimit-*` headers exposed. With 2+ Envoy replicas the effective cap is `replicas × per-replica` — RLS deferred. | Active |
+| `envoy.filters.http.local_ratelimit` | WS-upgrade rate cap (E5-2). `local_rate_limit_per_downstream_connection: true` gives each TCP connection its own 60-token bucket refilling at 30/min — covers the per-IP-attempt-rate goal at the protocol level (WS upgrade is the first request on every charger connection). `X-RateLimit-*` headers exposed. With 2+ Envoy replicas the effective cap multiplies; aggregated per-IP via RLS deferred until measured need. | Active |
 | `envoy.filters.http.router` | Forward to upstream | Active |
 
 `upgrade_configs: websocket` is the load-bearing piece for the
