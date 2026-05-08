@@ -14,7 +14,7 @@ from __future__ import annotations
 import socket
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -141,8 +141,8 @@ class Settings(BaseSettings):
             "stability": "structural",
         },
     )
-    rest_inbound_tokens: str = Field(
-        default="",
+    rest_inbound_tokens: SecretStr = Field(
+        default=SecretStr(""),
         description=(
             "Comma-separated bearer tokens accepted on inbound REST "
             "requests. Multi-value to support rotation across consumers "
@@ -154,8 +154,9 @@ class Settings(BaseSettings):
             "impact": (
                 "Empty allowlist + `rest_auth_disabled=False` (the "
                 "default) → all inbound requests are rejected with 401. "
-                "Phase 5 vault work (E5-7) moves this to a SecretStr "
-                "fetched at boot."
+                "Stored as `SecretStr` (E5-7) so a stray `print(settings)` "
+                "or unstructured-log dump shows the redacted placeholder; "
+                "call `.get_secret_value()` at the explicit point of use."
             ),
             "secret": True,
             "stability": "tunable",
@@ -437,11 +438,13 @@ class Settings(BaseSettings):
     )
 
     # ---- Postgres -------------------------------------------------------
-    db_url: str = Field(
-        default="postgresql+asyncpg://eveys:eveys@localhost:5432/eveys_ocpp",
+    db_url: SecretStr = Field(
+        default=SecretStr("postgresql+asyncpg://eveys:eveys@localhost:5432/eveys_ocpp"),
         description=(
             "SQLAlchemy async DSN for the gateway's relational state "
-            "(charge points, transactions, reservations, profiles)."
+            "(charge points, transactions, reservations, profiles). "
+            "Stored as `SecretStr` (E5-7) — the embedded password "
+            "never appears in `repr(settings)` / log dumps."
         ),
         json_schema_extra={
             "category": "postgres",
@@ -706,14 +709,20 @@ class Settings(BaseSettings):
             "stability": "structural",
         },
     )
-    backend_token: str = Field(
-        default="",
-        description="Token used in `Authorization: Bearer ...` against the backend.",
+    backend_token: SecretStr = Field(
+        default=SecretStr(""),
+        description=(
+            "Token used in `Authorization: Bearer ...` against the backend. "
+            "Stored as `SecretStr` (E5-7) — call `.get_secret_value()` at "
+            "the HTTP client boundary; never log."
+        ),
         json_schema_extra={
             "category": "backend_integration",
             "impact": (
-                "Move to vault in Phase 5 (E5-7). Until then handle as a "
-                "secret and never commit a real value to .env or values.yaml."
+                "Vault provisioning lands with the Helm chart in E5-1; "
+                "until then the operator handles `EVEYS_OCPP_BACKEND_TOKEN` "
+                "via the platform's existing secret-management story (k8s "
+                "Secret, AWS Secrets Manager, etc.)."
             ),
             "secret": True,
             "stability": "tunable",
@@ -979,12 +988,14 @@ class Settings(BaseSettings):
         },
     )
 
-    webhook_secret: str = Field(
-        default="",
+    webhook_secret: SecretStr = Field(
+        default=SecretStr(""),
         description=(
             "Shared HMAC-SHA-256 secret used to sign every webhook "
             "delivery. The backend's receiver verifies the "
-            "`X-Eveys-Signature` header against the same secret."
+            "`X-Eveys-Signature` header against the same secret. "
+            "Stored as `SecretStr` (E5-7); the dispatcher calls "
+            "`.get_secret_value()` at the signing boundary."
         ),
         json_schema_extra={
             "category": "webhooks",
@@ -1381,14 +1392,17 @@ class Settings(BaseSettings):
     )
 
     # ---- Sentry (Phase 4 / E4-4) ----------------------------------------
-    sentry_dsn: str = Field(
-        default="",
+    sentry_dsn: SecretStr = Field(
+        default=SecretStr(""),
         description=(
             "Sentry DSN for error tracking. Empty disables the SDK "
             "entirely (no init, no transport, no monkey-patches) so "
             "the gateway behaves identically to a Sentry-free build. "
             "Set in production to capture unhandled exceptions and "
-            "structured `error`-level logs."
+            "structured `error`-level logs. Stored as `SecretStr` "
+            "(E5-7) — the public key embedded in the DSN is enough "
+            "to ingest events on a project's behalf, so treat it as "
+            "secret regardless of Sentry's own threat model."
         ),
         json_schema_extra={
             "category": "sentry",

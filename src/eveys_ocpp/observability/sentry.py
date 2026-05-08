@@ -111,7 +111,12 @@ def init_sentry(settings: Settings) -> None:
     global _INITIALISED
     if _INITIALISED:
         return
-    if not settings.sentry_dsn:
+    # E5-7: sentry_dsn is a SecretStr; unwrap once and reuse below.
+    # An empty string disables the SDK entirely; any non-empty DSN
+    # boots it. `bool(SecretStr(""))` is True (any object is truthy),
+    # so the explicit get_secret_value() is required for the gate.
+    dsn_value = settings.sentry_dsn.get_secret_value()
+    if not dsn_value:
         return
 
     # Lazy import — keeps `sentry_sdk` and its deps off the hot
@@ -130,7 +135,7 @@ def init_sentry(settings: Settings) -> None:
     release = settings.sentry_release or __version__
 
     sentry_sdk.init(
-        dsn=settings.sentry_dsn,
+        dsn=dsn_value,
         environment=settings.sentry_environment,
         release=release,
         traces_sample_rate=settings.sentry_traces_sample_rate,

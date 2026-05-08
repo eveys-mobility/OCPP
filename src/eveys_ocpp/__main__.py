@@ -368,11 +368,14 @@ def main() -> None:
         "startup",
         version=__version__,
         tracing_enabled=settings.tracing_enabled,
-        sentry_enabled=bool(settings.sentry_dsn),
+        sentry_enabled=bool(settings.sentry_dsn.get_secret_value()),
     )
 
     engine = make_engine(
-        settings.db_url,
+        # E5-7: db_url is a SecretStr; reach into the wrapper here at
+        # the SQLAlchemy boundary. The DSN string itself never lands
+        # in any Settings dump.
+        settings.db_url.get_secret_value(),
         pool_size=settings.db_pool_size,
         max_overflow=settings.db_max_overflow,
     )
