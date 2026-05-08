@@ -18,6 +18,7 @@ from sqlalchemy.orm import selectinload
 
 from .models import (
     ChargePoint,
+    ChargePointCertificate,
     ChargePointCredential,
     ChargingProfile,
     ChargingSchedulePeriod,
@@ -105,6 +106,90 @@ async def update_log_status(session: AsyncSession, *, cp_id: str, status: str) -
     await session.execute(
         update(ChargePoint).where(ChargePoint.cp_id == cp_id).values(last_log_status=status)
     )
+
+
+async def upsert_charge_point_certificate(
+    session: AsyncSession,
+    *,
+    cp_id: str,
+    certificate_type: str,
+    sha256_hash: str,
+    pem: str,
+) -> None:
+    """Mirror an Accepted `InstallCertificate` to the
+    `charge_point_certificates` table (TC_075). Idempotent —
+    re-installing the same cert (same charger + same SHA-256) is a
+    no-op via `ON CONFLICT DO NOTHING`. Charger remains the source
+    of truth; this row exists for operator-UI listing.
+
+    Caller passes the already-computed SHA-256 (we don't re-hash
+    here so the hash computation lives at the gRPC boundary, where
+    the cryptography import is contained)."""
+    cp_pk = await get_charge_point_pk(session, cp_id=cp_id)
+    if cp_pk is None:
+        raise ValueError(f"unknown cp_id for certificate install: {cp_id!r}")
+    stmt = (
+        pg_insert(ChargePointCertificate)
+        .values(
+            charge_point_id=cp_pk,
+            certificate_type=certificate_type,
+            sha256_hash=sha256_hash,
+            pem=pem,
+        )
+        .on_conflict_do_nothing(constraint="uq_charge_point_certificates_cp_hash")
+    )
+    await session.execute(stmt)
+
+
+async def get_certificate_pem_by_hash(
+    session: AsyncSession,
+    *,
+    cp_id: str,
+    sha256_hash: str,
+) -> str | None:
+    """Return the stored PEM for a given (charger, sha256_hash) pair
+    so the gRPC boundary can rebuild the OCPP §5.1 hash_data Dict
+    at delete time. Returns None when the operator passes a hash we
+    never recorded — caller should map to a clean validation
+    error rather than dispatching a useless DeleteCertificate."""
+    result = await session.execute(
+        select(ChargePointCertificate.pem).where(
+            ChargePointCertificate.charge_point_id == ChargePoint.id,
+            ChargePoint.cp_id == cp_id,
+            ChargePointCertificate.sha256_hash == sha256_hash,
+        )
+    )
+    return result.scalar_one_or_none()
+
+
+async def delete_charge_point_certificate(
+    session: AsyncSession,
+    *,
+    cp_id: str,
+    sha256_hash: str,
+) -> bool:
+    """Remove the mirror row after a charger Accepted a
+    DeleteCertificate. Returns True when a row was deleted, False
+    when the row was already absent (operator deleting a cert the
+    mirror never recorded — possible after a manual charger-side
+    cert removal). Idempotent in the False case."""
+    cp_pk = await get_charge_point_pk(session, cp_id=cp_id)
+    if cp_pk is None:
+        return False
+    # CursorResult.rowcount is documented but mypy sees the generic
+    # `Result[Any]` — narrow at the call site rather than ignore at
+    # every use.
+    from sqlalchemy.engine import CursorResult
+
+    result = await session.execute(
+        delete(ChargePointCertificate).where(
+            ChargePointCertificate.charge_point_id == cp_pk,
+            ChargePointCertificate.sha256_hash == sha256_hash,
+        )
+    )
+    if isinstance(result, CursorResult):
+        return bool(result.rowcount)
+    return False  # pragma: no cover — DELETE always yields CursorResult
 
 
 async def record_security_event(

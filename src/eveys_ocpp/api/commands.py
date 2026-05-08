@@ -682,6 +682,187 @@ async def get_log(request: Request, cp_id: str) -> dict[str, Any]:
     }
 
 
+# ---- Certificate management (TC_074, TC_075_1, TC_075_2, TC_076) ----------
+#
+# REST surface mirrors the gRPC one. Validation is at the body layer;
+# persistence and OCPP §5.1 hash_data reconstruction live in the gRPC
+# service (this REST wrapper just dispatches via that path).
+
+
+@router.post(_BASE + "/install-certificate")
+async def install_certificate(request: Request, cp_id: str) -> dict[str, Any]:
+    """OCPP 1.6 Security Whitepaper §4.5 / TC_075. Push a root cert
+    PEM to the charger.
+
+    Body shape:
+    ```json
+    {
+      "certificate_type": "CentralSystemRootCertificate",
+      "pem": "-----BEGIN CERTIFICATE-----\\n..."
+    }
+    ```
+    """
+    body = await _body(request)
+    raw_type = str(_require(body, "certificate_type"))
+    if raw_type not in (
+        "CentralSystemRootCertificate",
+        "ManufacturerRootCertificate",
+    ):
+        raise ApiError(
+            status_code=400,
+            error_code=ERR_BAD_REQUEST,
+            message=(
+                "certificate_type must be 'CentralSystemRootCertificate' "
+                "or 'ManufacturerRootCertificate'"
+            ),
+        )
+    pem = str(_require(body, "pem"))
+    if not pem.strip():
+        raise ApiError(status_code=400, error_code=ERR_BAD_REQUEST, message="pem is required")
+    # Parse + hash here so an invalid PEM is rejected with 400 before
+    # we dispatch to the charger. The gRPC layer ALSO validates, but
+    # the REST surface is what most operators hit; failing fast at
+    # this boundary is the correct user experience.
+    from eveys_ocpp.handlers.v16 import _cert_hash
+
+    try:
+        cert = _cert_hash.parse_pem(pem)
+    except ValueError as exc:
+        raise ApiError(status_code=400, error_code=ERR_BAD_REQUEST, message=str(exc)) from exc
+    cert_sha256 = _cert_hash.compute_cert_sha256(cert)
+
+    cert_type_value = (
+        ocpp_enums.CertificateUse.central_system_root_certificate
+        if raw_type == "CentralSystemRootCertificate"
+        else ocpp_enums.CertificateUse.manufacturer_root_certificate
+    )
+    ocpp_response = await dispatch_ocpp_call(
+        request,
+        rpc="InstallCertificate",
+        cp_id=cp_id,
+        ocpp_request=ocpp_call.InstallCertificate(
+            certificate_type=cert_type_value,
+            certificate=pem,
+        ),
+    )
+    status_str = str(getattr(ocpp_response, "status", ""))
+    # Mirror persistence happens in the gRPC service for the gRPC
+    # path; the REST path goes through `dispatch_ocpp_call` which is
+    # the in-process gateway path, so we mirror here too on Accepted.
+    if status_str == "Accepted":
+        from eveys_ocpp.persistence import repositories
+        from eveys_ocpp.persistence.db import session_scope
+
+        async with session_scope(request.app.state.session_factory) as session:
+            await repositories.upsert_charge_point_certificate(
+                session,
+                cp_id=cp_id,
+                certificate_type=raw_type,
+                sha256_hash=cert_sha256,
+                pem=pem,
+            )
+
+    return {
+        "status": status_str,
+        "sha256_hash": cert_sha256 if status_str == "Accepted" else "",
+        "request_id": request.state.request_id,
+    }
+
+
+@router.post(_BASE + "/delete-certificate")
+async def delete_certificate(request: Request, cp_id: str) -> dict[str, Any]:
+    """OCPP 1.6 Security Whitepaper §4.5 / TC_076. Remove a specific
+    cert from the charger by SHA-256 hash.
+
+    Body shape:
+    ```json
+    { "sha256_hash": "abc123...64-hex-chars" }
+    ```
+
+    The hash is the value returned by a previous
+    `/install-certificate` Accepted response. The gateway looks up
+    the stored PEM, rebuilds the OCPP §5.1 `hash_data` Dict, and
+    dispatches.
+    """
+    body = await _body(request)
+    sha256_hash = str(_require(body, "sha256_hash")).strip()
+    if not sha256_hash:
+        raise ApiError(
+            status_code=400,
+            error_code=ERR_BAD_REQUEST,
+            message="sha256_hash is required",
+        )
+
+    from eveys_ocpp.handlers.v16 import _cert_hash
+    from eveys_ocpp.persistence import repositories
+    from eveys_ocpp.persistence.db import session_scope
+
+    async with session_scope(request.app.state.session_factory) as session:
+        pem = await repositories.get_certificate_pem_by_hash(
+            session, cp_id=cp_id, sha256_hash=sha256_hash
+        )
+    if pem is None:
+        raise ApiError(
+            status_code=404,
+            error_code=ERR_BAD_REQUEST,
+            message=f"no installed certificate with sha256={sha256_hash}",
+        )
+
+    cert = _cert_hash.parse_pem(pem)
+    hash_data = _cert_hash.build_hash_data(cert)
+
+    ocpp_response = await dispatch_ocpp_call(
+        request,
+        rpc="DeleteCertificate",
+        cp_id=cp_id,
+        ocpp_request=ocpp_call.DeleteCertificate(certificate_hash_data=hash_data),
+    )
+    status_str = str(getattr(ocpp_response, "status", ""))
+    if status_str == "Accepted":
+        async with session_scope(request.app.state.session_factory) as session:
+            await repositories.delete_charge_point_certificate(
+                session, cp_id=cp_id, sha256_hash=sha256_hash
+            )
+
+    return {"status": status_str, "request_id": request.state.request_id}
+
+
+@router.post(_BASE + "/certificate-signed")
+async def certificate_signed(request: Request, cp_id: str) -> dict[str, Any]:
+    """OCPP 1.6 Security Whitepaper §4.5 / TC_074. Push a signed
+    certificate chain to the charger.
+
+    Body shape:
+    ```json
+    {
+      "certificate_chain": "-----BEGIN CERTIFICATE-----\\n...\\n-----BEGIN CERTIFICATE-----\\n..."
+    }
+    ```
+
+    The chain comes from a separate signing flow (out of gateway
+    scope — see issue #112 for the deferred backend integration).
+    Operators today supply the signed PEM directly.
+    """
+    body = await _body(request)
+    chain = str(_require(body, "certificate_chain"))
+    if not chain.strip():
+        raise ApiError(
+            status_code=400,
+            error_code=ERR_BAD_REQUEST,
+            message="certificate_chain is required",
+        )
+    ocpp_response = await dispatch_ocpp_call(
+        request,
+        rpc="CertificateSigned",
+        cp_id=cp_id,
+        ocpp_request=ocpp_call.CertificateSigned(certificate_chain=chain),
+    )
+    return {
+        "status": str(getattr(ocpp_response, "status", "")),
+        "request_id": request.state.request_id,
+    }
+
+
 @router.post(_BASE + "/update-firmware")
 async def update_firmware(request: Request, cp_id: str) -> dict[str, Any]:
     body = await _body(request)

@@ -16,17 +16,28 @@ read-only RPC and gets its own coverage.
 from __future__ import annotations
 
 import asyncio
+import datetime as _dt
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+import pytest_asyncio as _pytest_asyncio
+from cryptography import x509 as _x509
+from cryptography.hazmat.primitives import hashes as _hashes
+from cryptography.hazmat.primitives import serialization as _ser
+from cryptography.hazmat.primitives.asymmetric import rsa as _rsa
+from cryptography.x509.oid import NameOID as _NameOID
 from grpclib.client import Channel
 from grpclib.const import Status
 from grpclib.exceptions import GRPCError
 from grpclib.server import Server
+from sqlalchemy.ext.asyncio import async_sessionmaker as _amk
+from sqlalchemy.ext.asyncio import create_async_engine as _create_async_engine
 
 from eveys_ocpp._generated.ocpp_gw.v1 import gateway_grpc, gateway_pb2
 from eveys_ocpp.connections import ConnectionMap
+from eveys_ocpp.persistence.models import Base as _Base
+from eveys_ocpp.persistence.models import ChargePoint as _ChargePoint
 from eveys_ocpp.settings import Settings
 from eveys_ocpp.transport.grpc_server import OcppGatewayService
 
@@ -2390,6 +2401,433 @@ async def test_get_log_unspecified_log_type_returns_invalid_argument(
                         request_id=1,
                         location="https://x/",
                     )
+                )
+        assert exc.value.status == Status.INVALID_ARGUMENT
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+# ---- TC_074, TC_075_1, TC_075_2, TC_076 — certificate management ---------
+#
+# These tests need a real session_factory because the gRPC service
+# writes to `charge_point_certificates` on Accepted. aiosqlite via
+# the existing pattern (see test_ws_server_basic_auth.py).
+
+
+def _make_pem(cn: str = "test-root", serial: int = 0xCAFE) -> str:
+    """Build a self-signed PEM the gateway can parse + hash."""
+    key = _rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    name = _x509.Name([_x509.NameAttribute(_NameOID.COMMON_NAME, cn)])
+    cert = (
+        _x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(key.public_key())
+        .serial_number(serial)
+        .not_valid_before(_dt.datetime(2026, 1, 1))
+        .not_valid_after(_dt.datetime(2027, 1, 1))
+        .sign(key, _hashes.SHA256())
+    )
+    return cert.public_bytes(_ser.Encoding.PEM).decode()
+
+
+@_pytest_asyncio.fixture
+async def real_session_factory_with_cp() -> Any:
+    """Real aiosqlite session factory pre-loaded with one
+    `charge_points` row (cp_id='CP_001'). Used by the cert tests
+    that exercise the persistence path."""
+    from sqlalchemy import BigInteger as _BigInteger
+    from sqlalchemy import Integer as _Integer
+
+    # SQLite quirk: BigInteger PKs need an Integer variant for
+    # autoincrement. Idempotent; metadata is module-global.
+    for table in _Base.metadata.tables.values():
+        for col in table.columns:
+            if (
+                col.primary_key
+                and isinstance(col.type, _BigInteger)
+                and "sqlite" not in getattr(col.type, "_variant_mapping", {})
+            ):
+                col.type = col.type.with_variant(_Integer(), "sqlite")  # type: ignore[assignment]
+
+    engine = _create_async_engine(
+        "sqlite+aiosqlite:///file:cert_mem?mode=memory&cache=shared&uri=true",
+        future=True,
+    )
+    async with engine.begin() as conn:
+        await conn.run_sync(_Base.metadata.create_all)
+    factory = _amk(engine, expire_on_commit=False)
+    async with factory() as session:
+        session.add(_ChargePoint(cp_id="CP_001"))
+        await session.commit()
+    yield factory
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_install_certificate_accepted_mirrors_to_db(
+    real_session_factory_with_cp: Any, settings: Settings
+) -> None:
+    """The load-bearing test: charger Accepted → row written to
+    `charge_point_certificates`. Operator UI relies on it."""
+    pem = _make_pem(cn="csms-root", serial=0xC0FFEE)
+
+    cp = MagicMock()
+    cp.id = "CP_001"
+    response = MagicMock()
+    response.status = "Accepted"
+    cp.call = AsyncMock(return_value=response)
+    cm = ConnectionMap()
+    cm.add(cp)
+    service = OcppGatewayService(
+        session_factory=real_session_factory_with_cp,
+        settings=settings,
+        connections=cm,
+    )
+    server, port = await _spawn_server(service)
+    try:
+        async with Channel("127.0.0.1", port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            response_grpc = await stub.InstallCertificate(
+                gateway_pb2.InstallCertificateRequest(
+                    cp_id="CP_001",
+                    certificate_type=gateway_pb2.CERTIFICATE_USE_CENTRAL_SYSTEM_ROOT,
+                    pem=pem,
+                )
+            )
+        assert response_grpc.status == gateway_pb2.CERTIFICATE_INSTALL_STATUS_ACCEPTED
+        assert len(response_grpc.sha256_hash) == 64
+
+        # The mirror row must exist with our cert.
+        from sqlalchemy import select
+
+        from eveys_ocpp.persistence.models import ChargePointCertificate
+
+        async with real_session_factory_with_cp() as session:
+            result = await session.execute(
+                select(ChargePointCertificate).where(
+                    ChargePointCertificate.sha256_hash == response_grpc.sha256_hash
+                )
+            )
+            row = result.scalar_one_or_none()
+        assert row is not None, "Accepted InstallCertificate must mirror to DB"
+        assert row.certificate_type == "CentralSystemRootCertificate"
+        assert row.pem == pem
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_install_certificate_rejected_does_not_mirror(
+    real_session_factory_with_cp: Any, settings: Settings
+) -> None:
+    """Rejected → mirror row NOT written. Recording a cert the
+    charger refused would lie to the operator UI."""
+    pem = _make_pem()
+    cp = MagicMock()
+    cp.id = "CP_001"
+    response = MagicMock()
+    response.status = "Rejected"
+    cp.call = AsyncMock(return_value=response)
+    cm = ConnectionMap()
+    cm.add(cp)
+    service = OcppGatewayService(
+        session_factory=real_session_factory_with_cp,
+        settings=settings,
+        connections=cm,
+    )
+    server, port = await _spawn_server(service)
+    try:
+        async with Channel("127.0.0.1", port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            response_grpc = await stub.InstallCertificate(
+                gateway_pb2.InstallCertificateRequest(
+                    cp_id="CP_001",
+                    certificate_type=gateway_pb2.CERTIFICATE_USE_MANUFACTURER_ROOT,
+                    pem=pem,
+                )
+            )
+        assert response_grpc.status == gateway_pb2.CERTIFICATE_INSTALL_STATUS_REJECTED
+        assert response_grpc.sha256_hash == ""
+
+        from sqlalchemy import select
+
+        from eveys_ocpp.persistence.models import ChargePointCertificate
+
+        async with real_session_factory_with_cp() as session:
+            result = await session.execute(select(ChargePointCertificate))
+            assert result.scalars().all() == []
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_install_certificate_manufacturer_type_uses_correct_enum(
+    real_session_factory_with_cp: Any, settings: Settings
+) -> None:
+    """proto MANUFACTURER_ROOT must map to ocpp_enums.CertificateUse.
+    manufacturer_root_certificate, never silently re-route as CSMS
+    root. This is the value-added correctness invariant."""
+    pem = _make_pem()
+    cp = MagicMock()
+    cp.id = "CP_001"
+    response = MagicMock()
+    response.status = "Accepted"
+    cp.call = AsyncMock(return_value=response)
+    cm = ConnectionMap()
+    cm.add(cp)
+    service = OcppGatewayService(
+        session_factory=real_session_factory_with_cp,
+        settings=settings,
+        connections=cm,
+    )
+    server, port = await _spawn_server(service)
+    try:
+        async with Channel("127.0.0.1", port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            await stub.InstallCertificate(
+                gateway_pb2.InstallCertificateRequest(
+                    cp_id="CP_001",
+                    certificate_type=gateway_pb2.CERTIFICATE_USE_MANUFACTURER_ROOT,
+                    pem=pem,
+                )
+            )
+        from ocpp.v16 import enums as ocpp_enums
+
+        sent = cp.call.await_args.args[0]
+        assert sent.certificate_type == ocpp_enums.CertificateUse.manufacturer_root_certificate
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_install_certificate_invalid_pem_returns_invalid_argument(
+    real_session_factory_with_cp: Any, settings: Settings
+) -> None:
+    """A malformed PEM is caller error — reject at the boundary
+    BEFORE dispatching to the charger. Avoid sending known-bad
+    payloads."""
+    cp = MagicMock()
+    cp.id = "CP_001"
+    cp.call = AsyncMock()
+    cm = ConnectionMap()
+    cm.add(cp)
+    service = OcppGatewayService(
+        session_factory=real_session_factory_with_cp,
+        settings=settings,
+        connections=cm,
+    )
+    server, port = await _spawn_server(service)
+    try:
+        async with Channel("127.0.0.1", port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            with pytest.raises(GRPCError) as exc:
+                await stub.InstallCertificate(
+                    gateway_pb2.InstallCertificateRequest(
+                        cp_id="CP_001",
+                        certificate_type=gateway_pb2.CERTIFICATE_USE_CENTRAL_SYSTEM_ROOT,
+                        pem=(
+                            "-----BEGIN CERTIFICATE-----\n"
+                            "not-real-base64\n"
+                            "-----END CERTIFICATE-----"
+                        ),
+                    )
+                )
+        assert exc.value.status == Status.INVALID_ARGUMENT
+        # Charger never saw a malformed cert.
+        cp.call.assert_not_awaited()
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_install_certificate_unspecified_type_returns_invalid_argument(
+    real_session_factory_with_cp: Any, settings: Settings
+) -> None:
+    """proto default UNSPECIFIED is rejected at the boundary so
+    operators don't accidentally rely on a silent default."""
+    cp = MagicMock()
+    cp.id = "CP_001"
+    cp.call = AsyncMock()
+    cm = ConnectionMap()
+    cm.add(cp)
+    service = OcppGatewayService(
+        session_factory=real_session_factory_with_cp,
+        settings=settings,
+        connections=cm,
+    )
+    server, port = await _spawn_server(service)
+    try:
+        async with Channel("127.0.0.1", port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            with pytest.raises(GRPCError) as exc:
+                await stub.InstallCertificate(
+                    gateway_pb2.InstallCertificateRequest(
+                        cp_id="CP_001",
+                        # certificate_type left at UNSPECIFIED
+                        pem=_make_pem(),
+                    )
+                )
+        assert exc.value.status == Status.INVALID_ARGUMENT
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_delete_certificate_round_trip(
+    real_session_factory_with_cp: Any, settings: Settings
+) -> None:
+    """Full lifecycle: install → delete by hash. The §5.1 hash_data
+    Dict is rebuilt from the stored PEM at delete time; the operator
+    only knows the user-facing SHA-256."""
+    pem = _make_pem(cn="root-to-delete", serial=0xBEEF)
+
+    cp = MagicMock()
+    cp.id = "CP_001"
+    install_response = MagicMock(status="Accepted")
+    delete_response = MagicMock(status="Accepted")
+    # First call (Install) returns Accepted, second (Delete) returns
+    # Accepted. Use side_effect to sequence them.
+    cp.call = AsyncMock(side_effect=[install_response, delete_response])
+    cm = ConnectionMap()
+    cm.add(cp)
+    service = OcppGatewayService(
+        session_factory=real_session_factory_with_cp,
+        settings=settings,
+        connections=cm,
+    )
+    server, port = await _spawn_server(service)
+    try:
+        async with Channel("127.0.0.1", port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            install_grpc = await stub.InstallCertificate(
+                gateway_pb2.InstallCertificateRequest(
+                    cp_id="CP_001",
+                    certificate_type=gateway_pb2.CERTIFICATE_USE_CENTRAL_SYSTEM_ROOT,
+                    pem=pem,
+                )
+            )
+            sha = install_grpc.sha256_hash
+            delete_grpc = await stub.DeleteCertificate(
+                gateway_pb2.DeleteCertificateRequest(cp_id="CP_001", sha256_hash=sha)
+            )
+        assert delete_grpc.status == gateway_pb2.CERTIFICATE_DELETE_STATUS_ACCEPTED
+
+        # Mirror row should be gone after Accepted delete.
+        from sqlalchemy import select
+
+        from eveys_ocpp.persistence.models import ChargePointCertificate
+
+        async with real_session_factory_with_cp() as session:
+            result = await session.execute(select(ChargePointCertificate))
+            assert result.scalars().all() == []
+
+        # And the §5.1 hash_data Dict the gateway built must have all
+        # 4 keys — verify by inspecting the OCPP request the charger
+        # received.
+        delete_call_args = cp.call.await_args_list[1].args[0]
+        assert set(delete_call_args.certificate_hash_data.keys()) == {
+            "hashAlgorithm",
+            "issuerNameHash",
+            "issuerKeyHash",
+            "serialNumber",
+        }
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_delete_certificate_unknown_hash_returns_not_found(
+    real_session_factory_with_cp: Any, settings: Settings
+) -> None:
+    """Operator passes a hash we never recorded → NOT_FOUND. The
+    charger is never dispatched (we'd have nothing to send)."""
+    cp = MagicMock()
+    cp.id = "CP_001"
+    cp.call = AsyncMock()
+    cm = ConnectionMap()
+    cm.add(cp)
+    service = OcppGatewayService(
+        session_factory=real_session_factory_with_cp,
+        settings=settings,
+        connections=cm,
+    )
+    server, port = await _spawn_server(service)
+    try:
+        async with Channel("127.0.0.1", port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            with pytest.raises(GRPCError) as exc:
+                await stub.DeleteCertificate(
+                    gateway_pb2.DeleteCertificateRequest(cp_id="CP_001", sha256_hash="0" * 64)
+                )
+        assert exc.value.status == Status.NOT_FOUND
+        cp.call.assert_not_awaited()
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_certificate_signed_forwards_chain_verbatim(
+    real_session_factory_with_cp: Any, settings: Settings
+) -> None:
+    """CertificateSigned just transports — no parsing, no
+    persistence. Pin that the chain reaches the charger unchanged."""
+    chain = "-----BEGIN CERTIFICATE-----\nMIIB...\n-----END CERTIFICATE-----"
+    cp = MagicMock()
+    cp.id = "CP_001"
+    response = MagicMock(status="Accepted")
+    cp.call = AsyncMock(return_value=response)
+    cm = ConnectionMap()
+    cm.add(cp)
+    service = OcppGatewayService(
+        session_factory=real_session_factory_with_cp,
+        settings=settings,
+        connections=cm,
+    )
+    server, port = await _spawn_server(service)
+    try:
+        async with Channel("127.0.0.1", port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            response_grpc = await stub.CertificateSigned(
+                gateway_pb2.CertificateSignedRequest(cp_id="CP_001", certificate_chain=chain)
+            )
+        assert response_grpc.status == gateway_pb2.CERTIFICATE_SIGNED_STATUS_ACCEPTED
+        sent = cp.call.await_args.args[0]
+        assert sent.certificate_chain == chain
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_certificate_signed_empty_chain_returns_invalid_argument(
+    real_session_factory_with_cp: Any, settings: Settings
+) -> None:
+    cp = MagicMock()
+    cp.id = "CP_001"
+    cp.call = AsyncMock()
+    cm = ConnectionMap()
+    cm.add(cp)
+    service = OcppGatewayService(
+        session_factory=real_session_factory_with_cp,
+        settings=settings,
+        connections=cm,
+    )
+    server, port = await _spawn_server(service)
+    try:
+        async with Channel("127.0.0.1", port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            with pytest.raises(GRPCError) as exc:
+                await stub.CertificateSigned(
+                    gateway_pb2.CertificateSignedRequest(cp_id="CP_001", certificate_chain="")
                 )
         assert exc.value.status == Status.INVALID_ARGUMENT
     finally:

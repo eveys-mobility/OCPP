@@ -829,3 +829,103 @@ async def test_get_log_missing_required_field_returns_400(
         json={"log_type": "SecurityLog", "request_id": 1},  # no location
     )
     assert response.status_code == 400
+
+
+# ---- TC_074, TC_075_1, TC_075_2, TC_076 — certificate management REST -----
+
+
+def _gen_pem() -> str:
+    """Build a self-signed PEM the cert-mgmt REST tests can pass."""
+    import datetime as dt
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.x509.oid import NameOID
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "rest-test-root")])
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(key.public_key())
+        .serial_number(0xCAFEBABE)
+        .not_valid_before(dt.datetime(2026, 1, 1))
+        .not_valid_after(dt.datetime(2027, 1, 1))
+        .sign(key, hashes.SHA256())
+    )
+    return cert.public_bytes(serialization.Encoding.PEM).decode()
+
+
+@pytest.mark.asyncio
+async def test_install_certificate_invalid_certificate_type_returns_400(
+    client: httpx.AsyncClient, fake_command_service: MagicMock
+) -> None:
+    response = await client.post(
+        "/api/v1/charge-points/CP_001/commands/install-certificate",
+        json={"certificate_type": "Garbage", "pem": "ignored"},
+    )
+    assert response.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_install_certificate_invalid_pem_returns_400(
+    client: httpx.AsyncClient, fake_command_service: MagicMock
+) -> None:
+    response = await client.post(
+        "/api/v1/charge-points/CP_001/commands/install-certificate",
+        json={
+            "certificate_type": "CentralSystemRootCertificate",
+            "pem": "not-a-real-pem",
+        },
+    )
+    assert response.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_install_certificate_missing_required_field_returns_400(
+    client: httpx.AsyncClient,
+) -> None:
+    response = await client.post(
+        "/api/v1/charge-points/CP_001/commands/install-certificate",
+        json={"certificate_type": "CentralSystemRootCertificate"},  # no pem
+    )
+    assert response.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_certificate_signed_empty_chain_returns_400(
+    client: httpx.AsyncClient,
+) -> None:
+    response = await client.post(
+        "/api/v1/charge-points/CP_001/commands/certificate-signed",
+        json={"certificate_chain": ""},
+    )
+    assert response.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_certificate_signed_returns_status_from_charger(
+    client: httpx.AsyncClient, fake_command_service: MagicMock
+) -> None:
+    _set_response(fake_command_service, _stub_response(status="Accepted"))
+    pem = _gen_pem()
+
+    response = await client.post(
+        "/api/v1/charge-points/CP_001/commands/certificate-signed",
+        json={"certificate_chain": pem},
+    )
+    assert response.status_code == 200
+    assert response.json()["status"] == "Accepted"
+
+
+@pytest.mark.asyncio
+async def test_delete_certificate_missing_hash_returns_400(
+    client: httpx.AsyncClient,
+) -> None:
+    response = await client.post(
+        "/api/v1/charge-points/CP_001/commands/delete-certificate",
+        json={},
+    )
+    assert response.status_code == 400

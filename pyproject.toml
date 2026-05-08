@@ -33,6 +33,7 @@ dependencies = [
     "opentelemetry-exporter-otlp-proto-grpc>=1.27",  # Phase 4 / E4-3: OTLP/gRPC exporter to a collector (Tempo, Jaeger, Honeycomb, etc.). Pinned to the gRPC variant — the http/protobuf variant doubles serialisation cost on the hot path and lacks streaming.
     "sentry-sdk>=2.18",            # Phase 4 / E4-4: error tracking. SDK only initialises when `EVEYS_OCPP_SENTRY_DSN` is set; empty DSN = pure no-op (no transport, no breadcrumbs, no monkey-patches). traces_sample_rate is left at 0 by default so OTel keeps tracing — Sentry's job here is errors only.
     "bcrypt>=4.2",                 # Phase 5 / E5-6: per-charger password hashing for WS-edge Basic Auth. Industry-standard slow KDF; constant-time verify; no system deps.
+    "cryptography>=43.0",          # Phase 5: OCPP 1.6 Security Whitepaper §4.5 (TC_074/075/076 cert management — parse X.509 PEM to compute the §5.1 hash_data Dict) and §4.4 (TC_080/081 SignedUpdateFirmware signature verification, future PR). No fallback option — `hashlib` alone can't parse X.509.
 ]
 
 [project.optional-dependencies]
