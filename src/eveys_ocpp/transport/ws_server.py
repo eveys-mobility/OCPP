@@ -157,17 +157,67 @@ async def serve_forever(
 
     ssl_ctx = build_server_ssl_context(settings)
 
+    # E5-6 — Basic Auth check at the WS edge. Hooks into
+    # `process_request`, the websockets pre-handshake callback. On
+    # reject we return a 401 Response and the upgrade never
+    # completes — the OCPP handler stack never sees the connection.
+    from websockets.datastructures import Headers
+    from websockets.http11 import Response
+
+    from eveys_ocpp.transport._basic_auth import verify_basic_auth
+
+    async def _process_request(
+        connection: ServerConnection,
+        request: object,  # websockets.http11.Request — typed loose to avoid import churn
+    ) -> Response | None:
+        # The path is the cp_id (gateway URL convention). Strip the
+        # leading slash; reject empty cp_id like the existing
+        # `_on_connect` does so the metric label stays bounded.
+        path = getattr(request, "path", "")
+        cp_id = path.strip("/")
+        if not cp_id:
+            # Empty cp_id is handled by `_on_connect`'s own check;
+            # let the upgrade through so that branch fires (with
+            # its existing metric).
+            return None
+
+        auth_header = request.headers.get("authorization") if hasattr(request, "headers") else None
+        result = await verify_basic_auth(
+            cp_id=cp_id,
+            auth_header=auth_header,
+            session_factory=session_factory,
+            settings=settings,
+        )
+        metrics_registry.WS_BASIC_AUTH_TOTAL.labels(outcome=result.outcome).inc()
+        if result.accepted:
+            return None
+        log.info(
+            "ws.basic_auth_rejected",
+            cp_id=cp_id,
+            outcome=result.outcome,
+        )
+        # 401 with WWW-Authenticate so a charger that simply
+        # forgot to send creds gets the right hint.
+        return Response(
+            status_code=401,
+            reason_phrase="Unauthorized",
+            headers=Headers([("WWW-Authenticate", 'Basic realm="ocpp"')]),
+            body=b"",
+        )
+
     async with serve(
         handler,
         host=settings.ws_host,
         port=settings.ws_port,
         subprotocols=[OCPP_SUBPROTOCOL],
         ssl=ssl_ctx,
+        process_request=_process_request,
     ) as server:
         log.info(
             "ws.listening",
             host=settings.ws_host,
             port=settings.ws_port,
             mtls=ssl_ctx is not None,
+            basic_auth_required=settings.ws_basic_auth_required,
         )
         await server.serve_forever()

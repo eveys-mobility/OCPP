@@ -28,7 +28,7 @@ Two bucket sets partition the histograms:
   client, webhook delivery. Range from a 10 ms cache hit through the
   30 s OCPP outer timeout.
 
-Series count: 54 metrics. Cardinality stays bounded — see comments at
+Series count: 55 metrics. Cardinality stays bounded — see comments at
 high-cardinality sites (`measurand`, `vendor_id`, `route`).
 """
 
@@ -238,6 +238,15 @@ RATE_LIMIT_THROTTLED_TOTAL: Counter = Counter(
     "matching cp_id is in the structured log line, not a label, to "
     "keep cardinality bounded.",
     labelnames=("action",),
+)
+WS_BASIC_AUTH_TOTAL: Counter = Counter(
+    "eveys_ocpp_ws_basic_auth_total",
+    "WS-edge Basic Auth verification outcomes (E5-6). `outcome` is a "
+    "closed enum: ok, no_header, malformed, username_mismatch, "
+    "no_credential, bad_password. Sustained non-`ok` rate at a stable "
+    "cp_id (visible in the structured log line, not a label) is a "
+    "credential-rotation incident or an active probe.",
+    labelnames=("outcome",),
 )
 
 DATA_TRANSFERS_TOTAL: Counter = Counter(
@@ -527,6 +536,7 @@ __all__ = [
     "WEBHOOK_CONSUMER_LAG_MESSAGES",
     "WEBHOOK_DELIVERIES_TOTAL",
     "WEBHOOK_DELIVERY_LATENCY_SECONDS",
+    "WS_BASIC_AUTH_TOTAL",
     "WS_CONNECTIONS_ACTIVE",
     "WS_CONNECTS_TOTAL",
     "WS_DISCONNECTS_TOTAL",

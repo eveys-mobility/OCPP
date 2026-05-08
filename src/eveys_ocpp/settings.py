@@ -1709,6 +1709,28 @@ class Settings(BaseSettings):
             "stability": "structural",
         },
     )
+    ws_basic_auth_required: bool = Field(
+        default=False,
+        description=(
+            "WS-edge Basic Auth (E5-6) is always *attempted* — every "
+            "upgrade is checked against `charge_point_credentials`. "
+            "This flag controls behaviour for chargers that have **no "
+            "credential row** yet: when False (default) those chargers "
+            "are accepted, which lets a fleet migrate gradually; when "
+            "True the upgrade is rejected with 401 and the operator "
+            "must provision a credential before the charger connects."
+        ),
+        json_schema_extra={
+            "category": "ws_server",
+            "impact": (
+                "Production sets True so an unprovisioned charger can't "
+                "sneak through. Dev / compose stays False so the "
+                "simulator (which doesn't carry creds) keeps working."
+            ),
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
 
 
 def get_settings() -> Settings:

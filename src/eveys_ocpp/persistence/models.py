@@ -85,6 +85,54 @@ class ChargePoint(Base):
         back_populates="charge_point", cascade="all, delete-orphan"
     )
 
+    credential: Mapped[ChargePointCredential | None] = relationship(
+        back_populates="charge_point",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
+
+
+class ChargePointCredential(Base):
+    """Per-charger Basic Auth password store (E5-6).
+
+    Separate table from `charge_points` so credential lifecycle is
+    independent of identity lifecycle: a charger can be seen-but-
+    not-yet-provisioned, or rotated without touching its `vendor` /
+    `model` / `last_boot_at` columns.
+
+    `password_hash` is a bcrypt hash. The plaintext is never written.
+    Operators provision rows via direct SQL or the platform's
+    standard secret-distribution path; a REST endpoint follows when
+    the operator UI lands.
+    """
+
+    __tablename__ = "charge_point_credentials"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    charge_point_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("charge_points.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+    )
+
+    # bcrypt hash. ~60 bytes; 128 leaves room for future hash schemes
+    # encoded with a prefix marker (e.g. `$argon2id$...`) without a
+    # column migration.
+    password_hash: Mapped[str] = mapped_column(String(128), nullable=False)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    charge_point: Mapped[ChargePoint] = relationship(back_populates="credential")
+
 
 class Transaction(Base):
     """One row per OCPP transaction (StartTransaction → StopTransaction)."""
