@@ -1,0 +1,16 @@
+{{- if .Values.envoy.podDisruptionBudget.enabled -}}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "eveys-ocpp.envoyName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "eveys-ocpp.envoyLabels" . | nindent 4 }}
+spec:
+  maxUnavailable: {{ .Values.envoy.podDisruptionBudget.maxUnavailable }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "eveys-ocpp.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: envoy
+{{- end -}}

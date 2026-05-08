@@ -218,6 +218,31 @@ services:
       kafka: { condition: service_healthy }
       clickhouse: { condition: service_healthy }
 
+  # Envoy edge proxy (E5-1, ADR-0007).
+  #
+  # Additive — sits in front of the gateway exposing TLS WebSocket on
+  # host port 19443. The plain ws:// path on host port 19000 is kept
+  # so existing tests, the charger sim, and the e2e suite still hit
+  # the gateway directly. Production removes the plain path; the
+  # additive shape here is to introduce TLS without breaking the
+  # dev workflow in one go.
+  #
+  # Self-signed certs come from `scripts/gen-dev-certs.sh`. Mount
+  # is read-only because the certs aren't going to change at runtime
+  # in dev. Production certs come from cert-manager / external-
+  # secrets and are wired by the Helm chart.
+  envoy:
+    image: envoyproxy/envoy:v1.31-latest
+    container_name: eveys-ocpp-envoy
+    ports:
+      - "19443:443"     # wss:// — TLS-fronted entry point
+    volumes:
+      - ../envoy/envoy.local.yaml:/etc/envoy/envoy.yaml:ro
+      - ../envoy/certs:/etc/envoy/certs:ro
+    depends_on:
+      ocpp: { condition: service_started }
+    restart: unless-stopped
+
 volumes:
   postgres_data:
   redis_data:

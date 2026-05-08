@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "eveys-ocpp.envoyName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "eveys-ocpp.envoyLabels" . | nindent 4 }}
+spec:
+  type: {{ .Values.envoy.service.type }}
+  selector:
+    app.kubernetes.io/name: {{ include "eveys-ocpp.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: envoy
+  ports:
+    - name: wss
+      port: {{ .Values.envoy.service.portWss }}
+      targetPort: wss
+      protocol: TCP

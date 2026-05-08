@@ -79,3 +79,72 @@ jobs:
             echo "=== buf breaking: $module ==="
             buf breaking "$module" --against ".git#branch=main,subdir=$module"
           done
+
+  # E5-1 — validate Envoy config without binding listeners. Catches
+  # typos, removed filter names after Envoy major bumps, dangling
+  # cluster references. Runs in seconds.
+  envoy-validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Generate ephemeral self-signed certs so Envoy's validate-mode
+      # can load the TLS listener config. The certs aren't trusted by
+      # anything; they exist only to satisfy the file-path validation.
+      - name: Generate dev certs
+        run: |
+          bash scripts/gen-dev-certs.sh 30
+          # Envoy in the official image runs as a non-root user.
+          # The default 0644 / 0600 modes from openssl on the GitHub
+          # runner aren't world-readable for the key — make both
+          # readable so the container can mount-and-read them.
+          chmod a+r deploy/envoy/certs/server.crt deploy/envoy/certs/server.key
+      - name: envoy --mode validate (compose config)
+        run: |
+          docker run --rm -v "$(pwd)/deploy/envoy:/etc/envoy:ro" \
+            envoyproxy/envoy:v1.31-latest \
+            envoy --mode validate -c /etc/envoy/envoy.local.yaml
+      # The k8s config references a Secret-mounted path (/etc/envoy/certs/tls.{crt,key})
+      # that doesn't exist outside a real cluster. Re-symlink the dev
+      # certs into that path so validate-mode can load them.
+      - name: Stage k8s-shape cert paths from dev certs
+        run: |
+          cp deploy/envoy/certs/server.crt deploy/envoy/certs/tls.crt
+          cp deploy/envoy/certs/server.key deploy/envoy/certs/tls.key
+          chmod a+r deploy/envoy/certs/tls.crt deploy/envoy/certs/tls.key
+      - name: envoy --mode validate (k8s config)
+        run: |
+          docker run --rm -v "$(pwd)/deploy/envoy:/etc/envoy:ro" \
+            envoyproxy/envoy:v1.31-latest \
+            envoy --mode validate -c /etc/envoy/envoy.yaml
+
+  # E5-1 — helm chart hygiene. Lints the chart, renders templates
+  # with default values, and refuses any drift between the canonical
+  # `deploy/envoy/envoy.yaml` and the chart-local copy at
+  # `deploy/helm/eveys-ocpp/files/envoy.yaml`. Helm's .Files.Get can't
+  # traverse outside the chart, so we keep a copy + gate against
+  # drift — same pattern as `config-reference-fresh` and
+  # `proto-breaking`.
+  helm-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.16.0
+      - name: helm lint
+        run: |
+          helm lint deploy/helm/eveys-ocpp \
+            --set gateway.image.repository=ghcr.io/eveys-mobility/ocpp
+      - name: helm template (default values render)
+        run: |
+          helm template test deploy/helm/eveys-ocpp \
+            --set gateway.image.repository=ghcr.io/eveys-mobility/ocpp \
+            --set envoy.tls.secretName=ocpp-tls \
+            --set gateway.secrets.name=ocpp-secrets \
+            > /tmp/rendered.yaml
+          test -s /tmp/rendered.yaml
+      - name: envoy config drift check (canonical vs chart copy)
+        run: |
+          diff -u deploy/envoy/envoy.yaml deploy/helm/eveys-ocpp/files/envoy.yaml \
+            || (echo "::error::deploy/helm/eveys-ocpp/files/envoy.yaml drifted from deploy/envoy/envoy.yaml — copy the canonical file" && exit 1)

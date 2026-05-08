@@ -1,0 +1,97 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "eveys-ocpp.gatewayName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "eveys-ocpp.gatewayLabels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.gateway.replicaCount }}
+  strategy:
+    {{- toYaml .Values.gateway.strategy | nindent 4 }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "eveys-ocpp.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: gateway
+  template:
+    metadata:
+      labels:
+        {{- include "eveys-ocpp.gatewayLabels" . | nindent 8 }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "eveys-ocpp.serviceAccountName" . }}
+      terminationGracePeriodSeconds: {{ .Values.gateway.terminationGracePeriodSeconds }}
+      containers:
+        - name: gateway
+          image: "{{ required "gateway.image.repository must be set" .Values.gateway.image.repository }}:{{ .Values.gateway.image.tag }}"
+          imagePullPolicy: {{ .Values.gateway.image.pullPolicy }}
+          ports:
+            - name: ws
+              containerPort: {{ .Values.gateway.service.portWs }}
+              protocol: TCP
+            - name: grpc
+              containerPort: {{ .Values.gateway.service.portGrpc }}
+              protocol: TCP
+            - name: rest
+              containerPort: {{ .Values.gateway.service.portRest }}
+              protocol: TCP
+            - name: metrics
+              containerPort: {{ .Values.gateway.service.portMetrics }}
+              protocol: TCP
+          env:
+            {{- if .Values.downwardApi.podName }}
+            # POD_ID is the value the Redis registry stores under
+            # `cp:online:{cp_id}`. Downward API → metadata.name gives
+            # us a unique pod identity per replica.
+            - name: EVEYS_OCPP_POD_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            {{- end }}
+            - name: EVEYS_OCPP_LOG_LEVEL
+              value: {{ .Values.gateway.config.logLevel | quote }}
+            - name: EVEYS_OCPP_LOG_JSON
+              value: {{ .Values.gateway.config.logJson | quote }}
+            - name: EVEYS_OCPP_BACKEND_BASE_URL
+              value: {{ .Values.gateway.config.backendBaseUrl | quote }}
+            {{- if .Values.gateway.secrets.name }}
+            - name: EVEYS_OCPP_DB_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.gateway.secrets.name }}
+                  key: db-url
+            - name: EVEYS_OCPP_BACKEND_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.gateway.secrets.name }}
+                  key: backend-token
+                  optional: true
+            - name: EVEYS_OCPP_WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.gateway.secrets.name }}
+                  key: webhook-secret
+                  optional: true
+            - name: EVEYS_OCPP_SENTRY_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.gateway.secrets.name }}
+                  key: sentry-dsn
+                  optional: true
+            - name: EVEYS_OCPP_REST_INBOUND_TOKENS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.gateway.secrets.name }}
+                  key: rest-inbound-tokens
+                  optional: true
+            {{- end }}
+          livenessProbe:
+            {{- toYaml .Values.gateway.livenessProbe | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.gateway.readinessProbe | nindent 12 }}
+          resources:
+            {{- toYaml .Values.gateway.resources | nindent 12 }}

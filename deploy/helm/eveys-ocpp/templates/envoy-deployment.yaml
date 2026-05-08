@@ -1,0 +1,98 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "eveys-ocpp.envoyName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "eveys-ocpp.envoyLabels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.envoy.replicaCount }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "eveys-ocpp.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: envoy
+  template:
+    metadata:
+      labels:
+        {{- include "eveys-ocpp.envoyLabels" . | nindent 8 }}
+      annotations:
+        # Bump the deployment when the configmap changes — Envoy
+        # reads its config at boot, not on configmap updates, so a
+        # changed config without a rollout would leak the old one.
+        checksum/config: {{ include (print $.Template.BasePath "/envoy-configmap.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "eveys-ocpp.serviceAccountName" . }}
+      containers:
+        - name: envoy
+          image: "{{ .Values.envoy.image.repository }}:{{ .Values.envoy.image.tag }}"
+          imagePullPolicy: {{ .Values.envoy.image.pullPolicy }}
+          args:
+            - "-c"
+            - "/etc/envoy/envoy.yaml"
+            # Drain a pod gracefully on SIGTERM. Pairs with the
+            # gateway's own drain (PR #43) — Envoy stops accepting
+            # new connections + drains existing ones over the
+            # configured drain time, while the gateway waits the
+            # readiness-probe-propagation window before tearing down.
+            - "--drain-time-s"
+            - "20"
+          ports:
+            - name: wss
+              containerPort: 443
+              protocol: TCP
+            - name: admin
+              containerPort: 9901
+              protocol: TCP
+          volumeMounts:
+            - name: envoy-config
+              mountPath: /etc/envoy/envoy.yaml
+              subPath: envoy.yaml
+              readOnly: true
+            {{- if .Values.envoy.tls.secretName }}
+            - name: envoy-tls
+              mountPath: /etc/envoy/certs
+              readOnly: true
+            {{- end }}
+          resources:
+            {{- toYaml .Values.envoy.resources | nindent 12 }}
+          # Envoy's admin endpoint exposes /ready which goes 200 once
+          # the listener is live. Use that as the readiness probe.
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: admin
+            initialDelaySeconds: 2
+            periodSeconds: 3
+            timeoutSeconds: 2
+            failureThreshold: 2
+          livenessProbe:
+            httpGet:
+              path: /ready
+              port: admin
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+      volumes:
+        - name: envoy-config
+          configMap:
+            name: {{ include "eveys-ocpp.envoyName" . }}
+        {{- if .Values.envoy.tls.secretName }}
+        - name: envoy-tls
+          secret:
+            secretName: {{ .Values.envoy.tls.secretName }}
+            items:
+              - key: tls.crt
+                path: tls.crt
+              - key: tls.key
+                path: tls.key
+        {{- end }}
