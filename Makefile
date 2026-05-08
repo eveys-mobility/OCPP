@@ -19,7 +19,7 @@ COMPOSE    := docker compose -f deploy/compose/docker-compose.yml $(COMPOSE_ENV)
 .PHONY: help doctor install format lint types tests e2e smoke compose-smoke precommit clean distclean \
         compose-up compose-down compose-status compose-down-volumes compose-wait \
         build-image protoc ch-migrate docs docs-clean config-export config-export-check config-schema \
-        openapi-export openapi-export-check audit
+        openapi-export openapi-export-check audit get-token
 
 # ---- meta -------------------------------------------------------------------
 
@@ -46,6 +46,7 @@ help:
 	@echo "  make ch-migrate         apply ClickHouse migrations (E2-13, ADR-0020)"
 	@echo "  make e2e                full e2e: compose-up + alembic + ch-migrate + e2e tests + compose-down"
 	@echo "  make compose-smoke      Tier-3 smoke: build image + bring real compose stack up + assert it stays up + drive a charger flow (see ADR-0024)"
+	@echo "  make get-token          print a bearer token from EVEYS_OCPP_REST_INBOUND_TOKENS (paste into Swagger UI Authorize)"
 	@echo ""
 	@echo "Docs:"
 	@echo "  make docs               build the docs site (Sphinx + MyST)"
@@ -148,6 +149,25 @@ compose-up:
 	$(COMPOSE) up -d
 	@echo ""
 	@echo "Stack starting. Use 'make compose-status' to watch health."
+
+# Print a bearer token an operator can paste into the Swagger UI's
+# "Authorize" dialog. Reads from the shell env first, then falls back
+# to the repo-root `.env` file (the documented dev path). The
+# allowlist is CSV; we print the first entry.
+#
+# Quiet target — `@` on every line so the output is just the token,
+# safe to pipe into pbcopy / xclip.
+get-token:
+	@token="$$EVEYS_OCPP_REST_INBOUND_TOKENS"; \
+	if [ -z "$$token" ] && [ -f .env ]; then \
+	  token=$$(grep -E '^EVEYS_OCPP_REST_INBOUND_TOKENS=' .env | head -n1 | cut -d= -f2- | tr -d '"' | tr -d "'"); \
+	fi; \
+	if [ -z "$$token" ]; then \
+	  echo "ERROR: EVEYS_OCPP_REST_INBOUND_TOKENS is not set in shell env or .env" >&2; \
+	  echo "       Add a value to .env (e.g. EVEYS_OCPP_REST_INBOUND_TOKENS=dev-token) and re-run." >&2; \
+	  exit 1; \
+	fi; \
+	echo "$$token" | cut -d, -f1
 
 compose-down:
 	$(COMPOSE) down

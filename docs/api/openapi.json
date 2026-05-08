@@ -1247,6 +1247,13 @@
         "title": "ValidationError",
         "type": "object"
       }
+    },
+    "securitySchemes": {
+      "bearerAuth": {
+        "description": "Static bearer token from `EVEYS_OCPP_REST_INBOUND_TOKENS` (CSV allowlist). Run `make get-token` to print one from your local env.",
+        "scheme": "bearer",
+        "type": "http"
+      }
     }
   },
   "info": {
@@ -3239,5 +3246,10 @@
         ]
       }
     }
-  }
+  },
+  "security": [
+    {
+      "bearerAuth": []
+    }
+  ]
 }

@@ -197,7 +197,9 @@ def make_app(
 
 def _install_extra_schemas(app: FastAPI) -> None:
     """Inject request models referenced via `openapi_extra` into the
-    generated spec's `components.schemas` so the `$ref`s resolve.
+    generated spec's `components.schemas` so the `$ref`s resolve, and
+    declare the bearer-token security scheme so Swagger UI's
+    "Authorize" button is wired up.
 
     See the comment at the call site in `make_app` for the why. Wraps
     `app.openapi` so the spec is computed lazily on first read but the
@@ -222,6 +224,24 @@ def _install_extra_schemas(app: FastAPI) -> None:
                 schemas[model.__name__] = model.model_json_schema(
                     ref_template="#/components/schemas/{model}"
                 )
+        # Declare the bearer scheme + apply globally so Swagger UI
+        # shows the Authorize 🔒 button and reuses the token across
+        # every "Try it out" call. The middleware still does the real
+        # enforcement; this only teaches the spec how to ask.
+        security_schemes = components.setdefault("securitySchemes", {})
+        security_schemes.setdefault(
+            "bearerAuth",
+            {
+                "type": "http",
+                "scheme": "bearer",
+                "description": (
+                    "Static bearer token from `EVEYS_OCPP_REST_INBOUND_TOKENS` "
+                    "(CSV allowlist). Run `make get-token` to print one from "
+                    "your local env."
+                ),
+            },
+        )
+        spec.setdefault("security", [{"bearerAuth": []}])
         return spec
 
     app.openapi = custom_openapi  # type: ignore[method-assign]
