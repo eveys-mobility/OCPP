@@ -615,6 +615,73 @@ async def get_diagnostics(request: Request, cp_id: str) -> dict[str, Any]:
     }
 
 
+@router.post(_BASE + "/get-log")
+async def get_log(request: Request, cp_id: str) -> dict[str, Any]:
+    """OCPP 1.6 Security Whitepaper §4.6 / TC_079.
+
+    Tell the charger to upload a log file. `log_type` is closed:
+    `DiagnosticsLog` or `SecurityLog`. The whole point of this
+    endpoint vs `/get-diagnostics` is the security-log variant —
+    audit trail retrieval for compliance / incident response.
+
+    Body shape:
+    ```json
+    {
+      "log_type": "SecurityLog",
+      "request_id": 42,
+      "location": "https://logs.eveys.example/incoming",
+      "retries": 3,                           // optional
+      "retry_interval": 60,                   // optional, seconds
+      "oldest_timestamp": "2026-05-01T...",   // optional, ISO-8601
+      "latest_timestamp": "2026-05-08T..."    // optional, ISO-8601
+    }
+    ```
+    """
+    body = await _body(request)
+    raw_log_type = str(_require(body, "log_type"))
+    if raw_log_type not in ("DiagnosticsLog", "SecurityLog"):
+        raise ApiError(
+            status_code=400,
+            error_code=ERR_BAD_REQUEST,
+            message="log_type must be 'DiagnosticsLog' or 'SecurityLog'",
+        )
+    location = str(_require(body, "location"))
+    request_id_value = int(_require(body, "request_id"))
+    retries = body.get("retries")
+    retry_interval = body.get("retry_interval")
+    oldest = body.get("oldest_timestamp")
+    latest = body.get("latest_timestamp")
+
+    log_dict: dict[str, str] = {"remoteLocation": location}
+    if oldest:
+        log_dict["oldestTimestamp"] = str(oldest)
+    if latest:
+        log_dict["latestTimestamp"] = str(latest)
+
+    log_type_enum = (
+        ocpp_enums.Log.diagnostics_log
+        if raw_log_type == "DiagnosticsLog"
+        else ocpp_enums.Log.security_log
+    )
+    ocpp_response = await dispatch_ocpp_call(
+        request,
+        rpc="GetLog",
+        cp_id=cp_id,
+        ocpp_request=ocpp_call.GetLog(
+            log=log_dict,
+            log_type=log_type_enum,
+            request_id=request_id_value,
+            retries=int(retries) if retries else None,
+            retry_interval=int(retry_interval) if retry_interval else None,
+        ),
+    )
+    return {
+        "status": str(getattr(ocpp_response, "status", "")),
+        "file_name": getattr(ocpp_response, "filename", None) or "",
+        "request_id": request.state.request_id,
+    }
+
+
 @router.post(_BASE + "/update-firmware")
 async def update_firmware(request: Request, cp_id: str) -> dict[str, Any]:
     body = await _body(request)

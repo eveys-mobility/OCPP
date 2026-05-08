@@ -26,7 +26,8 @@ from eveys_ocpp.metrics import registry as m
 # Inventory total per E4-1 plan. Update both numbers if the inventory
 # grows in a future PR.
 # 56: +1 SECURITY_EVENTS_TOTAL for SecurityEventNotification (TC_077/078)
-EXPECTED_METRIC_COUNT = 56
+# 57: +1 LOG_STATUS_TOTAL for LogStatusNotification (TC_079)
+EXPECTED_METRIC_COUNT = 57
 
 
 def _gateway_metric_attrs() -> list[tuple[str, object]]:

@@ -2140,3 +2140,258 @@ async def test_get_composite_schedule_rejected_passes_through(
     finally:
         server.close()
         await server.wait_closed()
+
+
+# ---- TC_079 GetLog (Phase 5 Security) -------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_log_security_type_round_trips(
+    fake_session_factory: Any, settings: Settings
+) -> None:
+    """Charger replies Accepted with a chosen filename; gateway
+    forwards verbatim. The closed `log_type` enum is the load-bearing
+    field — operators issue type=SECURITY to retrieve audit log."""
+    cp = MagicMock()
+    cp.id = "CP_001"
+    response = MagicMock()
+    response.status = "Accepted"
+    response.filename = "security-2026-05-08.tar.gz"
+    cp.call = AsyncMock(return_value=response)
+    cm = ConnectionMap()
+    cm.add(cp)
+    service = OcppGatewayService(
+        session_factory=fake_session_factory, settings=settings, connections=cm
+    )
+    server, port = await _spawn_server(service)
+    try:
+        async with Channel("127.0.0.1", port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            response_grpc = await stub.GetLog(
+                gateway_pb2.GetLogRequest(
+                    cp_id="CP_001",
+                    log_type=gateway_pb2.LOG_TYPE_SECURITY,
+                    request_id=42,
+                    location="https://logs.eveys.example/incoming",
+                )
+            )
+        assert response_grpc.status == gateway_pb2.LOG_STATUS_ACCEPTED
+        assert response_grpc.file_name == "security-2026-05-08.tar.gz"
+        # The OCPP call must carry the spec's `SecurityLog` enum value
+        # — without it, the charger sends the diagnostics log instead,
+        # which silently breaks audit retrieval.
+        sent = cp.call.await_args.args[0]
+        from ocpp.v16 import enums as ocpp_enums
+
+        assert sent.log_type == ocpp_enums.Log.security_log
+        assert sent.request_id == 42
+        # `log` is the spec's Dict; remoteLocation is required.
+        assert sent.log["remoteLocation"] == "https://logs.eveys.example/incoming"
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_get_log_diagnostics_type_uses_diagnostics_log_enum(
+    fake_session_factory: Any, settings: Settings
+) -> None:
+    """Operators can also use GetLog for diagnostics (sibling of
+    GetDiagnostics — different RPC, same upload). The proto
+    LOG_TYPE_DIAGNOSTICS must map to the OCPP `DiagnosticsLog`
+    enum, never silently re-route as security."""
+    cp = MagicMock()
+    cp.id = "CP_001"
+    response = MagicMock()
+    response.status = "Accepted"
+    response.filename = ""
+    cp.call = AsyncMock(return_value=response)
+    cm = ConnectionMap()
+    cm.add(cp)
+    service = OcppGatewayService(
+        session_factory=fake_session_factory, settings=settings, connections=cm
+    )
+    server, port = await _spawn_server(service)
+    try:
+        async with Channel("127.0.0.1", port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            await stub.GetLog(
+                gateway_pb2.GetLogRequest(
+                    cp_id="CP_001",
+                    log_type=gateway_pb2.LOG_TYPE_DIAGNOSTICS,
+                    request_id=7,
+                    location="https://x/",
+                )
+            )
+        from ocpp.v16 import enums as ocpp_enums
+
+        sent = cp.call.await_args.args[0]
+        assert sent.log_type == ocpp_enums.Log.diagnostics_log
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_get_log_optional_timestamps_propagate_when_provided(
+    fake_session_factory: Any, settings: Settings
+) -> None:
+    """Optional time-window filters land on the OCPP `log` dict's
+    `oldestTimestamp` / `latestTimestamp` keys (per spec)."""
+    cp = MagicMock()
+    cp.id = "CP_001"
+    response = MagicMock()
+    response.status = "Accepted"
+    response.filename = ""
+    cp.call = AsyncMock(return_value=response)
+    cm = ConnectionMap()
+    cm.add(cp)
+    service = OcppGatewayService(
+        session_factory=fake_session_factory, settings=settings, connections=cm
+    )
+    server, port = await _spawn_server(service)
+    try:
+        async with Channel("127.0.0.1", port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            await stub.GetLog(
+                gateway_pb2.GetLogRequest(
+                    cp_id="CP_001",
+                    log_type=gateway_pb2.LOG_TYPE_SECURITY,
+                    request_id=1,
+                    location="https://x/",
+                    oldest_timestamp="2026-05-01T00:00:00Z",
+                    latest_timestamp="2026-05-08T00:00:00Z",
+                )
+            )
+        sent = cp.call.await_args.args[0]
+        assert sent.log["oldestTimestamp"] == "2026-05-01T00:00:00Z"
+        assert sent.log["latestTimestamp"] == "2026-05-08T00:00:00Z"
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_get_log_rejected_status_maps_to_proto_enum(
+    fake_session_factory: Any, settings: Settings
+) -> None:
+    """Charger `Rejected` → proto `LOG_STATUS_REJECTED`."""
+    cp = MagicMock()
+    cp.id = "CP_001"
+    response = MagicMock()
+    response.status = "Rejected"
+    response.filename = ""
+    cp.call = AsyncMock(return_value=response)
+    cm = ConnectionMap()
+    cm.add(cp)
+    service = OcppGatewayService(
+        session_factory=fake_session_factory, settings=settings, connections=cm
+    )
+    server, port = await _spawn_server(service)
+    try:
+        async with Channel("127.0.0.1", port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            response_grpc = await stub.GetLog(
+                gateway_pb2.GetLogRequest(
+                    cp_id="CP_001",
+                    log_type=gateway_pb2.LOG_TYPE_SECURITY,
+                    request_id=1,
+                    location="https://x/",
+                )
+            )
+        assert response_grpc.status == gateway_pb2.LOG_STATUS_REJECTED
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_get_log_accepted_canceled_maps_to_proto_enum(
+    fake_session_factory: Any, settings: Settings
+) -> None:
+    """Charger `AcceptedCanceled` (new request accepted, prior in-
+    flight upload cancelled) → proto LOG_STATUS_ACCEPTED_CANCELED."""
+    cp = MagicMock()
+    cp.id = "CP_001"
+    response = MagicMock()
+    response.status = "AcceptedCanceled"
+    response.filename = "log.tar.gz"
+    cp.call = AsyncMock(return_value=response)
+    cm = ConnectionMap()
+    cm.add(cp)
+    service = OcppGatewayService(
+        session_factory=fake_session_factory, settings=settings, connections=cm
+    )
+    server, port = await _spawn_server(service)
+    try:
+        async with Channel("127.0.0.1", port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            response_grpc = await stub.GetLog(
+                gateway_pb2.GetLogRequest(
+                    cp_id="CP_001",
+                    log_type=gateway_pb2.LOG_TYPE_SECURITY,
+                    request_id=1,
+                    location="https://x/",
+                )
+            )
+        assert response_grpc.status == gateway_pb2.LOG_STATUS_ACCEPTED_CANCELED
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_get_log_empty_location_returns_invalid_argument(
+    fake_session_factory: Any, settings: Settings
+) -> None:
+    _, cm = _connected_cp("CP_001", "Accepted")
+    service = OcppGatewayService(
+        session_factory=fake_session_factory, settings=settings, connections=cm
+    )
+    server, port = await _spawn_server(service)
+    try:
+        async with Channel("127.0.0.1", port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            with pytest.raises(GRPCError) as exc:
+                await stub.GetLog(
+                    gateway_pb2.GetLogRequest(
+                        cp_id="CP_001",
+                        log_type=gateway_pb2.LOG_TYPE_SECURITY,
+                        request_id=1,
+                        location="",
+                    )
+                )
+        assert exc.value.status == Status.INVALID_ARGUMENT
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_get_log_unspecified_log_type_returns_invalid_argument(
+    fake_session_factory: Any, settings: Settings
+) -> None:
+    """The proto field default is LOG_TYPE_UNSPECIFIED — a client
+    forgetting to set it would otherwise silently default to
+    DIAGNOSTICS. Reject at the boundary so the operator notices."""
+    _, cm = _connected_cp("CP_001", "Accepted")
+    service = OcppGatewayService(
+        session_factory=fake_session_factory, settings=settings, connections=cm
+    )
+    server, port = await _spawn_server(service)
+    try:
+        async with Channel("127.0.0.1", port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            with pytest.raises(GRPCError) as exc:
+                await stub.GetLog(
+                    gateway_pb2.GetLogRequest(
+                        cp_id="CP_001",
+                        # log_type left at default UNSPECIFIED
+                        request_id=1,
+                        location="https://x/",
+                    )
+                )
+        assert exc.value.status == Status.INVALID_ARGUMENT
+    finally:
+        server.close()
+        await server.wait_closed()

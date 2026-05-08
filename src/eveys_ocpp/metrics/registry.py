@@ -279,6 +279,15 @@ SECURITY_EVENTS_TOTAL: Counter = Counter(
     "vendor extensions, so cardinality stays small.",
     labelnames=("event_type",),
 )
+LOG_STATUS_TOTAL: Counter = Counter(
+    "eveys_ocpp_log_status_total",
+    "LogStatusNotification CALLs grouped by status (OCPP 1.6 "
+    "Security Whitepaper §4.6: Idle / Uploading / Uploaded / "
+    "UploadFailure / BadMessage / NotSupportedOperation / "
+    "PermissionDenied). Operator alerting on UploadFailure is the "
+    "common reason to read this counter.",
+    labelnames=("status",),
+)
 
 
 # ---- gRPC server ----------------------------------------------------------

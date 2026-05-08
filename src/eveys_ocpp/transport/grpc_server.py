@@ -101,6 +101,7 @@ _OCPP_CALL_DISPATCH: dict[str, type[Any]] = {
     "ReserveNow": ocpp_call.ReserveNow,
     "CancelReservation": ocpp_call.CancelReservation,
     "GetDiagnostics": ocpp_call.GetDiagnostics,
+    "GetLog": ocpp_call.GetLog,
     "UpdateFirmware": ocpp_call.UpdateFirmware,
     "SetChargingProfile": ocpp_call.SetChargingProfile,
     "ClearChargingProfile": ocpp_call.ClearChargingProfile,
@@ -606,6 +607,70 @@ class OcppGatewayService(gateway_grpc.OcppGatewayBase):
         await stream.send_message(
             gateway_pb2.GetDiagnosticsResponse(
                 file_name=getattr(ocpp_response, "file_name", "") or "",
+            )
+        )
+
+    async def GetLog(
+        self,
+        stream: Stream[gateway_pb2.GetLogRequest, gateway_pb2.GetLogResponse],
+    ) -> None:
+        """Tell the charger to upload a log file (DiagnosticsLog or
+        SecurityLog) to a CSMS-supplied URL.
+
+        OCPP 1.6 Security Whitepaper §4.6 / TC_079. Closed `log_type`
+        enum is what makes this distinct from `GetDiagnostics`; the
+        whole point is operators retrieving the SECURITY log
+        specifically (audit trail).
+
+        The charger replies with `Accepted` / `Rejected` /
+        `AcceptedCanceled` and an optional charger-chosen filename.
+        Upload-progress transitions arrive asynchronously via the
+        inbound `LogStatusNotification` handler, which updates
+        `charge_points.last_log_status`.
+        """
+        request = await self._recv(stream)
+        if not request.location:
+            raise GRPCError(Status.INVALID_ARGUMENT, "location is required")
+        if request.log_type == gateway_pb2.LOG_TYPE_UNSPECIFIED:
+            raise GRPCError(Status.INVALID_ARGUMENT, "log_type is required")
+        # OCPP `log` field is a Dict per spec — the closed enum maps
+        # to specific keys. We construct it from the proto enum.
+        log_type_value = (
+            ocpp_enums.Log.diagnostics_log
+            if request.log_type == gateway_pb2.LOG_TYPE_DIAGNOSTICS
+            else ocpp_enums.Log.security_log
+        )
+        log_dict: dict[str, str] = {"remoteLocation": request.location}
+        if request.oldest_timestamp:
+            log_dict["oldestTimestamp"] = request.oldest_timestamp
+        if request.latest_timestamp:
+            log_dict["latestTimestamp"] = request.latest_timestamp
+        ocpp_response = await self._dispatch_ocpp_call(
+            rpc="GetLog",
+            cp_id=request.cp_id,
+            ocpp_request=ocpp_call.GetLog(
+                log=log_dict,
+                log_type=log_type_value,
+                request_id=request.request_id,
+                retries=request.retries or None,
+                retry_interval=request.retry_interval or None,
+            ),
+        )
+        # OCPP returns one of three statuses; map to proto enum. An
+        # unknown value (vendor extension) → REJECTED rather than
+        # UNSPECIFIED — operators interpret REJECTED as "didn't
+        # happen", which matches the safer reading of an unknown
+        # status from the charger.
+        status_str = str(getattr(ocpp_response, "status", ""))
+        status_proto = {
+            "Accepted": gateway_pb2.LOG_STATUS_ACCEPTED,
+            "Rejected": gateway_pb2.LOG_STATUS_REJECTED,
+            "AcceptedCanceled": gateway_pb2.LOG_STATUS_ACCEPTED_CANCELED,
+        }.get(status_str, gateway_pb2.LOG_STATUS_REJECTED)
+        await stream.send_message(
+            gateway_pb2.GetLogResponse(
+                status=status_proto,
+                file_name=getattr(ocpp_response, "filename", "") or "",
             )
         )
 

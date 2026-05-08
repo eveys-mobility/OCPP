@@ -770,3 +770,62 @@ async def test_invalid_json_400(client: httpx.AsyncClient) -> None:
         headers={"Content-Type": "application/json"},
     )
     assert response.status_code == 400
+
+
+# ---- TC_079 GetLog (Phase 5 Security) -------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_log_security_type_returns_status_and_filename(
+    client: httpx.AsyncClient, fake_command_service: MagicMock
+) -> None:
+    _set_response(
+        fake_command_service,
+        _stub_response(status="Accepted", filename="security-2026-05-08.tar.gz"),
+    )
+
+    response = await client.post(
+        "/api/v1/charge-points/CP_001/commands/get-log",
+        json={
+            "log_type": "SecurityLog",
+            "request_id": 42,
+            "location": "https://logs.example/incoming",
+        },
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == "Accepted"
+    assert body["file_name"] == "security-2026-05-08.tar.gz"
+
+
+@pytest.mark.asyncio
+async def test_get_log_invalid_log_type_returns_400(
+    client: httpx.AsyncClient, fake_command_service: MagicMock
+) -> None:
+    """`log_type` is closed — anything outside the spec enum is a
+    boundary error. A typo would otherwise silently re-route to one
+    of the two valid types."""
+    _set_response(fake_command_service, _stub_response(status="Accepted", filename=""))
+
+    response = await client.post(
+        "/api/v1/charge-points/CP_001/commands/get-log",
+        json={
+            "log_type": "AuditLog",  # not a real OCPP value
+            "request_id": 1,
+            "location": "https://x/",
+        },
+    )
+    assert response.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_get_log_missing_required_field_returns_400(
+    client: httpx.AsyncClient,
+) -> None:
+    """`location` and `request_id` are required by spec; the boundary
+    rejects a missing field."""
+    response = await client.post(
+        "/api/v1/charge-points/CP_001/commands/get-log",
+        json={"log_type": "SecurityLog", "request_id": 1},  # no location
+    )
+    assert response.status_code == 400
