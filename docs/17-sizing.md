@@ -14,6 +14,90 @@
 > 3-node shape is the path that's *ready* for HA without a forklift
 > upgrade; it doesn't deliver HA on its own.
 
+## What "node" means here — server vs pod
+
+This doc uses "node," "server," "host," and "physical machine"
+interchangeably — they all mean **one box with a CPU and RAM
+running Linux + k8s**. One server = one k8s node.
+
+A **pod** is a different thing: a running instance of a service.
+The chart at `deploy/helm/eveys-ocpp/` defines a fixed set of
+pods. The number of servers you provision changes how those pods
+are distributed; it does **not** change the pod count itself.
+
+**Pod count for 500–1000 CP** (set by the Helm chart, the same
+across all three sizing tiers below):
+
+| Pod | Replicas | Why |
+|---|---|---|
+| eveys-ocpp gateway | 2 | One can drain on a deploy while the other serves; consistent-hash on `cp_id` (ADR-0007) keeps charger stickiness |
+| Envoy edge | 2 | Same — sits in front of the gateway and needs the same redundancy |
+| Postgres 16 | 1 | Single instance for v0 (HA explicitly deferred) |
+| Redis 7 | 1 | Same |
+| Kafka (KRaft mode) | 1 | Same |
+| ClickHouse | 1 | Same |
+| ClickHouse ingestor | 1 | Single Kafka consumer is enough |
+| **Total pods** | **9** | |
+
+**Servers** are the question. Below, "1-node config", "2-node
+config", "3-node config" mean **how many physical servers those 9
+pods are spread across** — not how many k8s namespaces, not how
+many control-plane replicas, not how many pod replicas.
+
+What deliberately does NOT happen: **all services in one pod**.
+That's a k8s anti-pattern (services would crash together, scale
+together, get scheduled together). Each service is its own pod;
+the question is only how many physical hosts the pods land on.
+
+```
+                                Pod placement, 2-server config
+
+  ┌──────────────────────────┐                ┌──────────────────────────┐
+  │ Server 1 (app, 8 GB)     │                │ Server 2 (data, 16 GB)   │
+  │                          │                │                          │
+  │  ┌──────────────────┐    │                │  ┌──────────────────┐   │
+  │  │ gateway pod #1   │    │                │  │ gateway pod #2   │   │
+  │  └──────────────────┘    │                │  └──────────────────┘   │
+  │  ┌──────────────────┐    │                │  ┌──────────────────┐   │
+  │  │ Envoy pod #1     │    │                │  │ Envoy pod #2     │   │
+  │  └──────────────────┘    │                │  └──────────────────┘   │
+  │                          │                │  ┌──────────────────┐   │
+  │  k8s + OS                │                │  │ Postgres         │   │
+  │                          │                │  └──────────────────┘   │
+  │                          │                │  ┌──────────────────┐   │
+  │                          │                │  │ Redis            │   │
+  │                          │                │  └──────────────────┘   │
+  │                          │                │  ┌──────────────────┐   │
+  │                          │                │  │ Kafka            │   │
+  │                          │                │  └──────────────────┘   │
+  │                          │                │  ┌──────────────────┐   │
+  │                          │                │  │ ClickHouse       │   │
+  │                          │                │  └──────────────────┘   │
+  │                          │                │  ┌──────────────────┐   │
+  │                          │                │  │ ingestor         │   │
+  │                          │                │  └──────────────────┘   │
+  │                          │                │  k8s + OS                │
+  └──────────────────────────┘                └──────────────────────────┘
+              ▲                                            ▲
+              │                                            │
+              └────────────────────────────────────────────┘
+                          same LAN; charger traffic
+                          hits Envoy via the LB IP
+```
+
+A **3-server config** moves the data-plane pods (Postgres / Redis
+/ Kafka / ClickHouse / ingestor) onto a dedicated Server 3, leaves
+gateway + Envoy split across Servers 1 + 2, and uses Server 3 as
+the third k8s control-plane vote (proper quorum). Same 9 pods,
+just spread differently.
+
+A **1-server config** runs all 9 pods on one box. Same Helm chart,
+same pod count; k8s schedules them all to the single available
+host.
+
+So the sizing question reduces to: **how many physical servers do
+you provision, given that the pod count is fixed at 9?**
+
 ## Traffic shape at fleet scale
 
 OCPP load is steady and predictable, not bursty. Per-charger
@@ -155,25 +239,41 @@ CP behind a single physical machine in a charging garage. Cheapest
 real production posture. **Pre-validated** by every existing
 compose-smoke run — the compose stack is functionally identical.
 
-### **Middle — 2 nodes**
+### **Middle — 2 servers**
 
-**2 × (4 CPU / 8 GB RAM / 250 GB NVMe SSD)** for the app shape, OR
-**2 × (8 CPU / 16 GB RAM / 500 GB NVMe SSD)** for headroom.
+**Asymmetric** — Server 2 carries the data-plane pods so it needs
+more RAM than Server 1.
 
-Total small: **8 CPU / 16 GB / 500 GB**. Total large: **16 CPU /
-32 GB / 1 TB**.
+- **Server 1 (app)**: 4 CPU / **8 GB** RAM / 100 GB SSD
+- **Server 2 (data)**: 4 CPU / **16 GB** RAM / 500 GB NVMe SSD
 
-What it runs:
-- **Node A (app)**: 2× gateway pods, 2× Envoy pods, 1× ClickHouse
-  ingestor sidecar.
-- **Node B (data)**: Postgres, Redis, Kafka, ClickHouse.
+Total: **8 CPU / 24 GB / 600 GB**.
 
-The **WS / HTTP serving layer** is HA — gateway and Envoy each have
-two replicas split across both nodes. A reconnect after a single
-gateway pod restart lands on the surviving pod via consistent-hash
-on `cp_id` (per ADR-0007). The **data plane is single-instance** —
-Postgres / Redis / Kafka / ClickHouse each run as one pod on Node
-B.
+The **headroom variant** ups Server 1 to 16 GB too — useful if a
+sibling workload (Prometheus, Grafana, Loki, the simulator) might
+land there. **Total: 8 CPU / 32 GB / 600 GB**. Costs ~25% more;
+worth it if you'd otherwise run the observability stack elsewhere.
+
+What it runs (per the diagram in the "server vs pod" section
+above):
+- **Server 1 (app)**: 1× gateway pod, 1× Envoy pod.
+- **Server 2 (data)**: 1× gateway pod, 1× Envoy pod, plus
+  Postgres, Redis, Kafka, ClickHouse, ClickHouse ingestor.
+
+Splitting one gateway + one Envoy onto **each** server (rather
+than putting both gateway pods on Server 1) is what gives the WS
+layer real HA: a reboot of Server 1 still leaves Server 2's
+gateway pod serving the fleet via consistent-hash on `cp_id` (per
+ADR-0007). Putting both gateway pods on Server 1 would mean a
+Server-1 reboot takes the whole fleet offline — which is the
+1-server config's failure mode at twice the cost.
+
+**The data plane is single-instance** — Postgres / Redis / Kafka
+/ ClickHouse each run as one pod on Server 2.
+
+The asymmetric memory ask (Server 1 = 8 GB, Server 2 = 16 GB) is
+because Server 2 carries all the data-plane RAM cost on top of
+its share of the WS layer.
 
 **What it survives**:
 - Gateway pod crash → traffic flows to the sibling on the other
@@ -249,11 +349,11 @@ eventually want fail-safety.
 
 ## Comparison summary
 
-| Config | Hardware total | Gateway HA | Data-plane HA | Survives 1 node loss | k8s quorum | Cost order |
+| Config | Hardware total | Gateway HA | Data-plane HA | Survives 1 server loss | k8s quorum | Cost order |
 |---|---|---|---|---|---|---|
-| 1 node | 8 CPU / 16 GB / 500 GB | No (single pod) | No | No | N/A | 1× |
-| 2 nodes | 8–16 CPU / 16–32 GB / 0.5–1 TB | Yes | No | App-node yes; data-node no | Imperfect | 2–4× |
-| 3 nodes | 12 CPU / 48 GB / 1.5 TB | Yes | Not yet — ready to bolt on | App-node yes; data-node no | Yes | 3× |
+| 1 server | 8 CPU / 16 GB / 500 GB | No (one host = one gateway pod's home) | No | No | N/A | 1× |
+| 2 servers | 8 CPU / 24 GB / 600 GB | Yes (1 gateway pod + 1 Envoy pod per server) | No | App-server yes; data-server no | Imperfect | ~1.5× |
+| 3 servers | 12 CPU / 48 GB / 1.5 TB | Yes | Not yet — ready to bolt on | App-server yes; data-server no | Yes | 3× |
 
 ## Network requirements (all configs)
 
