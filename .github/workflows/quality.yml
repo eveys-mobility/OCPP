@@ -91,7 +91,13 @@ jobs:
       # can load the TLS listener config. The certs aren't trusted by
       # anything; they exist only to satisfy the file-path validation.
       - name: Generate dev certs
-        run: bash scripts/gen-dev-certs.sh 30
+        run: |
+          bash scripts/gen-dev-certs.sh 30
+          # Envoy in the official image runs as a non-root user.
+          # The default 0644 / 0600 modes from openssl on the GitHub
+          # runner aren't world-readable for the key — make both
+          # readable so the container can mount-and-read them.
+          chmod a+r deploy/envoy/certs/server.crt deploy/envoy/certs/server.key
       - name: envoy --mode validate (compose config)
         run: |
           docker run --rm -v "$(pwd)/deploy/envoy:/etc/envoy:ro" \
@@ -104,6 +110,7 @@ jobs:
         run: |
           cp deploy/envoy/certs/server.crt deploy/envoy/certs/tls.crt
           cp deploy/envoy/certs/server.key deploy/envoy/certs/tls.key
+          chmod a+r deploy/envoy/certs/tls.crt deploy/envoy/certs/tls.key
       - name: envoy --mode validate (k8s config)
         run: |
           docker run --rm -v "$(pwd)/deploy/envoy:/etc/envoy:ro" \
