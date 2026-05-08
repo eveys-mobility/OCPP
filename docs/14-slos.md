@@ -153,7 +153,6 @@ Not a separate SLO (the failure mode rolls up into SLO 1 — a refused charger b
 
 - **Alerting on SLO breach.** Alertmanager + paging integration is its own task — deferred until on-call is staffed (Phase 7). The dashboard panels go yellow/red on breach but nothing pages.
 - **SLAs (the customer-facing version).** SLAs have contractual teeth and a different audience. Different document, different review path.
-- **Per-tenant SLO slicing.** All five SLOs are fleet-wide; there's no tenant dimension. Phase 6+ work if multi-tenant isolation lands.
 
 ## Loading the recording rules
 

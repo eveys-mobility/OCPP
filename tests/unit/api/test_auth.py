@@ -152,6 +152,38 @@ async def test_health_bypasses_auth(app_with_settings: Any) -> None:
 
 
 @pytest.mark.asyncio
+async def test_openapi_paths_bypass_auth_when_enabled(
+    app_with_settings: Any,
+) -> None:
+    """Swagger UI + ReDoc + the spec itself must load without a token
+    when `rest_openapi_enabled=True`. Loading the docs page is hostile
+    UX otherwise — and the spec leaks no runtime data, only schema.
+    The actual API endpoints below the UI still require a token."""
+    client = await app_with_settings(rest_openapi_enabled=True, rest_inbound_tokens="secret")
+
+    for path in ("/api/v1/docs", "/api/v1/redoc", "/api/v1/openapi.json"):
+        response = await client.get(path)
+        assert response.status_code == 200, f"path={path}"
+
+    # And the actual API still requires a token.
+    rejected = await client.get("/api/v1/charge-points")
+    assert rejected.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_openapi_paths_404_when_disabled(app_with_settings: Any) -> None:
+    """With `rest_openapi_enabled=False` (production default) the docs
+    routes don't exist at all — the bypass is moot."""
+    client = await app_with_settings(rest_inbound_tokens="secret")
+
+    response = await client.get("/api/v1/docs")
+    # Either 404 (route doesn't exist) or 401 (caught by middleware
+    # before the not-found check) is acceptable as long as the docs
+    # surface isn't actually served.
+    assert response.status_code in (401, 404)
+
+
+@pytest.mark.asyncio
 async def test_csv_allowlist_rotation(app_with_settings: Any) -> None:
     """Multi-token allowlist supports rotation."""
     client = await app_with_settings(rest_inbound_tokens="t1,t2,t3")

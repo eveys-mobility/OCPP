@@ -16,9 +16,18 @@ Three modes:
 3. `rest_auth_disabled=False` AND allowlist non-empty → exact-match
    the bearer against the parsed list.
 
-`/api/v1/health` is the one endpoint that bypasses auth (it's a probe;
-the operator's load balancer needs it to dial the pod regardless of
+`/api/v1/health` and `/api/v1/ready` bypass auth (probes; the
+operator's load balancer needs them to dial the pod regardless of
 token configuration).
+
+When `rest_openapi_enabled=True` (dev / staging / behind a VPN),
+the docs surface (`/api/v1/docs`, `/api/v1/redoc`,
+`/api/v1/openapi.json`) also bypasses auth so an operator can
+load the Swagger / ReDoc UI in a browser without first injecting
+a token. The actual API endpoints exposed below those UIs still
+require a token — only the schema fetch and the static UI bundle
+are open. Production keeps `rest_openapi_enabled=False`, which
+makes the bypass moot (the routes don't exist).
 """
 
 from __future__ import annotations
@@ -44,6 +53,13 @@ _BEARER_PREFIX = "Bearer "
 # raw URL — the routers are added under the `/api/v1` prefix.
 _AUTH_BYPASS_PATHS = frozenset({"/api/v1/health", "/api/v1/ready"})
 
+# Additional bypass paths only enabled when `rest_openapi_enabled=True`
+# (dev / staging). The Swagger / ReDoc UIs are static HTML + a JSON
+# spec fetch — neither leaks runtime data, and forcing a token to load
+# the UI itself is hostile UX. The protected API endpoints below the
+# UI still require a token via the standard middleware path.
+_OPENAPI_BYPASS_PATHS = frozenset({"/api/v1/docs", "/api/v1/redoc", "/api/v1/openapi.json"})
+
 
 def parse_token_allowlist(raw: str) -> set[str]:
     """Turn a CSV `rest_inbound_tokens` value into a deduped set of
@@ -65,6 +81,7 @@ def make_bearer_auth_middleware(
     # closure, never in a Settings dump.
     allowlist = parse_token_allowlist(settings.rest_inbound_tokens.get_secret_value())
     auth_disabled = settings.rest_auth_disabled
+    openapi_enabled = settings.rest_openapi_enabled
 
     if auth_disabled:
         log.warning(
@@ -81,7 +98,10 @@ def make_bearer_auth_middleware(
         request: Request,
         call_next: Callable[[Request], Awaitable[JSONResponse]],
     ) -> JSONResponse:
-        if auth_disabled or request.url.path in _AUTH_BYPASS_PATHS:
+        path = request.url.path
+        if auth_disabled or path in _AUTH_BYPASS_PATHS:
+            return await call_next(request)
+        if openapi_enabled and path in _OPENAPI_BYPASS_PATHS:
             return await call_next(request)
 
         header = request.headers.get("authorization", "")
