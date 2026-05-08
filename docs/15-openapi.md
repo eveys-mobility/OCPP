@@ -44,6 +44,37 @@ ls docs/api/
 
 CI runs `make openapi-export-check` to fail builds where the committed file drifts from the FastAPI app — same pattern as `config-export-check`.
 
+## Quickstart — static Swagger UI site
+
+A `make` target ships a self-contained Swagger UI site rendered from the committed `docs/api/openapi.json`. No Docker, no compose, no gateway running — just static HTML/CSS/JS you can serve locally or copy to any web host.
+
+```bash
+cd docs
+make swagger          # build static site to docs/_build/swagger/
+make swagger-serve    # build (if needed) + serve on http://localhost:8000
+```
+
+`make swagger-serve` blocks the terminal while the server runs. Stop with `Ctrl+C`. Override the port via `make swagger-serve SWAGGER_PORT=8765` if 8000 is taken.
+
+The output at `docs/_build/swagger/` is a flat directory of HTML/CSS/JS that you can:
+
+- copy to S3 / GitHub Pages / an internal nginx for a persistent URL
+- `rsync` to a server on your LAN
+- open `index.html` directly in a browser (most browsers block `fetch("openapi.json")` from a `file://` URL, so the served path is the reliable option)
+
+The Swagger UI version is pinned in `docs/Makefile` (`SWAGGER_UI_VERSION`); bump it deliberately and re-run `make swagger`.
+
+The spec served here is the **same** `docs/api/openapi.json` that `make openapi-export` regenerates from the live FastAPI app — there's only ever one source of truth.
+
+### When to use which surface
+
+| Surface | When |
+|---|---|
+| `make swagger-serve` (this PR) | Browse the contract without a running gateway. Cheapest UI. |
+| Runtime Swagger UI (`/api/v1/docs` on a running gateway) | Verify *this specific deploy*'s contract — useful when investigating drift between an old build and the latest spec. |
+| `docs/api/openapi.yaml` import to Postman | Generate a request collection for manual testing. |
+| `editor.swagger.io` paste | Quick view from any laptop without cloning the repo. |
+
 ## What's in the spec
 
 - **All 28 routes** under `/api/v1/`: health, charge-points (list + detail), transactions (list + detail), reservations, charging-profiles, time-series (meter-values + status-history), and 19 commands.
