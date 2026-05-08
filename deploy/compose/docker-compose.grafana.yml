@@ -1,0 +1,103 @@
+# Opt-in observability sidecar for the dev compose stack.
+#
+# Boots Grafana (with the ClickHouse plugin pre-installed) and a tiny
+# Prometheus scraping the gateway's `/metrics:9100`. Joins the same
+# Docker network as the rest of the stack so the datasources resolve
+# by service name (`http://prometheus:9090`, `clickhouse:9000`).
+#
+# Bring up via `make grafana-up`. Tear down via `make grafana-down`.
+# The default `make compose-up` does NOT include this — observability
+# is dev-only; production runs Grafana in its own monitoring namespace
+# (see `deploy/grafana/README.md § Mounting into Grafana (Kubernetes)`).
+#
+# Dev posture choices:
+#   - Anonymous Admin role so you don't juggle a login on a laptop.
+#     Never use this in production.
+#   - The CH plugin is pulled fresh on first boot (`GF_INSTALL_PLUGINS`).
+#     Network-required first-time only; the volume caches it.
+#   - Prometheus uses a hard-coded scrape config baked in at runtime
+#     via `command:` rather than a config file mount, so this sidecar
+#     is one self-contained file with no satellite mounts to chase.
+
+services:
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    container_name: eveys-ocpp-prometheus
+    restart: unless-stopped
+    # The scrape target `ocpp:9100` resolves on the default project
+    # network. Hold a 7-day window in TSDB so the dashboards have
+    # something to render after a coffee break.
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=7d
+      - --storage.tsdb.path=/prometheus
+    # Inline the scrape config via a heredoc-into-tmpfs trick: we
+    # write the file inside the container at boot using an `entrypoint`
+    # override. Avoids a satellite YAML next to this one.
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        cat > /etc/prometheus/prometheus.yml <<EOF
+        global:
+          scrape_interval: 15s
+        scrape_configs:
+          - job_name: eveys-ocpp
+            static_configs:
+              - targets: ['ocpp:9100']
+        EOF
+        exec /bin/prometheus \
+          --config.file=/etc/prometheus/prometheus.yml \
+          --storage.tsdb.retention.time=7d \
+          --storage.tsdb.path=/prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - prom-data:/prometheus
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--spider", "http://localhost:9090/-/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  grafana:
+    image: grafana/grafana:11.0.0
+    container_name: eveys-ocpp-grafana
+    restart: unless-stopped
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+    environment:
+      # Pulls the ClickHouse plugin on first boot. Cached on the
+      # `grafana-data` volume thereafter.
+      GF_INSTALL_PLUGINS: grafana-clickhouse-datasource
+      # Anonymous Admin so a laptop doesn't have to juggle a login.
+      # NEVER set this in production.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      # These match the placeholder shape the provisioning files use
+      # (`${PROMETHEUS_URL}`, `${CLICKHOUSE_HOST}`, etc.). Within the
+      # compose network the service names resolve directly.
+      PROMETHEUS_URL: http://prometheus:9090
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: "9000"
+      CLICKHOUSE_DB: events
+    volumes:
+      # Live-mount the datasource + dashboard provisioning so an edit
+      # to a JSON file shows up after a refresh — Grafana's provider
+      # watches every 30 s.
+      - ../grafana/provisioning:/etc/grafana/provisioning:ro
+      - ../grafana/dashboards:/var/lib/grafana/dashboards/eveys:ro
+      - grafana-data:/var/lib/grafana
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--spider", "http://localhost:3000/api/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  prom-data:
+  grafana-data:

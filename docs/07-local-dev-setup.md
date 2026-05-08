@@ -168,6 +168,40 @@ docker volume rm ocpp_postgres_data
 docker compose -f deploy/compose/docker-compose.yml up -d postgres
 ```
 
+### Optional: bring up Grafana
+
+The default `make compose-up` does **not** include Grafana — observability is dev-only and many workflows don't need it. When you do, the sidecar is one command:
+
+```bash
+make grafana-up
+```
+
+That overlays `deploy/compose/docker-compose.grafana.yml` on the running stack and brings up two extra containers:
+
+- **Grafana** at <http://localhost:3000> — anonymous Admin role, no login form. Six dashboards land under the `eveys/ocpp` folder, auto-provisioned.
+- **Prometheus** at <http://localhost:9090> — scrapes the gateway's `/metrics:9100` endpoint every 15 s, retains 7 days.
+
+The ClickHouse plugin (`grafana-clickhouse-datasource`) is pulled on first boot and cached on the `grafana-data` volume; subsequent restarts are offline.
+
+Stop the sidecar without touching the rest of the stack:
+
+```bash
+make grafana-down              # stops + removes the containers, keeps the volumes
+```
+
+**Which dashboards work on a fresh stack?**
+
+| Dashboard | Datasource | Has data right after `make compose-up`? |
+|---|---|---|
+| 01 Fleet overview | Prometheus | After ~15 s of scrape (always populated, even with no chargers) |
+| 02 Per-pod | Prometheus | Same |
+| 03 Per-charger drill-down | ClickHouse | Once a charger has connected and emitted at least one StatusNotification |
+| 04 Reconnect storms | Prometheus | Same as 01 |
+| 05 Transactions | Prometheus | After at least one StartTransaction has flowed through |
+| 06 SLOs | Prometheus | Needs the recording rules in `deploy/prometheus/rules.yml` (not yet wired into the sidecar — fleet metrics show, the `slo:*` recorded series do not) |
+
+**Production posture.** This sidecar is dev-only. Production runs Grafana in a separate `monitoring` namespace via `kube-prometheus-stack`; the dashboard JSONs in this repo ship as ConfigMaps that Grafana picks up on the operator's side. See [`deploy/grafana/README.md`](../deploy/grafana/README.md) for the k8s mounting pattern.
+
 ---
 
 ## Path B — k3d / kind
