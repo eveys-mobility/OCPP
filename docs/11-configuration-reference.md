@@ -82,6 +82,7 @@ sensitivity.
 | `EVEYS_OCPP_KAFKA_TOPIC_CP_BOOT` | `cp.boot` | string | structural | no | `BootNotification` events. | Renaming detaches every existing consumer. |
 | `EVEYS_OCPP_KAFKA_TOPIC_CP_STATUS` | `cp.status` | string | structural | no | `StatusNotification` events. | Renaming detaches every existing consumer. |
 | `EVEYS_OCPP_KAFKA_TOPIC_TX_STARTED` | `tx.started` | string | structural | no | `StartTransaction` events (financial path). | Renaming detaches every existing consumer. |
+| `EVEYS_OCPP_KAFKA_TOPIC_CP_SECURITY_EVENT` | `cp.security_event` | string | structural | no | `SecurityEventNotification` events from chargers (OCPP 1.6 Security Whitepaper §4). Audit-grade; downstream SIEM consumers tail this for alerting on invalid signatures, cert tampering, etc. | Renaming detaches every existing consumer. |
 
 ## Redis (online registry + pub/sub bus, ADR-0016)
 

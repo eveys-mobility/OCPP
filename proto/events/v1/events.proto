@@ -56,6 +56,7 @@ message EventEnvelope {
     CpStatus cp_status = 102;
     CpMeter cp_meter = 103;
     TxStarted tx_started = 104;
+    CpSecurityEvent cp_security_event = 105;
   }
 }
 
@@ -245,4 +246,30 @@ message TxStarted {
   int64 meter_start_wh = 4;
   // Charger-claimed timestamp. Server-receive time is in the envelope.
   string charger_reported_at = 5;
+}
+
+// -----------------------------------------------------------------------------
+// cp.security_event — SecurityEventNotification arrived (OCPP 1.6 Security
+// Whitepaper §4). Audit-grade event log; CSMS retains every event.
+// -----------------------------------------------------------------------------
+//
+// `type` is one of 18 spec-defined event names (FirmwareUpdated,
+// InvalidFirmwareSignature, InvalidSecurityEventCertificate, etc).
+// We persist whatever string the charger reports — same forward-compat
+// reasoning as `cp_status.error_code`. Operators classify CRITICAL vs
+// NON-CRITICAL downstream from the type field.
+
+message CpSecurityEvent {
+  // OCPP event type name. String, not enum, to allow vendor extensions
+  // and future spec additions without a proto bump.
+  string type = 1;
+  // Charger-claimed timestamp of when the event occurred. Server-
+  // receive time is in the envelope. The charger's clock is untrusted
+  // (AGENTS rule 7) — operators should anchor on `occurred_at` for
+  // ordering, not this field.
+  string charger_reported_at = 2;
+  // Optional vendor-specific detail. The OCPP spec calls this
+  // `techInfo`; we keep the snake_case name. Empty string when
+  // absent (proto3 default).
+  string tech_info = 3;
 }

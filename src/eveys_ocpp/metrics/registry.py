@@ -269,6 +269,16 @@ DIAGNOSTICS_STATUS_TOTAL: Counter = Counter(
     "(Idle / Uploading / Uploaded / UploadFailed).",
     labelnames=("status",),
 )
+SECURITY_EVENTS_TOTAL: Counter = Counter(
+    "eveys_ocpp_security_events_total",
+    "SecurityEventNotification CALLs grouped by event type "
+    "(OCPP 1.6 Security Whitepaper §4: FirmwareUpdated, "
+    "InvalidFirmwareSignature, InvalidSecurityEventCertificate, "
+    "etc.). Operators use this for SIEM-style alerting; the "
+    "type label is bounded by the spec's 18-value enum + any "
+    "vendor extensions, so cardinality stays small.",
+    labelnames=("event_type",),
+)
 
 
 # ---- gRPC server ----------------------------------------------------------

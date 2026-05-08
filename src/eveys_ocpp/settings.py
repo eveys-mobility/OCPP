@@ -380,6 +380,21 @@ class Settings(BaseSettings):
             "stability": "structural",
         },
     )
+    kafka_topic_cp_security_event: str = Field(
+        default="cp.security_event",
+        description=(
+            "`SecurityEventNotification` events from chargers "
+            "(OCPP 1.6 Security Whitepaper §4). Audit-grade; "
+            "downstream SIEM consumers tail this for alerting on "
+            "invalid signatures, cert tampering, etc."
+        ),
+        json_schema_extra={
+            "category": "kafka_topics",
+            "impact": "Renaming detaches every existing consumer.",
+            "secret": False,
+            "stability": "structural",
+        },
+    )
 
     # ---- Redis (online registry + pub/sub bus, ADR-0016) ----------------
     redis_url: str = Field(
