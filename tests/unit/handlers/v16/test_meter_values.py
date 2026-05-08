@@ -124,6 +124,43 @@ async def test_quarantines_absurd_values(fake_cp: Any) -> None:
 
 
 @pytest.mark.asyncio
+async def test_quarantines_per_measurand_range_and_keeps_others(fake_cp: Any) -> None:
+    """E5-4: a bad voltage report drops only the voltage; the energy
+    sample in the same envelope is forwarded. The Prometheus counter
+    increments with `measurand=Voltage, reason=out_of_range`."""
+    from eveys_ocpp.metrics import registry as metrics_registry
+
+    fake_producer = AsyncMock()
+    fake_cp.event_producer = fake_producer
+
+    counter = metrics_registry.METER_VALUE_QUARANTINED_TOTAL.labels(
+        measurand="Voltage", reason="out_of_range"
+    )
+    before = counter._value.get()
+
+    await meter_values.handle(
+        fake_cp,
+        connector_id=1,
+        meter_value=[
+            {
+                "timestamp": "x",
+                "sampled_value": [
+                    {"value": "2500", "measurand": "Voltage", "unit": "V"},  # bad
+                    {"value": "30000", "measurand": "Energy.Active.Import.Register"},
+                ],
+            }
+        ],
+    )
+
+    assert counter._value.get() == before + 1
+    fake_producer.publish.assert_awaited_once()
+    envelope = events_pb2.EventEnvelope()
+    envelope.ParseFromString(fake_producer.publish.await_args.kwargs["value"])
+    # Only the energy sample survives.
+    assert len(envelope.cp_meter.sampled_values) == 1
+
+
+@pytest.mark.asyncio
 async def test_tolerates_malformed_entries(fake_cp: Any) -> None:
     """Non-dict garbage in meter_value or sampled_value: skip, don't crash."""
     fake_producer = AsyncMock()
