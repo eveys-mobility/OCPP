@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     from eveys_ocpp.clickhouse.read_client import ClickHouseReadClient
     from eveys_ocpp.registry import Registry
     from eveys_ocpp.settings import Settings
+    from eveys_ocpp.shutdown import DrainController
     from eveys_ocpp.transport.grpc_server import OcppGatewayService
 
 log = get_logger(__name__)
@@ -42,6 +43,7 @@ async def serve_forever(
     redis: Redis | None,
     command_service: OcppGatewayService | None = None,
     ch_client: ClickHouseReadClient | None = None,
+    drain_controller: DrainController | None = None,
 ) -> None:
     """Build the FastAPI app, run uvicorn, return when the loop exits.
 
@@ -58,6 +60,7 @@ async def serve_forever(
         redis=redis,
         command_service=command_service,
         ch_client=ch_client,
+        drain_controller=drain_controller,
     )
     config = uvicorn.Config(
         app,

@@ -42,7 +42,7 @@ _BEARER_PREFIX = "Bearer "
 
 # Endpoints exempt from auth. Must be the FastAPI mount path, not the
 # raw URL — the routers are added under the `/api/v1` prefix.
-_AUTH_BYPASS_PATHS = frozenset({"/api/v1/health"})
+_AUTH_BYPASS_PATHS = frozenset({"/api/v1/health", "/api/v1/ready"})
 
 
 def parse_token_allowlist(raw: str) -> set[str]:

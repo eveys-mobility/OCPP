@@ -7,6 +7,7 @@ the whole process to exit (no half-up state).
 from __future__ import annotations
 
 import asyncio
+import signal
 import sys
 from typing import TYPE_CHECKING
 
@@ -31,6 +32,7 @@ from eveys_ocpp.persistence.db import make_engine, make_session_factory
 from eveys_ocpp.platform import AuthorizeCache, BackendHTTPClient
 from eveys_ocpp.registry import Registry
 from eveys_ocpp.settings import Settings, get_settings
+from eveys_ocpp.shutdown import DrainController
 from eveys_ocpp.transport.grpc_server import OcppGatewayService
 from eveys_ocpp.transport.grpc_server import serve_forever as serve_grpc_forever
 from eveys_ocpp.transport.rest_server import serve_forever as serve_rest_forever
@@ -39,6 +41,108 @@ from eveys_ocpp.webhooks import WebhookDispatcher
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+
+class _DrainTriggered(Exception):
+    """Internal sentinel raised inside the TaskGroup once the drain
+    grace period has elapsed. Causes asyncio to cancel the sibling
+    tasks so the existing finally block in `_serve_all` runs the
+    normal teardown sequence (bus stop, kafka flush, redis close,
+    span flush). Never propagates past `_serve_all` — the outer
+    `try/except*` swallows it.
+    """
+
+
+class _NullAsyncContext:
+    """Trivial `async with` no-op."""
+
+    async def __aenter__(self) -> None:
+        return None
+
+    async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
+        return None
+
+
+def _maybe_timeout(
+    seconds: float | None,
+) -> _NullAsyncContext | asyncio.Timeout:
+    """Return `asyncio.timeout(seconds)` when seconds is set; otherwise a
+    no-op async context manager. Used so the teardown path is bounded
+    when shutting down via drain (signal-driven) but unbounded when
+    the gateway exits for an unrelated reason (e.g. WS server crash
+    in tests) — there's no safety net to rush past in that case.
+    """
+    if seconds is None:
+        return _NullAsyncContext()
+    return asyncio.timeout(seconds)
+
+
+async def _drain_orchestrator(
+    drain_controller: DrainController,
+    drain_event: asyncio.Event,
+    settings: Settings,
+) -> None:
+    """Wait for SIGTERM, then orchestrate the readiness-flip phase.
+
+    1. Block on ``drain_event``. The signal handler sets the event.
+    2. Flip the drain flag — `/api/v1/ready` starts returning 503.
+    3. Sleep ``shutdown_readiness_propagation_seconds`` so the LB's
+       readiness probe has time to fail and remove this pod from
+       rotation. Existing chargers stay connected during this
+       window; only **new** WS upgrades stop arriving here.
+    4. Raise ``_DrainTriggered`` to break the TaskGroup. The outer
+       finally block in ``_serve_all`` then runs normal teardown.
+    """
+    log = get_logger(__name__)
+    await drain_event.wait()
+    if not drain_controller.is_draining:
+        drain_controller.begin_drain()
+    propagation = settings.shutdown_readiness_propagation_seconds
+    log.info(
+        "drain.readiness_propagation_start",
+        propagation_seconds=propagation,
+    )
+    if propagation > 0:
+        await asyncio.sleep(propagation)
+    log.info("drain.readiness_propagation_done")
+    raise _DrainTriggered
+
+
+def _install_signal_handlers(
+    loop: asyncio.AbstractEventLoop,
+    drain_event: asyncio.Event,
+    drain_controller: DrainController,
+    settings: Settings,
+) -> None:
+    """Wire SIGTERM and SIGINT to the drain event.
+
+    On platforms without `add_signal_handler` (Windows), the call
+    raises NotImplementedError; the gateway falls back to KeyboardInterrupt
+    handling at the asyncio.run boundary.
+
+    When `shutdown_drain_enabled=False`, signals are NOT intercepted —
+    asyncio's default behaviour cancels the running tasks, which
+    matches the pre-drain behaviour exactly.
+    """
+    if not settings.shutdown_drain_enabled:
+        return
+    log = get_logger(__name__)
+
+    def _on_signal(signum: int) -> None:
+        signal_name = signal.Signals(signum).name
+        if drain_event.is_set():
+            log.warning("drain.signal_repeat", signal=signal_name)
+            return
+        log.info("drain.signal_received", signal=signal_name)
+        drain_controller.begin_drain()
+        drain_event.set()
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            loop.add_signal_handler(sig, _on_signal, sig)
+        except (NotImplementedError, RuntimeError):
+            # Windows or non-main-thread loops: nothing to install.
+            log.warning("drain.signal_handler_unavailable", signal=signal.Signals(sig).name)
 
 
 async def _serve_all(
@@ -60,6 +164,13 @@ async def _serve_all(
     ``CommandBus``, and ``IdempotencyCache`` so cross-pod gRPC commands
     can find the WS opened by another pod's WS server, and replay
     detection works regardless of which pod ack'd the original.
+
+    Graceful shutdown: on SIGTERM/SIGINT the drain orchestrator flips
+    `/api/v1/ready` to 503, waits for the load balancer to remove
+    this pod from rotation, then breaks the TaskGroup so the normal
+    teardown finally block runs. Bounded by
+    ``shutdown_grace_period_seconds`` — anything still hanging at
+    that point is force-cancelled.
     """
     log = get_logger(__name__)
     log.info(
@@ -70,6 +181,10 @@ async def _serve_all(
         rest_enabled=settings.rest_enabled,
         pod_id=settings.pod_id,
     )
+
+    drain_controller = DrainController()
+    drain_event = asyncio.Event()
+    _install_signal_handlers(asyncio.get_running_loop(), drain_event, drain_controller, settings)
 
     # Build the gRPC service once and share it with the REST command
     # surface (E3-8). Both transports dispatch through the same
@@ -131,65 +246,95 @@ async def _serve_all(
         ).set(1)
 
     try:
-        async with asyncio.TaskGroup() as tg:
-            tg.create_task(
-                serve_ws_forever(
-                    session_factory=session_factory,
-                    settings=settings,
-                    registry=registry,
-                    connections=connections,
-                    event_producer=event_producer,
-                    idempotency=idempotency,
-                    backend_client=backend_client,
-                    authorize_cache=authorize_cache,
-                ),
-                name="ws_server",
-            )
-            tg.create_task(
-                serve_grpc_forever(settings=settings, service=command_service),
-                name="grpc_server",
-            )
-            # E3-7: gateway-side REST API for the backend's read needs.
-            # E3-8: same surface picks up the 19 command endpoints by
-            # consuming `command_service`. Gated on `rest_enabled` so
-            # shapes that share this image but don't serve HTTP (e.g.
-            # the clickhouse-ingestor sidecar) skip booting it. Per
-            # ADR-0026.
-            if settings.rest_enabled:
+        try:
+            async with asyncio.TaskGroup() as tg:
                 tg.create_task(
-                    serve_rest_forever(
+                    serve_ws_forever(
                         session_factory=session_factory,
                         settings=settings,
                         registry=registry,
-                        redis=redis,
-                        command_service=command_service,
-                        ch_client=ch_client,
+                        connections=connections,
+                        event_producer=event_producer,
+                        idempotency=idempotency,
+                        backend_client=backend_client,
+                        authorize_cache=authorize_cache,
                     ),
-                    name="rest_server",
+                    name="ws_server",
                 )
-            if webhook_dispatcher is not None:
                 tg.create_task(
-                    webhook_dispatcher.serve_forever(),
-                    name="webhook_dispatcher",
+                    serve_grpc_forever(settings=settings, service=command_service),
+                    name="grpc_server",
                 )
+                # E3-7: gateway-side REST API for the backend's read needs.
+                # E3-8: same surface picks up the 19 command endpoints by
+                # consuming `command_service`. Gated on `rest_enabled` so
+                # shapes that share this image but don't serve HTTP (e.g.
+                # the clickhouse-ingestor sidecar) skip booting it. Per
+                # ADR-0026.
+                if settings.rest_enabled:
+                    tg.create_task(
+                        serve_rest_forever(
+                            session_factory=session_factory,
+                            settings=settings,
+                            registry=registry,
+                            redis=redis,
+                            command_service=command_service,
+                            ch_client=ch_client,
+                            drain_controller=drain_controller,
+                        ),
+                        name="rest_server",
+                    )
+                if webhook_dispatcher is not None:
+                    tg.create_task(
+                        webhook_dispatcher.serve_forever(),
+                        name="webhook_dispatcher",
+                    )
+                # Drain orchestrator: idle until SIGTERM, then flips
+                # readiness, sleeps for LB propagation, then raises
+                # `_DrainTriggered` to break the TaskGroup. Disabled
+                # when `shutdown_drain_enabled=False`.
+                if settings.shutdown_drain_enabled:
+                    tg.create_task(
+                        _drain_orchestrator(drain_controller, drain_event, settings),
+                        name="drain_orchestrator",
+                    )
+        except* _DrainTriggered:
+            log.info("drain.taskgroup_cancelled")
     finally:
-        await bus.stop()
-        await event_producer.stop()
-        if webhook_dispatcher is not None:
-            await webhook_dispatcher.stop()
-        if backend_client is not None:
-            await backend_client.aclose()
-        if ch_client is not None:
-            await ch_client.aclose()
-        # Single close on the shared client; `registry.close()` would
-        # close the same connection twice.
-        await redis.aclose()
-        if metrics_server is not None:
-            await metrics_server.stop()
-        # Flush in-flight spans to the OTLP exporter. No-op when
-        # tracing was never configured. Last in the teardown so spans
-        # for the shutdown sequence itself are exported.
-        shutdown_tracing()
+        # Bound the teardown by the configured grace period when the
+        # gateway is shutting down because of a drain. asyncio.timeout
+        # only applies to the body — already-completed awaits are
+        # untouched. On timeout the remaining teardown is skipped, the
+        # process exits, and the kubelet's terminationGracePeriodSeconds
+        # is the next safety net (it sends SIGKILL after that).
+        teardown_budget = (
+            settings.shutdown_grace_period_seconds if drain_controller.is_draining else None
+        )
+        try:
+            async with _maybe_timeout(teardown_budget):
+                await bus.stop()
+                await event_producer.stop()
+                if webhook_dispatcher is not None:
+                    await webhook_dispatcher.stop()
+                if backend_client is not None:
+                    await backend_client.aclose()
+                if ch_client is not None:
+                    await ch_client.aclose()
+                # Single close on the shared client; `registry.close()` would
+                # close the same connection twice.
+                await redis.aclose()
+                if metrics_server is not None:
+                    await metrics_server.stop()
+                # Flush in-flight spans to the OTLP exporter. No-op when
+                # tracing was never configured. Last in the teardown so spans
+                # for the shutdown sequence itself are exported.
+                shutdown_tracing()
+        except TimeoutError:
+            log.warning(
+                "drain.teardown_timeout",
+                budget_seconds=teardown_budget,
+                note="some shutdown steps did not complete within grace period",
+            )
 
 
 def main() -> None:

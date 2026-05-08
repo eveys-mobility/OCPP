@@ -1484,6 +1484,72 @@ class Settings(BaseSettings):
         },
     )
 
+    # ---- Graceful shutdown ----------------------------------------------
+    shutdown_drain_enabled: bool = Field(
+        default=True,
+        description=(
+            "When True, SIGTERM/SIGINT trigger a drain phase before the "
+            "TaskGroup is cancelled: `/api/v1/ready` flips to 503, the "
+            "load balancer's readiness probe fails, and new WS upgrades "
+            "stop being routed here. When False, signals cancel the "
+            "TaskGroup immediately (legacy behaviour)."
+        ),
+        json_schema_extra={
+            "category": "shutdown",
+            "impact": (
+                "Disable only as an emergency kill-switch. Without drain, "
+                "rolling deploys cause brief connection-refused windows "
+                "until the LB notices the pod is gone."
+            ),
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+    shutdown_readiness_propagation_seconds: float = Field(
+        default=10.0,
+        ge=0.0,
+        le=120.0,
+        description=(
+            "Wall time the gateway holds between flipping `/ready` to 503 "
+            "and beginning real teardown. Must be >= the load balancer's "
+            "readiness probe interval x failure threshold so the LB has "
+            "time to remove this pod from rotation before connections "
+            "actually drop."
+        ),
+        json_schema_extra={
+            "category": "shutdown",
+            "impact": (
+                "Too low → LB still sends new connections to a draining "
+                "pod (chargers see refusals). Too high → slow rolling "
+                "deploys. 10 s suits a 3 s/2-failure k8s probe."
+            ),
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+    shutdown_grace_period_seconds: float = Field(
+        default=25.0,
+        ge=1.0,
+        le=300.0,
+        description=(
+            "Hard upper bound on the whole drain → teardown sequence. "
+            "After this, the TaskGroup is cancelled even if drain hasn't "
+            "fully completed. Set the k8s `terminationGracePeriodSeconds` "
+            "to this value plus a small buffer (e.g. +5 s) so kubelet's "
+            "SIGKILL doesn't beat the gateway's own clean exit."
+        ),
+        json_schema_extra={
+            "category": "shutdown",
+            "impact": (
+                "Bounds worst-case shutdown latency. Must exceed "
+                "`shutdown_readiness_propagation_seconds` with margin for "
+                "TaskGroup teardown (bus stop, redis aclose, span flush)."
+            ),
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+
 
 def get_settings() -> Settings:
     """Build a fresh `Settings` from the current environment.
