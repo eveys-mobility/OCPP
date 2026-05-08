@@ -291,3 +291,195 @@ async def test_post_retries_on_timeout() -> None:
         )
 
     assert d._http.post.await_count == 2
+
+
+# ---- outbound HTTP request shape (issue #102 — audit Finding 2) -----------
+#
+# Existing tests above mock `d._http.post` and check the retry counter,
+# never the request shape itself. A typo in a header name (e.g. an
+# accidental rename to `X-Eveys-Sig`) would still pass every test, but
+# the backend would reject every webhook with 400 and delivery would
+# silently die. These tests pin the contract documented in
+# `docs/integration/03-webhooks.md` § "Headers".
+
+
+@pytest.mark.asyncio
+async def test_post_sends_documented_headers_and_body() -> None:
+    """The five `X-Eveys-*` headers + Content-Type must match the
+    contract exactly. Captures the kwargs `_http.post` is actually
+    called with — a missing or renamed header fails this test
+    instantly."""
+    d = WebhookDispatcher(_settings(webhook_max_attempts=1))
+    d._http = MagicMock()
+    d._http.post = AsyncMock(return_value=_resp(200))
+
+    await d._post_with_retry(
+        url="https://backend.example/webhooks/cp-boot",
+        body_bytes=b'{"hello":"world"}',
+        signature="sha256=abc123",
+        event_id="evt-headers-1",
+        event_type="cp.boot",
+    )
+
+    # Inspect the actual outbound request — not just "was called".
+    call = d._http.post.await_args
+    assert call.args == ("https://backend.example/webhooks/cp-boot",)
+    assert call.kwargs["content"] == b'{"hello":"world"}'
+    headers = call.kwargs["headers"]
+
+    # Header NAMES are part of the contract. A typo here would silently
+    # break delivery.
+    assert headers["Content-Type"] == "application/json"
+    assert headers["X-Eveys-Signature"] == "sha256=abc123"
+    assert headers["X-Eveys-Event-Id"] == "evt-headers-1"
+    assert headers["X-Eveys-Event-Type"] == "cp.boot"
+    assert headers["X-Eveys-Attempt"] == "1"
+    # X-Eveys-Delivered-At is dynamic but must be present + ISO-8601.
+    delivered_at = headers["X-Eveys-Delivered-At"]
+    from datetime import datetime
+
+    parsed = datetime.fromisoformat(delivered_at)  # raises if not ISO-8601
+    assert parsed.tzinfo is not None, "X-Eveys-Delivered-At must be tz-aware UTC"
+
+    # No stray extra headers — the contract is a closed set.
+    expected = {
+        "Content-Type",
+        "X-Eveys-Signature",
+        "X-Eveys-Event-Id",
+        "X-Eveys-Event-Type",
+        "X-Eveys-Delivered-At",
+        "X-Eveys-Attempt",
+    }
+    assert set(headers.keys()) == expected
+
+
+@pytest.mark.asyncio
+async def test_post_attempt_header_increments_on_retry() -> None:
+    """`X-Eveys-Attempt` must reflect the current retry attempt
+    (1, 2, 3...) — not stay at 1 forever. The backend uses this
+    for at-least-once dedup decisions."""
+    d = WebhookDispatcher(_settings(webhook_max_attempts=3))
+    d._http = MagicMock()
+    d._http.post = AsyncMock(side_effect=[_resp(503), _resp(503), _resp(200)])
+
+    with patch("eveys_ocpp.webhooks.dispatcher.asyncio.sleep", AsyncMock()):
+        await d._post_with_retry(
+            url="https://x/test",
+            body_bytes=b"{}",
+            signature="sha256=abc",
+            event_id="evt-attempt",
+            event_type="cp.boot",
+        )
+
+    attempts = [c.kwargs["headers"]["X-Eveys-Attempt"] for c in d._http.post.await_args_list]
+    assert attempts == ["1", "2", "3"]
+
+
+# ---- signature round-trip (issue #102 — audit Finding 6) ------------------
+#
+# The signer's unit tests (`test_signer.py`) verify compute_signature ↔
+# verify_signature with hardcoded inputs. What's missing: that the bytes
+# the dispatcher actually puts on the wire are the bytes it signed.
+# A future change to body serialization (added whitespace, different
+# encoding, late JSON mutation) would silently break delivery — the
+# receiver's verify_signature would reject every webhook.
+
+
+async def _drive_one_delivery(
+    d: WebhookDispatcher,
+    envelope: events_pb2.EventEnvelope,
+) -> tuple[bytes, str]:
+    """Drive the dispatcher's serialize → sign → POST chain for one
+    envelope and return (body_on_wire, signature_header).
+
+    `_deliver_one` is what the Kafka loop calls per record, but its
+    signature takes a `ConsumerRecord`. We synthesize one with the
+    serialized envelope as `value` so the same code path runs as in
+    production — no shortcut to internal helpers that could drift
+    from the real flow."""
+    from aiokafka.structs import ConsumerRecord
+
+    record = ConsumerRecord(
+        topic="cp.boot.v1",
+        partition=0,
+        offset=0,
+        timestamp=0,
+        timestamp_type=0,
+        key=None,
+        value=envelope.SerializeToString(),
+        checksum=None,
+        serialized_key_size=0,
+        serialized_value_size=0,
+        headers=[],
+    )
+    await d._deliver_one(record)
+    call = d._http.post.await_args
+    return call.kwargs["content"], call.kwargs["headers"]["X-Eveys-Signature"]
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_body_round_trips_through_verify_signature() -> None:
+    """The body bytes the dispatcher sends on the wire must verify
+    against the signature it sends in the X-Eveys-Signature header.
+    Catches any future divergence between what's signed and what's
+    sent (whitespace, encoding, late mutation, etc.)."""
+    from eveys_ocpp.webhooks.signer import verify_signature
+
+    secret = "shared-secret-for-roundtrip"
+    d = WebhookDispatcher(
+        _settings(
+            webhook_secret=secret,
+            webhook_max_attempts=1,
+            # Per-event URL must be present for the dispatcher to deliver.
+            webhook_url_cp_boot="https://backend.example/webhooks/cp-boot",
+        )
+    )
+    d._http = MagicMock()
+    d._http.post = AsyncMock(return_value=_resp(200))
+
+    body_on_wire, sig_header = await _drive_one_delivery(
+        d, _envelope("cp_boot", event_id="evt-roundtrip-1", cp_id="CP_ROUNDTRIP")
+    )
+
+    # The receiver's verify must accept these exact bytes + header
+    # under the same secret. If the dispatcher signed-then-mutated,
+    # this would return False.
+    assert verify_signature(body_on_wire, sig_header, secret) is True
+
+    # And rejects under a wrong secret (sanity check that the
+    # round-trip isn't trivially-true).
+    assert verify_signature(body_on_wire, sig_header, "wrong-secret") is False
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_signature_changes_when_body_changes() -> None:
+    """Two different envelopes produce two different signatures.
+    Catches a hypothetical bug where the dispatcher accidentally
+    signs a constant string instead of the body."""
+    from eveys_ocpp.webhooks.signer import verify_signature
+
+    secret = "shared-secret"
+    d = WebhookDispatcher(
+        _settings(
+            webhook_secret=secret,
+            webhook_max_attempts=1,
+            webhook_url_cp_boot="https://backend.example/webhooks/cp-boot",
+        )
+    )
+    d._http = MagicMock()
+    d._http.post = AsyncMock(return_value=_resp(200))
+
+    body_a, sig_a = await _drive_one_delivery(
+        d, _envelope("cp_boot", event_id="evt-A", cp_id="CP_A", vendor="VendorA")
+    )
+    body_b, sig_b = await _drive_one_delivery(
+        d, _envelope("cp_boot", event_id="evt-B", cp_id="CP_B", vendor="VendorB")
+    )
+
+    assert body_a != body_b
+    assert sig_a != sig_b
+    # Each signature only verifies its own body — never the other's.
+    assert verify_signature(body_a, sig_a, secret) is True
+    assert verify_signature(body_b, sig_b, secret) is True
+    assert verify_signature(body_a, sig_b, secret) is False
+    assert verify_signature(body_b, sig_a, secret) is False
