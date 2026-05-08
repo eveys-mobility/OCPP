@@ -18,6 +18,7 @@ from sqlalchemy.orm import selectinload
 
 from .models import (
     ChargePoint,
+    ChargePointCredential,
     ChargingProfile,
     ChargingSchedulePeriod,
     LocalAuthList,
@@ -897,3 +898,24 @@ async def list_charging_profiles_by_cp(
     )
     result = await session.execute(stmt)
     return [_charging_profile_to_dict(p) for p in result.scalars().all()]
+
+
+# ---- E5-6: per-charger Basic Auth credentials -----------------------------
+
+
+async def get_credential_hash(session: AsyncSession, *, cp_id: str) -> str | None:
+    """Return the bcrypt hash for a charger, or `None` if no credential
+    row exists.
+
+    None means "not provisioned" — the WS server's Basic Auth gate
+    decides whether that's accept (permissive mode) or reject
+    (strict mode) based on `Settings.ws_basic_auth_required`.
+    """
+    stmt = (
+        select(ChargePointCredential.password_hash)
+        .join(ChargePoint, ChargePoint.id == ChargePointCredential.charge_point_id)
+        .where(ChargePoint.cp_id == cp_id)
+    )
+    result = await session.execute(stmt)
+    row = result.scalar_one_or_none()
+    return str(row) if row is not None else None

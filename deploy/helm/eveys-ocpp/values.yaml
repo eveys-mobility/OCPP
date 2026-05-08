@@ -118,6 +118,14 @@ gateway:
     # (server key), ca.crt (CA used to verify the Envoy client cert).
     secretName: ""
 
+  # E5-6 — WS-edge Basic Auth strict mode. Off by default so a
+  # charger seen for the first time without a credential row gets
+  # accepted (permissive default — fleet-migration shim). Production
+  # flips this on once every charger is provisioned in
+  # `charge_point_credentials`.
+  basicAuth:
+    required: false
+
 # ---- Envoy ---------------------------------------------------------
 envoy:
   image:

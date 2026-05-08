@@ -68,6 +68,10 @@ spec:
             - name: EVEYS_OCPP_WS_MTLS_CA_PATH
               value: /etc/eveys-ocpp/mtls/ca.crt
             {{- end }}
+            {{- if .Values.gateway.basicAuth.required }}
+            - name: EVEYS_OCPP_WS_BASIC_AUTH_REQUIRED
+              value: "true"
+            {{- end }}
             {{- if .Values.gateway.secrets.name }}
             - name: EVEYS_OCPP_DB_URL
               valueFrom:
