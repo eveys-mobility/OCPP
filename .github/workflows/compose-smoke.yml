@@ -6,19 +6,17 @@
 # catches deploy-time wiring bugs (env vars, Kafka listener layout,
 # ENTRYPOINT/CMD shape, healthchecks).
 #
-# Path-filtered to the surfaces it can actually catch — running this on
-# every PR would burn ~5 minutes for changes that can't break it.
+# Runs on every PR so it can be a required status check on `main`.
+# Required-but-skipped reads as a blocked merge under GitHub branch
+# protection; the path filter that used to live here was the right call
+# when compose-smoke was advisory, but conflicts with required status.
+# ~1m45s per run on GitHub-hosted runners is the cost of admission. If
+# this gets too slow later, the answer is to speed up the build, not
+# to filter — required and skipped don't compose.
 name: compose-smoke
 
 on:
   pull_request:
-    paths:
-      - "deploy/**"
-      - "tests/compose_smoke/**"
-      - "pyproject.toml"
-      - "src/eveys_ocpp/__main__.py"
-      - "src/eveys_ocpp/clickhouse/ingestor.py"
-      - ".github/workflows/compose-smoke.yml"
   push:
     branches: [main]
 
