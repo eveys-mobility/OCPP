@@ -21,8 +21,10 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# Override the DSN in alembic.ini at runtime.
-config.set_main_option("sqlalchemy.url", get_settings().db_url)
+# Override the DSN in alembic.ini at runtime. db_url is a SecretStr
+# (E5-7); unwrap at this single boundary — alembic's ConfigParser
+# requires a str, and this script never logs the URL.
+config.set_main_option("sqlalchemy.url", get_settings().db_url.get_secret_value())
 
 target_metadata = Base.metadata
 
