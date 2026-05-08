@@ -1,0 +1,30 @@
+apiVersion: v2
+name: eveys-ocpp
+description: |
+  OCPP 1.6 / 2.0.1 gateway chart (E5-1).
+
+  Deploys two workloads in the same release:
+  - the gateway Deployment + headless Service that holds charger
+    WebSockets, plus its REST + gRPC + metrics surfaces;
+  - the Envoy edge Deployment + LoadBalancer Service that fronts
+    chargers and consistent-hashes them onto gateway pods.
+
+  The chart is the production sibling of the compose stack at
+  `deploy/compose/docker-compose.yml`. Values map 1:1 to the
+  EVEYS_OCPP_* env vars documented in
+  docs/11-configuration-reference.md.
+
+  Production cert lifecycle (cert-manager / external-secrets) is
+  out of scope here — the chart references a Secret name and the
+  operator picks the source of truth.
+type: application
+version: 0.1.0
+appVersion: "0.0.0"
+keywords:
+  - ocpp
+  - ev-charging
+  - websocket
+sources:
+  - https://github.com/eveys-mobility/OCPP
+maintainers:
+  - name: eveys-mobility

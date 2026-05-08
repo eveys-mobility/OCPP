@@ -1,0 +1,106 @@
+# Envoy edge config — production / k8s shape (E5-1, ADR-0007).
+#
+# Differences from envoy.local.yaml:
+#
+#   - No plain :80 listener (production is TLS-only).
+#   - Upstream discovery uses k8s headless-service DNS rather than
+#     compose `ocpp` hostname. The Helm chart wires
+#     `gateway-headless.eveys-ocpp.svc.cluster.local` here.
+#   - Cert paths are mount points populated by cert-manager / a
+#     vault CSI driver — operator concern, not committed here.
+#
+# Hash key, slow-start commentary, WebSocket upgrade configuration:
+# all identical to local. Keep the two files in sync — diverging
+# edge behaviour between dev and prod is exactly the class of bug
+# Tier-3 compose-smoke (ADR-0024) was added to catch.
+
+admin:
+  address:
+    socket_address: { address: 127.0.0.1, port_value: 9901 }
+
+static_resources:
+  listeners:
+    - name: wss_listener
+      address:
+        socket_address: { address: 0.0.0.0, port_value: 443 }
+      filter_chains:
+        - transport_socket:
+            name: envoy.transport_sockets.tls
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.DownstreamTlsContext
+              common_tls_context:
+                tls_certificates:
+                  # Mount point for cert-manager / external-secrets
+                  # CSI / whatever the platform uses. The cert
+                  # rotation contract is an operator concern.
+                  - certificate_chain: { filename: /etc/envoy/certs/tls.crt }
+                    private_key: { filename: /etc/envoy/certs/tls.key }
+          filters:
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: ws_tls
+                upgrade_configs:
+                  - upgrade_type: websocket
+                stream_idle_timeout: 0s
+                request_timeout: 0s
+                http_filters:
+                  - name: envoy.filters.http.local_ratelimit
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit
+                      stat_prefix: ws_upgrade_local_rate_limit
+                      token_bucket:
+                        max_tokens: 1000000
+                        tokens_per_fill: 1000000
+                        fill_interval: 1s
+                      filter_enabled:
+                        runtime_key: local_rate_limit_enabled
+                        default_value: { numerator: 0, denominator: HUNDRED }
+                      filter_enforced:
+                        runtime_key: local_rate_limit_enforced
+                        default_value: { numerator: 0, denominator: HUNDRED }
+                  - name: envoy.filters.http.router
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+                route_config:
+                  name: ws_routes
+                  virtual_hosts:
+                    - name: ocpp_gateway
+                      domains: ["*"]
+                      routes:
+                        - match: { prefix: "/" }
+                          route:
+                            cluster: ocpp_gateway
+                            hash_policy:
+                              - header: { header_name: ":path" }
+                            timeout: 0s
+                            idle_timeout: 0s
+
+  clusters:
+    - name: ocpp_gateway
+      type: STRICT_DNS
+      lb_policy: RING_HASH
+      ring_hash_lb_config:
+        minimum_ring_size: 1024
+      common_lb_config:
+        healthy_panic_threshold: { value: 0 }
+      load_assignment:
+        cluster_name: ocpp_gateway
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    # k8s headless-service DNS — the Helm chart sets
+                    # this from values.yaml so deployments in
+                    # different namespaces share the same template.
+                    socket_address:
+                      address: gateway-headless.eveys-ocpp.svc.cluster.local
+                      port_value: 9000
+      health_checks:
+        - timeout: 2s
+          interval: 3s
+          unhealthy_threshold: 2
+          healthy_threshold: 1
+          http_health_check:
+            path: /api/v1/ready
+            host: gateway-headless.eveys-ocpp.svc.cluster.local:8080

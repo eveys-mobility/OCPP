@@ -1,0 +1,166 @@
+# eveys-ocpp Helm chart values (E5-1).
+#
+# Defaults are production-shaped where it doesn't cost anything (≥2
+# replicas, PDB maxUnavailable=0, readiness probe wired). Defaults
+# that depend on the platform (image registry, ingress class, cert
+# source) are explicit-empty so a fresh install asks the operator
+# rather than rolling out something subtly wrong.
+
+# ---- Gateway -------------------------------------------------------
+gateway:
+  image:
+    repository: ""              # operator-set; e.g. ghcr.io/eveys-mobility/ocpp
+    tag: "0.0.0"
+    pullPolicy: IfNotPresent
+
+  # Two replicas is the minimum that makes the graceful-drain
+  # mechanism (PR #43) meaningful: rolling restart needs another
+  # pod to drain to. Scale up beyond this freely; the gateway is
+  # designed for linear horizontal scale-out.
+  replicaCount: 2
+
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "512Mi"
+    limits:
+      cpu: "2"
+      memory: "1Gi"
+
+  # k8s graceful shutdown:
+  # `terminationGracePeriodSeconds` must exceed
+  # `EVEYS_OCPP_SHUTDOWN_GRACE_PERIOD_SECONDS` (default 25 s) plus a
+  # buffer for the kubelet's SIGTERM → SIGKILL gap. 30 s gives a 5 s
+  # buffer; raise both in lockstep if the gateway grows new teardown
+  # work.
+  terminationGracePeriodSeconds: 30
+
+  # Strategy: rolling, never below desired count. The graceful-
+  # drain mechanism plus the pre-existing readinessProbe guarantee
+  # that Envoy stops sending new connections to a pod before its
+  # SIGTERM exit; without maxUnavailable=0 there'd be a window where
+  # the load balancer has nowhere healthy to route to.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+
+  podDisruptionBudget:
+    enabled: true
+    # Voluntary disruptions (node drain, autoscaler scale-down)
+    # never take a pod below replicaCount-1.
+    maxUnavailable: 1
+
+  service:
+    # Headless: Envoy uses each pod's IP for the consistent-hash
+    # ring. A normal ClusterIP would round-robin behind the
+    # service IP and defeat sticky routing.
+    type: ClusterIP
+    clusterIP: None
+    portWs: 9000
+    portGrpc: 50051
+    portRest: 8080
+    portMetrics: 9100
+
+  # Liveness vs readiness:
+  # - liveness probes /api/v1/health (component liveness — flips
+  #   only when a downstream Postgres / Redis is sick)
+  # - readiness probes /api/v1/ready (drain signal — flips to 503
+  #   on SIGTERM so Envoy stops routing here mid-shutdown)
+  livenessProbe:
+    httpGet:
+      path: /api/v1/health
+      port: 8080
+    initialDelaySeconds: 15
+    periodSeconds: 30
+    timeoutSeconds: 5
+    failureThreshold: 3
+  readinessProbe:
+    httpGet:
+      path: /api/v1/ready
+      port: 8080
+    initialDelaySeconds: 5
+    periodSeconds: 3
+    timeoutSeconds: 2
+    failureThreshold: 2
+
+  # Settings flow into env vars. Secrets reference k8s Secrets the
+  # operator creates outside this chart (or via external-secrets);
+  # the chart deliberately doesn't generate them.
+  config:
+    logLevel: INFO
+    logJson: true
+    # Backend wiring; empty disables the hot path cleanly per
+    # ADR-0023 fallback semantics.
+    backendBaseUrl: ""
+
+  secrets:
+    # Reference to an existing Secret with these keys:
+    #   db-url
+    #   backend-token
+    #   webhook-secret
+    #   sentry-dsn
+    #   rest-inbound-tokens
+    # External-secrets / cert-manager / sealed-secrets all produce
+    # plain k8s Secrets, so the chart doesn't care which.
+    name: ""
+
+# ---- Envoy ---------------------------------------------------------
+envoy:
+  image:
+    repository: envoyproxy/envoy
+    tag: v1.31-latest
+    pullPolicy: IfNotPresent
+
+  replicaCount: 2
+
+  resources:
+    requests:
+      cpu: "200m"
+      memory: "128Mi"
+    limits:
+      cpu: "1"
+      memory: "256Mi"
+
+  service:
+    # LoadBalancer is the production shape. For k3d / minikube
+    # development, override to NodePort or a port-forward.
+    type: LoadBalancer
+    portWss: 443
+
+  tls:
+    # Reference to an existing TLS Secret (cert-manager output,
+    # external-secrets, or hand-rolled). The chart mounts it at
+    # /etc/envoy/certs/ matching the path baked into envoy.yaml.
+    secretName: ""
+
+  # The envoy.yaml ConfigMap is rendered from
+  # `deploy/envoy/envoy.yaml` at template time. Keep
+  # values intentionally minimal — Envoy config is its own
+  # complexity surface and lives in deploy/envoy/.
+
+  podDisruptionBudget:
+    enabled: true
+    maxUnavailable: 1
+
+  # k8s headless-service DNS the Envoy upstream cluster targets.
+  # Defaults to the gateway's own headless service in this release.
+  upstreamHost: ""    # template default uses gateway-headless
+
+# ---- Common --------------------------------------------------------
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+
+# Kubernetes downward-API → POD_ID env var. Documented in
+# `Settings.pod_id` (settings.py); the gateway uses this for the
+# Redis registry's `cp:online:{cp_id} → pod_id` value.
+downwardApi:
+  podName: true

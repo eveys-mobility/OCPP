@@ -150,7 +150,16 @@ Example URL: `ws://192.168.1.42:19000/CP_LAB_001`.
 
 The gateway speaks plain `ws://`. Production puts Envoy in front with TLS termination so chargers connect to `wss://`. For first-connection testing on the same LAN, `ws://` is fine.
 
-If your charger firmware refuses non-TLS (some EVSEs do), put a reverse proxy with self-signed TLS in front locally:
+**Local TLS via the in-tree Envoy** (E5-1, ADR-0007). Once you've generated dev certs, the compose stack runs Envoy on `wss://<host>:19443/<cp_id>` with the same routing your production deployment will use:
+
+```bash
+scripts/gen-dev-certs.sh    # one-shot, idempotent; certs are .gitignore'd
+make compose-up             # brings up everything including envoy
+```
+
+Charger dials `wss://<host>:19443/<cp_id>`. The cert is self-signed; chargers that validate certs need `--insecure` or equivalent. The plain `ws://<host>:19000/<cp_id>` path stays available for tests and dev clients that don't want to deal with self-signed roots.
+
+If your charger firmware refuses non-TLS *and* refuses self-signed certs, put a third-party reverse proxy with locally-trusted TLS in front:
 
 ```bash
 # minimal Caddyfile
@@ -160,7 +169,7 @@ If your charger firmware refuses non-TLS (some EVSEs do), put a reverse proxy wi
 }
 ```
 
-Then the charger dials `wss://<host>:9443/<cp_id>` — Caddy terminates TLS and forwards plain `ws://` to the gateway.
+Then the charger dials `wss://<host>:9443/<cp_id>` — Caddy terminates TLS with a cert your OS trust store recognises and forwards plain `ws://` to the gateway.
 
 ### 5.3 Network reachability
 

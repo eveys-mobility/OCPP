@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "eveys-ocpp.envoyName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "eveys-ocpp.envoyLabels" . | nindent 4 }}
+data:
+  # Loads from `files/envoy.yaml` inside the chart. That file is a
+  # copy of the canonical `deploy/envoy/envoy.yaml`; CI's
+  # helm-lint job (.github/workflows/quality.yml) refuses any PR
+  # that lets them drift. Helm's .Files.Get can't traverse outside
+  # the chart directory, hence the copy + drift gate rather than a
+  # symlink.
+  envoy.yaml: |-
+    {{- .Files.Get "files/envoy.yaml" | nindent 4 }}

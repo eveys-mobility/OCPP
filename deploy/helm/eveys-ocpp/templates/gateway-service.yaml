@@ -1,0 +1,36 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "eveys-ocpp.gatewayName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "eveys-ocpp.gatewayLabels" . | nindent 4 }}
+spec:
+  # Headless: Envoy uses each pod's IP for the consistent-hash ring.
+  # A normal ClusterIP would NAT through the kube-proxy and defeat
+  # the per-cp_id stickiness.
+  type: {{ .Values.gateway.service.type }}
+  {{- if eq .Values.gateway.service.type "ClusterIP" }}
+  clusterIP: {{ .Values.gateway.service.clusterIP }}
+  {{- end }}
+  selector:
+    app.kubernetes.io/name: {{ include "eveys-ocpp.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: gateway
+  ports:
+    - name: ws
+      port: {{ .Values.gateway.service.portWs }}
+      targetPort: ws
+      protocol: TCP
+    - name: grpc
+      port: {{ .Values.gateway.service.portGrpc }}
+      targetPort: grpc
+      protocol: TCP
+    - name: rest
+      port: {{ .Values.gateway.service.portRest }}
+      targetPort: rest
+      protocol: TCP
+    - name: metrics
+      port: {{ .Values.gateway.service.portMetrics }}
+      targetPort: metrics
+      protocol: TCP

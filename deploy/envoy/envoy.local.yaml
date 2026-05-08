@@ -1,0 +1,192 @@
+# Envoy edge config — compose-mode (E5-1, ADR-0007).
+#
+# This is the dev-laptop variant. It accepts plain ws:// on :19000 (the
+# existing direct-to-gateway path that all existing tests use) and
+# wss:// on :19443 (the new TLS-fronted path that mirrors what
+# production will serve). Both forward to the same `ocpp:9000`
+# upstream over plain HTTP/1.1; TLS terminates at Envoy in production
+# too, so the gateway never sees a TLS handshake.
+#
+# The production sibling envoy.yaml is identical except:
+#   - upstream discovery is k8s EDS rather than compose DNS
+#   - admin listener is bound to 127.0.0.1 only
+#   - rate-limit + auth filters get real values (E5-2 / E5-6)
+#
+# Hash key contract: we hash on `:path` because the gateway's WS
+# server interprets the URL path as the cp_id (see
+# `transport/ws_server.py`). A future protocol shape that puts
+# cp_id elsewhere (query string, header) breaks this — coordinate
+# with ADR-0007's "consequences" section.
+
+admin:
+  # Powerful interface — bound to localhost only so the admin port
+  # never escapes the container. `docker exec envoy ...` is how an
+  # operator reaches it during dev triage.
+  address:
+    socket_address: { address: 127.0.0.1, port_value: 9901 }
+
+static_resources:
+  # ---------------------------------------------------------------
+  # Listeners
+  # ---------------------------------------------------------------
+  listeners:
+    # WSS (TLS) — production-shaped path. Self-signed cert in dev.
+    - name: wss_listener
+      address:
+        socket_address: { address: 0.0.0.0, port_value: 443 }
+      filter_chains:
+        - transport_socket:
+            name: envoy.transport_sockets.tls
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.DownstreamTlsContext
+              common_tls_context:
+                tls_certificates:
+                  - certificate_chain: { filename: /etc/envoy/certs/server.crt }
+                    private_key: { filename: /etc/envoy/certs/server.key }
+          filters:
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: ws_tls
+                # WebSocket upgrade is the whole point of this
+                # listener. Without `upgrade_configs`, Envoy would
+                # close the connection right after the HTTP/1.1
+                # handshake.
+                upgrade_configs:
+                  - upgrade_type: websocket
+                # Don't add hop timeouts to a WebSocket — long-lived
+                # by design. Envoy's per-stream idle timeout would
+                # otherwise reap idle chargers.
+                stream_idle_timeout: 0s
+                request_timeout: 0s
+                http_filters:
+                  # Rate-limit filter slot is reserved for E5-2.
+                  # Disabled (no descriptors) until that task lands.
+                  - name: envoy.filters.http.local_ratelimit
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit
+                      stat_prefix: ws_upgrade_local_rate_limit
+                      # Effectively unlimited until E5-2 sets values.
+                      token_bucket:
+                        max_tokens: 1000000
+                        tokens_per_fill: 1000000
+                        fill_interval: 1s
+                      filter_enabled:
+                        runtime_key: local_rate_limit_enabled
+                        default_value: { numerator: 0, denominator: HUNDRED }
+                      filter_enforced:
+                        runtime_key: local_rate_limit_enforced
+                        default_value: { numerator: 0, denominator: HUNDRED }
+                  - name: envoy.filters.http.router
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+                route_config:
+                  name: ws_routes
+                  virtual_hosts:
+                    - name: ocpp_gateway
+                      domains: ["*"]
+                      routes:
+                        - match: { prefix: "/" }
+                          route:
+                            cluster: ocpp_gateway
+                            # The hash policy is what makes
+                            # consistent-hash work. We hash on the
+                            # request `:path` header (which the
+                            # gateway interprets as cp_id).
+                            hash_policy:
+                              - header: { header_name: ":path" }
+                            # Don't re-time long-lived WS streams.
+                            timeout: 0s
+                            idle_timeout: 0s
+
+    # Plain WS — kept so existing tests + the dev-laptop charger
+    # simulator still hit the gateway directly while the TLS path
+    # is being introduced. Production removes this listener.
+    - name: ws_plain_listener
+      address:
+        socket_address: { address: 0.0.0.0, port_value: 80 }
+      filter_chains:
+        - filters:
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: ws_plain
+                upgrade_configs:
+                  - upgrade_type: websocket
+                stream_idle_timeout: 0s
+                request_timeout: 0s
+                http_filters:
+                  - name: envoy.filters.http.router
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+                route_config:
+                  name: ws_plain_routes
+                  virtual_hosts:
+                    - name: ocpp_gateway
+                      domains: ["*"]
+                      routes:
+                        - match: { prefix: "/" }
+                          route:
+                            cluster: ocpp_gateway
+                            hash_policy:
+                              - header: { header_name: ":path" }
+                            timeout: 0s
+                            idle_timeout: 0s
+
+  # ---------------------------------------------------------------
+  # Upstream cluster — the gateway pods.
+  # ---------------------------------------------------------------
+  clusters:
+    - name: ocpp_gateway
+      type: STRICT_DNS
+      # Ring-hash with consistent-hash on :path is the load-bearing
+      # piece. Without it, a charger reconnecting after a brief drop
+      # could land on a different pod, defeating the registry's
+      # ownership story (ADR-0016) and forcing a cross-pod gRPC bus
+      # round-trip on every command.
+      lb_policy: RING_HASH
+      ring_hash_lb_config:
+        # 1024 entries per host — plenty for a typical fleet, low
+        # memory cost. Tune up only if hash skew shows up in
+        # `eveys_ocpp_ws_connections_active{pod_id=...}` panels.
+        minimum_ring_size: 1024
+      # Slow-start ramps a newly-healthy upstream's traffic up over
+      # `slow_start_window`. Prevents a freshly-restarted pod from
+      # being slammed with the entire fleet's reconnect storm.
+      common_lb_config:
+        healthy_panic_threshold: { value: 0 }
+      load_assignment:
+        cluster_name: ocpp_gateway
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    # Compose service DNS — k8s production overrides
+                    # this with EDS-discovered endpoints.
+                    socket_address: { address: ocpp, port_value: 9000 }
+      # Health check the gateway's readiness endpoint (PR #43).
+      # Envoy stops routing to a pod whose /api/v1/ready returns
+      # 503, which is exactly the graceful-drain signal.
+      health_checks:
+        - timeout: 2s
+          interval: 3s
+          unhealthy_threshold: 2
+          healthy_threshold: 1
+          http_health_check:
+            path: /api/v1/ready
+            host: ocpp:8080
+        # The healthcheck speaks HTTP/1.1 to :8080 (REST surface),
+        # not the WS port. Envoy can't health-check a WS upgrade
+        # path directly; targeting /api/v1/ready is intentional and
+        # better — it mirrors what k8s readiness probes will use.
+      # Apply slow-start to the cluster so a recovering pod ramps.
+      # 60 s is generous; tune down if rolling-deploy churn is
+      # well-paced and the fleet is small.
+      lb_subset_config: {}
+      # NB: ring_hash_lb_config doesn't have a slow_start field in
+      # all Envoy versions — slow-start is on the cluster's
+      # `slow_start_config` for ROUND_ROBIN / LEAST_REQUEST. With
+      # RING_HASH the equivalent is the consistent-hash itself:
+      # most existing chargers stick to existing pods, only new
+      # connections hash to the new pod, which produces a natural
+      # ramp. Documented gap; revisit if a real ramp problem shows.

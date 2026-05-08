@@ -24,6 +24,10 @@ repos:
         exclude: \.md$
       - id: end-of-file-fixer
       - id: check-yaml
+        # Helm templates carry Go template syntax (`{{- ... -}}`)
+        # that's not valid YAML before render. helm-lint in CI
+        # validates them properly.
+        exclude: ^deploy/helm/eveys-ocpp/templates/
       - id: check-toml
       - id: check-added-large-files
         args: ["--maxkb=500"]
