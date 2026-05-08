@@ -28,7 +28,7 @@ Two bucket sets partition the histograms:
   client, webhook delivery. Range from a 10 ms cache hit through the
   30 s OCPP outer timeout.
 
-Series count: 53 metrics. Cardinality stays bounded — see comments at
+Series count: 54 metrics. Cardinality stays bounded — see comments at
 high-cardinality sites (`measurand`, `vendor_id`, `route`).
 """
 
@@ -229,6 +229,15 @@ METER_VALUE_QUARANTINED_TOTAL: Counter = Counter(
     "stays bounded. A non-zero rate here indicates a buggy charger, a "
     "sensor wedge, or an attacker probing the system — alert on it.",
     labelnames=("measurand", "reason"),
+)
+RATE_LIMIT_THROTTLED_TOTAL: Counter = Counter(
+    "eveys_ocpp_rate_limit_throttled_total",
+    "Inbound OCPP CALLs dropped by the per-charger rate limiter (E5-3). "
+    "`action` is the OCPP action name (bounded by the OCPP enum). A "
+    "non-zero rate identifies misbehaving or compromised chargers; the "
+    "matching cp_id is in the structured log line, not a label, to "
+    "keep cardinality bounded.",
+    labelnames=("action",),
 )
 
 DATA_TRANSFERS_TOTAL: Counter = Counter(
@@ -505,6 +514,7 @@ __all__ = [
     "OCPP_HANDLER_ERRORS_TOTAL",
     "OCPP_HANDLER_LATENCY_SECONDS",
     "OUTBOUND_BUCKETS",
+    "RATE_LIMIT_THROTTLED_TOTAL",
     "REDIS_COMMAND_LATENCY_SECONDS",
     "REGISTRY_ONLINE_CHARGERS",
     "REST_REQUESTS_TOTAL",
