@@ -25,7 +25,7 @@ COMPOSE_GRAFANA := docker compose \
 
 .PHONY: help doctor install format lint types tests e2e smoke compose-smoke precommit clean distclean \
         compose-up compose-down compose-status compose-down-volumes compose-wait \
-        build-image protoc ch-migrate docs docs-clean config-export config-export-check config-schema \
+        build-image protoc migrate pg-migrate ch-migrate docs docs-clean config-export config-export-check config-schema \
         openapi-export openapi-export-check audit get-token grafana-up grafana-down
 
 # ---- meta -------------------------------------------------------------------
@@ -44,7 +44,8 @@ help:
 	@echo "  make precommit          run all pre-commit hooks against every file (no commit needed)"
 	@echo ""
 	@echo "Local stack (data plane):"
-	@echo "  make compose-up         start Postgres + Redis + Kafka + ClickHouse + service"
+	@echo "  make compose-up         start data plane + service AND apply migrations (one-step usable stack)"
+	@echo "  make migrate            apply Postgres + ClickHouse migrations against the running stack"
 	@echo "  make compose-wait       wait for all containers to report 'healthy'"
 	@echo "  make compose-down       stop containers, keep data volumes"
 	@echo "  make compose-down-volumes  stop AND wipe data (DESTRUCTIVE)"
@@ -156,8 +157,28 @@ build-image:
 
 compose-up:
 	$(COMPOSE) up -d
+	@$(MAKE) compose-wait
+	@echo ">> applying schema (Postgres + ClickHouse)..."
+	@$(MAKE) migrate
 	@echo ""
-	@echo "Stack starting. Use 'make compose-status' to watch health."
+	@echo "Stack ready. WS on :19000, REST on :8080, Swagger on /api/v1/docs."
+
+# Apply BOTH Postgres (alembic) and ClickHouse migrations against the
+# running compose stack. Run by `compose-up` automatically; also a
+# standalone target for re-running after a schema change without
+# bouncing the stack. Idempotent — alembic is no-op if at HEAD,
+# ch-migrate skips files already in `schema_migrations`.
+#
+# Forgetting this is the bug from issue #121 — a fresh `compose-up`
+# left Postgres empty, the WS Basic Auth check threw
+# `UndefinedTableError`, and chargers got 500 on reconnect. Baking
+# it into compose-up means an operator who only runs `make
+# compose-up` gets a usable stack, not a half-deployed one.
+migrate: pg-migrate ch-migrate
+
+pg-migrate: install
+	@echo ">> applying Postgres migrations (alembic)..."
+	@$(VENV)/bin/alembic upgrade head
 
 # Opt-in observability sidecar: Grafana + Prometheus joined to the
 # same compose network. The Grafana container pulls the ClickHouse
@@ -250,12 +271,8 @@ ch-migrate: install
 	    --db $${EVEYS_OCPP_CLICKHOUSE_DB:-eveys_ocpp}
 
 e2e: install
-	@echo ">> bringing up local data plane..."
+	@echo ">> bringing up local data plane (compose-up bakes in migrate)..."
 	@$(MAKE) compose-up
-	@$(MAKE) compose-wait
-	@echo ">> applying schema..."
-	@$(VENV)/bin/alembic upgrade head
-	@$(MAKE) ch-migrate
 	@echo ">> running e2e tests..."
 	@$(VENV)/bin/pytest tests/e2e -v --no-cov; \
 	rc=$$?; \
