@@ -137,7 +137,7 @@ peak, with (1) as the always-on baseline.
 ## Per-component memory budget at 1000 CP
 
 This is the all-in steady-state RAM budget when every component
-runs on the same host (the "co-tenant" shape — what 1-node and the
+runs on the same host (the "co-located" shape — what 1-node and the
 data-plane node of 2-node and 3-node configs all use).
 
 | Component | RAM | Notes |
@@ -203,7 +203,7 @@ random-IO-bound at peak.
 
 For 500–1000 CP on the same LAN: **1 GbE is sufficient**. Peak
 inter-node traffic is ClickHouse + Kafka replication; in a 3-node
-co-tenant shape the cross-node bandwidth tops out around 50 Mbps
+co-located shape the cross-node bandwidth tops out around 50 Mbps
 under a heavy storm. **2.5 GbE or 10 GbE** is over-spec'd for the
 fleet size but cheap insurance against a hot follow-up workload
 (a sibling service that wants to consume Kafka at line rate).
