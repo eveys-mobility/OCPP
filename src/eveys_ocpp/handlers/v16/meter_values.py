@@ -25,14 +25,18 @@ Behavior:
   schema (already enforced by the time we get here).
 * If `event_producer` is None (unit tests, Kafka-less local dev),
   log + return — no error. Same pattern as the registry.
-* Sanity-check meter values per AGENTS rule 6: a single sample with
-  an absolute energy reading > 100 MWh is suspicious. Log + drop the
-  sample. Don't crash; the charger isn't waiting on validation.
+* Sanity-check meter values per E5-4 (`_meter_sanity.check_sample`).
+  Each sample is checked against a measurand-aware physical range
+  (energy, power, voltage, current, frequency, temperature, SoC,
+  power factor, RPM); failures drop just that sample, log with
+  measurand+reason, and bump the
+  `eveys_ocpp_meter_value_quarantined_total{measurand,reason}`
+  counter. Unknown measurands accept by default (vendor extensions).
 
 Deviations from the OCA spec to verify before W2 / OCTT
 (see `docs/08-ocpp-conformance.md`):
-- Sanity-range bounds (100 MWh single-sample) are a project policy,
-  not OCA-mandated. Real bounds will be tuned in Phase 5 (E5-4).
+- Sanity ranges are a project defensive layer, not OCA-mandated. See
+  `_meter_sanity.py` for the per-measurand bounds and reasoning.
 - We accept and forward `transaction_id` if present, but don't yet
   cross-check that the transaction is open in Postgres.
 """
@@ -46,6 +50,7 @@ from typing import TYPE_CHECKING, Any
 from ocpp.v16 import call_result
 
 from eveys_ocpp._generated.events.v1 import events_pb2
+from eveys_ocpp.handlers.v16 import _meter_sanity
 from eveys_ocpp.metrics import record_handler_error, time_handler
 from eveys_ocpp.metrics import registry as metrics_registry
 from eveys_ocpp.observability import bind_contextvars, get_logger
@@ -54,12 +59,6 @@ if TYPE_CHECKING:
     from eveys_ocpp.connection import EveysChargePoint
 
 log = get_logger(__name__)
-
-# A single sample claiming more than this many Wh is almost certainly
-# a bug or attack. Quarantine — do not publish, do not bill. AGENTS
-# rule 6. 100 MWh = 100_000 kWh; the largest passenger EV battery
-# today is ~150 kWh, so this gives ~600x margin.
-_SANITY_MAX_WH = 100_000_000
 
 
 def _build_envelope(*, cp_id: str, payload: events_pb2.CpMeter) -> bytes:
@@ -96,20 +95,6 @@ def _to_proto_sampled_value(raw: dict[str, Any]) -> events_pb2.SampledValue:
         # ClickHouse. Forward-compat with vendor extensions.
         # Empty enum field encodes as the *_UNSPECIFIED 0 value.
     )
-
-
-def _is_value_in_sanity_range(raw: dict[str, Any]) -> bool:
-    """Return False if the sample claims an absurd absolute Wh."""
-    unit = str(raw.get("unit") or "Wh").lower()
-    try:
-        magnitude = float(raw.get("value") or 0)
-    except (TypeError, ValueError):
-        return False
-    if unit in {"kwh"}:
-        magnitude *= 1_000
-    elif unit in {"mwh"}:
-        magnitude *= 1_000_000
-    return abs(magnitude) <= _SANITY_MAX_WH
 
 
 async def handle(
@@ -159,16 +144,22 @@ async def _meter_values_inner(
         for raw in entry.get("sampled_value") or []:
             if not isinstance(raw, dict):
                 continue
-            if not _is_value_in_sanity_range(raw):
+            verdict = _meter_sanity.check_sample(raw)
+            if not verdict.accepted:
                 quarantined += 1
+                metrics_registry.METER_VALUE_QUARANTINED_TOTAL.labels(
+                    measurand=verdict.measurand,
+                    reason=verdict.reason,
+                ).inc()
                 log.warning(
                     "meter_values.sample_quarantined",
                     sample_value=raw.get("value"),
                     unit=raw.get("unit"),
+                    measurand=verdict.measurand,
+                    reason=verdict.reason,
                 )
                 continue
-            measurand = str(raw.get("measurand") or "Energy.Active.Import.Register")
-            metrics_registry.METER_VALUE_SAMPLES_TOTAL.labels(measurand=measurand).inc()
+            metrics_registry.METER_VALUE_SAMPLES_TOTAL.labels(measurand=verdict.measurand).inc()
             sampled_values.append(_to_proto_sampled_value(raw))
 
     log.info(

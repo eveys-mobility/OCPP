@@ -28,7 +28,7 @@ Two bucket sets partition the histograms:
   client, webhook delivery. Range from a 10 ms cache hit through the
   30 s OCPP outer timeout.
 
-Series count: 52 metrics. Cardinality stays bounded — see comments at
+Series count: 53 metrics. Cardinality stays bounded — see comments at
 high-cardinality sites (`measurand`, `vendor_id`, `route`).
 """
 
@@ -221,6 +221,14 @@ METER_VALUE_SAMPLES_TOTAL: Counter = Counter(
     "grouped by measurand. Bounded — OCPP § 7.20 fixes the measurand "
     "enum.",
     labelnames=("measurand",),
+)
+METER_VALUE_QUARANTINED_TOTAL: Counter = Counter(
+    "eveys_ocpp_meter_value_quarantined_total",
+    "Sampled values dropped by the E5-4 sanity validator. `reason` is a "
+    "closed enum (out_of_range, unparseable, not_finite); cardinality "
+    "stays bounded. A non-zero rate here indicates a buggy charger, a "
+    "sensor wedge, or an attacker probing the system — alert on it.",
+    labelnames=("measurand", "reason"),
 )
 
 DATA_TRANSFERS_TOTAL: Counter = Counter(
@@ -491,6 +499,7 @@ __all__ = [
     "KAFKA_PUBLISH_LATENCY_SECONDS",
     "KAFKA_PUBLISH_TOTAL",
     "METER_VALUES_TOTAL",
+    "METER_VALUE_QUARANTINED_TOTAL",
     "METER_VALUE_SAMPLES_TOTAL",
     "OCPP_HANDLER_BUCKETS",
     "OCPP_HANDLER_ERRORS_TOTAL",

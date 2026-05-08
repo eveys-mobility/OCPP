@@ -124,7 +124,7 @@ Integration shape locked in [ADR-0023](./adr/0023-backend-rest-integration.md) a
 | E5-1 | Envoy edge config (TLS, sticky hash, rate limit, slow-start) | Helm chart includes Envoy |
 | E5-2 | Per-IP WS-upgrade rate limit | DoS test from 1 IP throttled |
 | E5-3 | Per-charger message rate cap (token bucket) | Spam test triggers backpressure |
-| E5-4 | Sanity range validation on `MeterValues` | Out-of-range payloads logged + dropped |
+| E5-4 | Sanity range validation on `MeterValues` | ✅ done — `_meter_sanity.check_sample` validates each sampled value against a measurand-aware physical range (energy 100 MWh, power ±1 MW, voltage 0–1500 V, current ±1500 A, frequency 45–65 Hz, temperature −40–200 °C, SoC 0–100 %, power factor ±1, RPM 0–30 000). Quarantines per-sample (rest of the envelope still ships); logs with `cp_id`, measurand, value, reason; bumps `eveys_ocpp_meter_value_quarantined_total{measurand,reason}` (reason ∈ `out_of_range`/`unparseable`/`not_finite`). Unit conversion (Wh↔kWh↔MWh, °F↔°C↔K, etc.) before range check. Unknown measurands accept by default for vendor extensions. |
 | E5-5 | mTLS between internal services | Pod-to-pod requires valid cert |
 | E5-6 | Basic Auth at WS edge + per-CP password store | Bad creds rejected at edge |
 | E5-7 | Secrets in vault, mounted as env vars | No secrets in repo |
