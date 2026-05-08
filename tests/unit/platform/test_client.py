@@ -449,3 +449,78 @@ async def test_idempotency_key_passed_through() -> None:
         assert captured["idempotency_key"] == "custom-key-123"
     finally:
         await client.aclose()
+
+
+# ---- bearer header assembled by from_settings (issue #102 — audit Finding 7)
+#
+# `_client_against_mock` and `_client_with_transport` rebuild the
+# httpx.AsyncClient inline with the auth header set — they do NOT call
+# `BackendHTTPClient.from_settings` (the production factory). So if a
+# regression to `from_settings` dropped the Authorization header dict
+# or typo'd the `Bearer` prefix, every test in this file would still
+# pass because the fixtures set it themselves.
+#
+# These tests close the loop by exercising the production factory.
+
+
+def test_from_settings_sets_bearer_header_on_httpx_client() -> None:
+    """The factory must set `Authorization: Bearer <token>` as a
+    default header on the httpx.AsyncClient. A regression here would
+    silently strip auth from every backend call."""
+    settings = _settings_for_test()
+    client = BackendHTTPClient.from_settings(settings)
+    try:
+        # `httpx.AsyncClient` exposes default headers on `.headers`.
+        # The lookup is case-insensitive per HTTP spec.
+        auth = client._http.headers.get("Authorization")
+        assert auth is not None, (
+            "from_settings must set the Authorization header on the "
+            "httpx client; without it every backend call would be "
+            "rejected with 401"
+        )
+        # Exact contract: `Bearer ` (with the space) + token.
+        assert auth == f"Bearer {_TOKEN}", (
+            f"Authorization header has wrong shape: {auth!r}; expected 'Bearer {_TOKEN}'"
+        )
+    finally:
+        # No async context to close; the underlying httpx client has a
+        # close helper that's sync-safe when never used.
+        pass
+
+
+@pytest.mark.asyncio
+async def test_from_settings_sends_bearer_header_on_outbound_request() -> None:
+    """End-to-end check: the factory's httpx client actually sends the
+    Authorization header on outbound requests (the `.headers.get`
+    lookup above is on the default-headers dict; this test confirms
+    httpx merges them into each request as documented). Captures the
+    request via MockTransport and asserts the header is present.
+
+    Removing the `headers={"Authorization": ...}` from `from_settings`
+    would make this test fail."""
+    captured_auth: list[str | None] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured_auth.append(request.headers.get("Authorization"))
+        return httpx.Response(
+            200,
+            json={
+                "success": True,
+                "data": {"status": "Accepted", "id_tag_info": {"status": "Accepted"}},
+                "message": "ok",
+            },
+        )
+
+    settings = _settings_for_test()
+    client = BackendHTTPClient.from_settings(settings)
+    # Swap the transport on the existing httpx client so we test the
+    # factory's header assembly, not a hand-rolled sibling client.
+    client._http._transport = httpx.MockTransport(handler)
+    try:
+        await client.authorize(id_tag="RFID_X", cp_id="CP_001", idempotency_key="auth-header-probe")
+    finally:
+        await client.aclose()
+
+    assert captured_auth == [f"Bearer {_TOKEN}"], (
+        f"backend received {captured_auth!r}; expected exactly ['Bearer {_TOKEN}']"
+    )
