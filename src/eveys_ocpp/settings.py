@@ -1550,6 +1550,73 @@ class Settings(BaseSettings):
         },
     )
 
+    # ---- Per-charger rate limit (E5-3) ----------------------------------
+    ws_rate_limit_enabled: bool = Field(
+        default=True,
+        description=(
+            "Per-charger inbound-CALL rate limiter (E5-3). When True, each "
+            "charger's CALLs are checked against a Redis-backed token "
+            "bucket; overrun drops the message silently and bumps "
+            "`eveys_ocpp_rate_limit_throttled_total{action}`. Kill-switch "
+            "for emergencies; on a Redis blip the limiter already fails "
+            "open, so flipping this to False should rarely be needed."
+        ),
+        json_schema_extra={
+            "category": "ws_server",
+            "impact": (
+                "Disabling removes the per-charger DoS protection — a "
+                "single misbehaving charger can saturate handler / "
+                "Postgres / Kafka work for the whole pod."
+            ),
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+    ws_rate_limit_capacity: int = Field(
+        default=30,
+        ge=1,
+        le=10_000,
+        description=(
+            "Token-bucket capacity per charger — the burst allowance. "
+            "First N CALLs in a quiet period all pass through; refill "
+            "tops the bucket up over time. Default 30 absorbs reconnect "
+            "bursts (BootNotification + StatusNotifications) without "
+            "throttling normal chargers."
+        ),
+        json_schema_extra={
+            "category": "ws_server",
+            "impact": (
+                "Lower → tighter burst tolerance, more throttles on "
+                "reconnect storms. Higher → larger spike a single "
+                "charger can land on us before the cap kicks in."
+            ),
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+    ws_rate_limit_refill_per_second: float = Field(
+        default=1.0,
+        gt=0.0,
+        le=1_000.0,
+        description=(
+            "Token-bucket refill rate per charger (tokens per second). "
+            "Default 1.0 = sustained 60 CALLs/min, well above any normal "
+            "OCPP 1.6 charger's steady-state traffic. Pair with the "
+            "capacity field: bucket caps at `ws_rate_limit_capacity`."
+        ),
+        json_schema_extra={
+            "category": "ws_server",
+            "impact": (
+                "Lower → tighter steady-state cap. Higher → looser "
+                "(closer to no-limit). Don't set above ~10 unless a "
+                "specific vendor's traffic profile is documented to "
+                "exceed 600 CALLs/min."
+            ),
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+
 
 def get_settings() -> Settings:
     """Build a fresh `Settings` from the current environment.

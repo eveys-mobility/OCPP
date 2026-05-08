@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from eveys_ocpp.platform import AuthorizeCache, BackendHTTPClient
     from eveys_ocpp.registry import Registry
     from eveys_ocpp.settings import Settings
+    from eveys_ocpp.transport._rate_limiter import RateLimiter
 
 log = get_logger(__name__)
 
@@ -44,6 +45,7 @@ async def _on_connect(
     idempotency: IdempotencyCache | None = None,
     backend_client: BackendHTTPClient | None = None,
     authorize_cache: AuthorizeCache | None = None,
+    rate_limiter: RateLimiter | None = None,
 ) -> None:
     """Per-connection coroutine. Lives for the duration of the WS."""
     if connection.subprotocol != OCPP_SUBPROTOCOL:
@@ -80,6 +82,7 @@ async def _on_connect(
         idempotency=idempotency,
         backend_client=backend_client,
         authorize_cache=authorize_cache,
+        rate_limiter=rate_limiter,
     )
     if connections is not None:
         connections.add(cp)
@@ -117,6 +120,7 @@ async def serve_forever(
     idempotency: IdempotencyCache | None = None,
     backend_client: BackendHTTPClient | None = None,
     authorize_cache: AuthorizeCache | None = None,
+    rate_limiter: RateLimiter | None = None,
 ) -> None:
     """Start the WS server and block until cancelled.
 
@@ -142,6 +146,7 @@ async def serve_forever(
             idempotency=idempotency,
             backend_client=backend_client,
             authorize_cache=authorize_cache,
+            rate_limiter=rate_limiter,
         )
 
     async with serve(

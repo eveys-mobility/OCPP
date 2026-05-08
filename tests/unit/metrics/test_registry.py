@@ -25,7 +25,7 @@ from eveys_ocpp.metrics import registry as m
 
 # Inventory total per E4-1 plan. Update both numbers if the inventory
 # grows in a future PR.
-EXPECTED_METRIC_COUNT = 53
+EXPECTED_METRIC_COUNT = 54
 
 
 def _gateway_metric_attrs() -> list[tuple[str, object]]:

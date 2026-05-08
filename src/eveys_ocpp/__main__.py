@@ -33,6 +33,7 @@ from eveys_ocpp.platform import AuthorizeCache, BackendHTTPClient
 from eveys_ocpp.registry import Registry
 from eveys_ocpp.settings import Settings, get_settings
 from eveys_ocpp.shutdown import DrainController
+from eveys_ocpp.transport._rate_limiter import RateLimiter
 from eveys_ocpp.transport.grpc_server import OcppGatewayService
 from eveys_ocpp.transport.grpc_server import serve_forever as serve_grpc_forever
 from eveys_ocpp.transport.rest_server import serve_forever as serve_rest_forever
@@ -157,6 +158,7 @@ async def _serve_all(
     idempotency: IdempotencyCache,
     backend_client: BackendHTTPClient | None,
     authorize_cache: AuthorizeCache | None,
+    rate_limiter: RateLimiter | None,
 ) -> None:
     """Run WS and gRPC servers concurrently; cancel both if either fails.
 
@@ -258,6 +260,7 @@ async def _serve_all(
                         idempotency=idempotency,
                         backend_client=backend_client,
                         authorize_cache=authorize_cache,
+                        rate_limiter=rate_limiter,
                     ),
                     name="ws_server",
                 )
@@ -393,6 +396,21 @@ def main() -> None:
     )
     idempotency = IdempotencyCache(redis_client, settings=settings)
 
+    # E5-3 per-charger rate limiter. Disabled via the kill-switch in
+    # settings; on a Redis blip the limiter fails open (see
+    # _rate_limiter.py) so a transient Redis fault doesn't DoS the
+    # fleet by mistake.
+    rate_limiter: RateLimiter | None = None
+    if settings.ws_rate_limit_enabled:
+        rate_limiter = RateLimiter(redis_client, settings=settings)
+        log.info(
+            "rate_limiter.enabled",
+            capacity=settings.ws_rate_limit_capacity,
+            refill_per_second=settings.ws_rate_limit_refill_per_second,
+        )
+    else:
+        log.info("rate_limiter.disabled")
+
     # Backend HTTP client (E3-2, ADR-0023). Empty `backend_base_url`
     # leaves it None — the OCPP handlers fall back to their stub
     # behaviour, which is what the W1 / dev-laptop stack wants.
@@ -432,6 +450,7 @@ def main() -> None:
             idempotency=idempotency,
             backend_client=backend_client,
             authorize_cache=authorize_cache,
+            rate_limiter=rate_limiter,
         )
     )
 

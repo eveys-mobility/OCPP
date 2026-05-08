@@ -28,6 +28,9 @@ from eveys_ocpp.handlers.v16 import (
     stop_transaction,
 )
 from eveys_ocpp.metrics import registry as metrics_registry
+from eveys_ocpp.observability import get_logger
+
+log = get_logger(__name__)
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -38,6 +41,7 @@ if TYPE_CHECKING:
     from eveys_ocpp.platform import AuthorizeCache, BackendHTTPClient
     from eveys_ocpp.registry import Registry
     from eveys_ocpp.settings import Settings
+    from eveys_ocpp.transport._rate_limiter import RateLimiter
 
 
 class EveysChargePoint(Cpv16):
@@ -65,6 +69,7 @@ class EveysChargePoint(Cpv16):
         idempotency: IdempotencyCache | None = None,
         backend_client: BackendHTTPClient | None = None,
         authorize_cache: AuthorizeCache | None = None,
+        rate_limiter: RateLimiter | None = None,
     ) -> None:
         super().__init__(cp_id, connection)
         self.session_factory = session_factory
@@ -74,6 +79,7 @@ class EveysChargePoint(Cpv16):
         self.idempotency = idempotency
         self.backend_client = backend_client
         self.authorize_cache = authorize_cache
+        self.rate_limiter = rate_limiter
 
     # ---- handler delegation -------------------------------------------------
     # Each handler module exports a `handle(...)` coroutine. We thin-wrap
@@ -149,7 +155,8 @@ class EveysChargePoint(Cpv16):
     # response queueing — we just observe.
 
     async def route_message(self, raw_msg: str) -> None:
-        """Tap the inbound dispatch path for the WS_MESSAGES_IN counter.
+        """Tap the inbound dispatch path for the WS_MESSAGES_IN counter
+        and the E5-3 per-charger rate limiter.
 
         We unpack twice (once here for the action label, once again
         inside `super().route_message`); a second `unpack` call on the
@@ -159,18 +166,36 @@ class EveysChargePoint(Cpv16):
         Malformed frames raise during the first unpack — we count them
         under action="_invalid" so the metric stays bounded and the
         library's own error path runs unchanged.
+
+        Rate limiting (E5-3): only **CALLs** are throttled. CALLRESULT /
+        CALLERROR are correlated responses to commands we sent;
+        throttling them would break our own RemoteStart / Reset / etc.
+        flows. On overrun the message is dropped silently — see
+        `_rate_limiter.py` for the full why.
         """
         action = "_invalid"
+        is_call = False
         try:
             msg = unpack(raw_msg)
+            is_call = msg.message_type_id == MessageType.Call
             # CALLRESULT / CALLERROR don't carry an action; bucket
             # them under "_response" to keep cardinality bounded.
-            action = msg.action if msg.message_type_id == MessageType.Call else "_response"
+            action = msg.action if is_call else "_response"
         except Exception:
             # Library logs + ignores malformed frames; we mirror by
             # tagging _invalid so the count stays visible.
             pass
         metrics_registry.WS_MESSAGES_IN_TOTAL.labels(action=action).inc()
+
+        if is_call and self.rate_limiter is not None:
+            allowed = await self.rate_limiter.check(self.id)
+            if not allowed:
+                await self.rate_limiter.record_throttled(action=action)
+                # Log carries cp_id + action so an operator can find
+                # the offender; metric label stays bounded.
+                log.warning("rate_limit.throttled", cp_id=self.id, action=action)
+                return  # drop the frame; library never sees it
+
         await super().route_message(raw_msg)
 
     async def call(
