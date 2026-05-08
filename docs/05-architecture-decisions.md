@@ -76,6 +76,7 @@ ADRs are **never deleted**. They are append-only history.
 | [0004](./adr/0004-clickhouse-timeseries-store.md) | ClickHouse as the time-series store | Accepted | 2026-04-29 |
 | [0005](./adr/0005-certification-target.md) | Certification target: OCPP 1.6 CSMS, all profiles | Accepted | 2026-04-29 |
 | [0007](./adr/0007-envoy-as-the-load-balancer.md) | Envoy as the LB (vs Nginx / NLB / HAProxy) | Accepted | 2026-05-08 |
+| [0011](./adr/0011-internal-mtls.md) | Internal mTLS: Envoy ↔ gateway | Accepted | 2026-05-08 |
 | [0015](./adr/0015-kafka-event-envelope-format.md) | Kafka event envelope format (one envelope, five topics, `cp_id` partition key) | Accepted | 2026-04-30 |
 | [0016](./adr/0016-cross-pod-command-bus.md) | Cross-pod command bus over Redis pub/sub | Accepted | 2026-04-30 |
 | [0017](./adr/0017-idempotency-cache.md) | Idempotency cache for inbound OCPP replays | Accepted | 2026-04-30 |
@@ -98,7 +99,7 @@ ADRs to be written as decisions become active:
 | 0008 | gRPC for internal API (vs REST / GraphQL) | reserved |
 | 0009 | OCPP version isolation rule (no cross-import between v16/v201/v21) | reserved |
 | 0010 | Idempotency model | written as [ADR-0017](./adr/0017-idempotency-cache.md) |
-| 0011 | Authentication strategy (Basic Auth → mTLS path) | reserved |
+| [0011](./adr/0011-internal-mtls.md) | Internal mTLS: Envoy ↔ gateway | Accepted |
 | 0012 | Rollout strategy: gated waves with per-`cp_id` allowlist | reserved |
 | [0013](./adr/0013-retention-and-archival.md) | Retention and archival for ClickHouse telemetry | Deferred |
 | 0014 | Schema Registry choice for Kafka events | reserved |

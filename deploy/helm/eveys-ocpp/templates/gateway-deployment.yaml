@@ -58,6 +58,16 @@ spec:
               value: {{ .Values.gateway.config.logJson | quote }}
             - name: EVEYS_OCPP_BACKEND_BASE_URL
               value: {{ .Values.gateway.config.backendBaseUrl | quote }}
+            {{- if .Values.gateway.mtls.enabled }}
+            - name: EVEYS_OCPP_WS_MTLS_ENABLED
+              value: "true"
+            - name: EVEYS_OCPP_WS_MTLS_CERT_PATH
+              value: /etc/eveys-ocpp/mtls/tls.crt
+            - name: EVEYS_OCPP_WS_MTLS_KEY_PATH
+              value: /etc/eveys-ocpp/mtls/tls.key
+            - name: EVEYS_OCPP_WS_MTLS_CA_PATH
+              value: /etc/eveys-ocpp/mtls/ca.crt
+            {{- end }}
             {{- if .Values.gateway.secrets.name }}
             - name: EVEYS_OCPP_DB_URL
               valueFrom:
@@ -95,3 +105,22 @@ spec:
             {{- toYaml .Values.gateway.readinessProbe | nindent 12 }}
           resources:
             {{- toYaml .Values.gateway.resources | nindent 12 }}
+          {{- if .Values.gateway.mtls.enabled }}
+          volumeMounts:
+            - name: gateway-mtls
+              mountPath: /etc/eveys-ocpp/mtls
+              readOnly: true
+          {{- end }}
+      {{- if .Values.gateway.mtls.enabled }}
+      volumes:
+        - name: gateway-mtls
+          secret:
+            secretName: {{ required "gateway.mtls.secretName must be set when gateway.mtls.enabled is true" .Values.gateway.mtls.secretName }}
+            items:
+              - key: tls.crt
+                path: tls.crt
+              - key: tls.key
+                path: tls.key
+              - key: ca.crt
+                path: ca.crt
+      {{- end }}

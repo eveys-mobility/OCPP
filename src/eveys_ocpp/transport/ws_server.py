@@ -149,11 +149,25 @@ async def serve_forever(
             rate_limiter=rate_limiter,
         )
 
+    # E5-5 — mTLS context when the operator has wired one. None
+    # means plain WS (dev / compose / e2e). The helper raises a
+    # clean error at boot if `ws_mtls_enabled=True` but a path is
+    # missing — better than a half-initialised SSLContext.
+    from eveys_ocpp.transport._tls import build_server_ssl_context
+
+    ssl_ctx = build_server_ssl_context(settings)
+
     async with serve(
         handler,
         host=settings.ws_host,
         port=settings.ws_port,
         subprotocols=[OCPP_SUBPROTOCOL],
+        ssl=ssl_ctx,
     ) as server:
-        log.info("ws.listening", host=settings.ws_host, port=settings.ws_port)
+        log.info(
+            "ws.listening",
+            host=settings.ws_host,
+            port=settings.ws_port,
+            mtls=ssl_ctx is not None,
+        )
         await server.serve_forever()
