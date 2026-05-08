@@ -210,6 +210,14 @@ sensitivity.
 | `EVEYS_OCPP_SENTRY_TRACES_SAMPLE_RATE` | `0.0` | 0.0–1.0 | tunable | no | Sentry performance / tracing sample rate. Default 0.0 — OTel (E4-3) owns tracing; Sentry's job here is errors only. Setting > 0 doubles the tracing instrumentation cost and fragments traces across two backends; only flip if you specifically want Sentry's `Performance` view. | Above 0 → Sentry SDK monkey-patches httpx / fastapi / asyncio to record spans. May overlap with OTel's instrumentation depending on import order. |
 | `EVEYS_OCPP_SENTRY_PROFILES_SAMPLE_RATE` | `0.0` | 0.0–1.0 | tunable | no | Sentry profiling sample rate. Default 0.0 (off). Profiling samples Python frames at ~100 Hz per traced transaction; ignored unless `sentry_traces_sample_rate > 0` since profiling attaches to traces. | Above 0 → SIGPROF-driven sampler runs; ~3-5% steady-state CPU overhead on traced requests. Only useful when chasing per-frame latency. |
 
+## Graceful shutdown
+
+| Variable | Default | Range | Stability | Secret | What it does | Impact of changing |
+|---|---|---|---|---|---|---|
+| `EVEYS_OCPP_SHUTDOWN_DRAIN_ENABLED` | `true` | bool | tunable | no | When True, SIGTERM/SIGINT trigger a drain phase before the TaskGroup is cancelled: `/api/v1/ready` flips to 503, the load balancer's readiness probe fails, and new WS upgrades stop being routed here. When False, signals cancel the TaskGroup immediately (legacy behaviour). | Disable only as an emergency kill-switch. Without drain, rolling deploys cause brief connection-refused windows until the LB notices the pod is gone. |
+| `EVEYS_OCPP_SHUTDOWN_READINESS_PROPAGATION_SECONDS` | `10.0` | 0.0–120.0 | tunable | no | Wall time the gateway holds between flipping `/ready` to 503 and beginning real teardown. Must be >= the load balancer's readiness probe interval x failure threshold so the LB has time to remove this pod from rotation before connections actually drop. | Too low → LB still sends new connections to a draining pod (chargers see refusals). Too high → slow rolling deploys. 10 s suits a 3 s/2-failure k8s probe. |
+| `EVEYS_OCPP_SHUTDOWN_GRACE_PERIOD_SECONDS` | `25.0` | 1.0–300.0 | tunable | no | Hard upper bound on the whole drain → teardown sequence. After this, the TaskGroup is cancelled even if drain hasn't fully completed. Set the k8s `terminationGracePeriodSeconds` to this value plus a small buffer (e.g. +5 s) so kubelet's SIGKILL doesn't beat the gateway's own clean exit. | Bounds worst-case shutdown latency. Must exceed `shutdown_readiness_propagation_seconds` with margin for TaskGroup teardown (bus stop, redis aclose, span flush). |
+
 ---
 
 ## Common operations

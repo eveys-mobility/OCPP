@@ -42,6 +42,7 @@ from eveys_ocpp.api import (
     charging_profiles,
     commands,
     health,
+    ready,
     reservations,
     timeseries,
     transactions,
@@ -66,6 +67,7 @@ if TYPE_CHECKING:
     from eveys_ocpp.clickhouse.read_client import ClickHouseReadClient
     from eveys_ocpp.registry import Registry
     from eveys_ocpp.settings import Settings
+    from eveys_ocpp.shutdown import DrainController
     from eveys_ocpp.transport.grpc_server import OcppGatewayService
 
 
@@ -77,6 +79,7 @@ def make_app(
     redis: Redis | None,
     command_service: OcppGatewayService | None = None,
     ch_client: ClickHouseReadClient | None = None,
+    drain_controller: DrainController | None = None,
 ) -> FastAPI:
     """Construct the gateway REST app.
 
@@ -154,6 +157,10 @@ def make_app(
     # without ClickHouse; the route handlers raise INTERNAL_ERROR if
     # a request reaches them with no client wired.
     app.state.ch_client = ch_client
+    # Drain controller drives `/api/v1/ready`. None is acceptable for
+    # unit tests that build the app without a shutdown lifecycle —
+    # the endpoint treats absence as "never draining".
+    app.state.drain_controller = drain_controller
 
     # Order matters: request-id MUST run before auth so the auth-reject
     # response carries the correlation id. Middlewares run in reverse
@@ -175,6 +182,7 @@ def make_app(
 
     # Routers. Each is mounted under `/api/v1` per the frozen contract.
     app.include_router(health.router, prefix="/api/v1")
+    app.include_router(ready.router, prefix="/api/v1")
     app.include_router(charge_points.router, prefix="/api/v1")
     app.include_router(transactions.router, prefix="/api/v1")
     app.include_router(reservations.router, prefix="/api/v1")

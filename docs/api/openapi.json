@@ -3041,6 +3041,28 @@
         ]
       }
     },
+    "/api/v1/ready": {
+      "get": {
+        "operationId": "ready_api_v1_ready_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Pod is accepting new connections."
+          },
+          "503": {
+            "description": "Pod is draining; load balancer should remove from rotation."
+          }
+        },
+        "summary": "Readiness probe (auth-exempt)",
+        "tags": [
+          "health"
+        ]
+      }
+    },
     "/api/v1/transactions/{transaction_id}": {
       "get": {
         "operationId": "get_transaction_route_api_v1_transactions__transaction_id__get",
