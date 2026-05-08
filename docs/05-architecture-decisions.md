@@ -99,7 +99,7 @@ ADRs to be written as decisions become active:
 | 0010 | Idempotency model | written as [ADR-0017](./adr/0017-idempotency-cache.md) |
 | 0011 | Authentication strategy (Basic Auth → mTLS path) | reserved |
 | 0012 | Rollout strategy: gated waves with per-`cp_id` allowlist | reserved |
-| 0013 | OCPP audit-log retention and archival | reserved |
+| [0013](./adr/0013-retention-and-archival.md) | Retention and archival for ClickHouse telemetry | Deferred |
 | 0014 | Schema Registry choice for Kafka events | reserved |
 
 Numbers are reserved up front so newcomers don't accidentally collide. When a reserved number's topic is picked up, write the ADR under that number rather than allocating a fresh one. (`0010` is the exception above — it was deferred until after E2-11 design crystallized, by which point the next-available slot was `0017`.)
