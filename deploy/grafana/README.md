@@ -34,7 +34,22 @@ plugin. For Docker:
 `GF_INSTALL_PLUGINS=grafana-clickhouse-datasource`. For the official
 Helm chart: `grafana.plugins: [grafana-clickhouse-datasource]`.
 
-## Mounting into Grafana (Docker)
+## Local dev: `make grafana-up`
+
+For a developer hacking on this repo, the dashboards run against the local compose stack via an opt-in sidecar:
+
+```bash
+make compose-up                 # base stack (no Grafana)
+make grafana-up                 # adds Grafana + Prometheus on the same network
+# → http://localhost:3000  (anonymous Admin, dev-only)
+make grafana-down               # tear down the sidecar, keep the rest
+```
+
+The sidecar lives in `deploy/compose/docker-compose.grafana.yml` and overlays the base compose file. See [`docs/07-local-dev-setup.md § Optional: bring up Grafana`](../../docs/07-local-dev-setup.md#optional-bring-up-grafana) for the workflow and which dashboards have data on a fresh stack.
+
+## Mounting into Grafana (Docker, your own stack)
+
+If you're not using `make grafana-up` — e.g. you already run Grafana for other workloads and just want these dashboards loaded — mount the provisioning directly:
 
 ```yaml
 # add to your own docker-compose.yml that already runs grafana

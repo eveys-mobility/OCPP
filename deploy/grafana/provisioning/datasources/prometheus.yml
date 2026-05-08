@@ -9,6 +9,11 @@ apiVersion: 1
 # Prometheus service.
 datasources:
   - name: Prometheus
+    # Stable UID — every dashboard JSON in this repo references
+    # `uid: prometheus`. Without this line Grafana auto-generates a
+    # random UID and every panel falls back to "default datasource"
+    # (or breaks outright).
+    uid: prometheus
     type: prometheus
     access: proxy
     url: ${PROMETHEUS_URL:-http://prometheus:9090}

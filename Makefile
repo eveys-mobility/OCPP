@@ -15,11 +15,18 @@ UV         ?= $(shell command -v uv)
 # substitution still uses the file when it's there.
 COMPOSE_ENV := $(if $(wildcard .env),--env-file .env,)
 COMPOSE    := docker compose -f deploy/compose/docker-compose.yml $(COMPOSE_ENV)
+# Observability sidecar (Grafana + Prometheus). Overlays the base
+# stack so Grafana joins the same Docker network and resolves the
+# datasources by service name. Opt-in via `make grafana-up`.
+COMPOSE_GRAFANA := docker compose \
+    -f deploy/compose/docker-compose.yml \
+    -f deploy/compose/docker-compose.grafana.yml \
+    $(COMPOSE_ENV)
 
 .PHONY: help doctor install format lint types tests e2e smoke compose-smoke precommit clean distclean \
         compose-up compose-down compose-status compose-down-volumes compose-wait \
         build-image protoc ch-migrate docs docs-clean config-export config-export-check config-schema \
-        openapi-export openapi-export-check audit get-token
+        openapi-export openapi-export-check audit get-token grafana-up grafana-down
 
 # ---- meta -------------------------------------------------------------------
 
@@ -47,6 +54,8 @@ help:
 	@echo "  make e2e                full e2e: compose-up + alembic + ch-migrate + e2e tests + compose-down"
 	@echo "  make compose-smoke      Tier-3 smoke: build image + bring real compose stack up + assert it stays up + drive a charger flow (see ADR-0024)"
 	@echo "  make get-token          print a bearer token from EVEYS_OCPP_REST_INBOUND_TOKENS (paste into Swagger UI Authorize)"
+	@echo "  make grafana-up         start Grafana + Prometheus sidecar on the compose network (http://localhost:3000)"
+	@echo "  make grafana-down       stop the Grafana + Prometheus sidecar (data volumes kept)"
 	@echo ""
 	@echo "Docs:"
 	@echo "  make docs               build the docs site (Sphinx + MyST)"
@@ -149,6 +158,27 @@ compose-up:
 	$(COMPOSE) up -d
 	@echo ""
 	@echo "Stack starting. Use 'make compose-status' to watch health."
+
+# Opt-in observability sidecar: Grafana + Prometheus joined to the
+# same compose network. The Grafana container pulls the ClickHouse
+# plugin on first boot — first run needs network, subsequent runs
+# read from the cached volume. The base stack must already be up
+# (`make compose-up` first) — Grafana's datasources resolve service
+# names like `prometheus` and `clickhouse` over the project network.
+grafana-up:
+	$(COMPOSE_GRAFANA) up -d prometheus grafana
+	@echo ""
+	@echo "Grafana:    http://localhost:3000  (anonymous Admin — dev only)"
+	@echo "Prometheus: http://localhost:9090"
+	@echo ""
+	@echo "Dashboards land under folder 'eveys/ocpp'. The per-charger"
+	@echo "drill-down (03) is the one most likely to have data on a fresh"
+	@echo "stack — it reads from ClickHouse, which the gateway populates"
+	@echo "as soon as a charger connects."
+
+grafana-down:
+	$(COMPOSE_GRAFANA) stop grafana prometheus
+	$(COMPOSE_GRAFANA) rm -f grafana prometheus
 
 # Print a bearer token an operator can paste into the Swagger UI's
 # "Authorize" dialog. Reads from the shell env first, then falls back
