@@ -56,6 +56,11 @@ class ChargePoint(Base):
     # charger.
     last_diagnostics_status: Mapped[str | None] = mapped_column(String(32))
     last_firmware_status: Mapped[str | None] = mapped_column(String(32))
+    # Latest LogStatusNotification status (TC_079, OCPP 1.6 Security
+    # Whitepaper §4.6). Same latest-wins shape — operators read this
+    # to know "did the security-log upload finish?". Per-event audit
+    # history lives in the Kafka topic, not here.
+    last_log_status: Mapped[str | None] = mapped_column(String(32))
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False

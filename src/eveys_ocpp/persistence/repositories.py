@@ -99,6 +99,14 @@ async def update_firmware_status(session: AsyncSession, *, cp_id: str, status: s
     )
 
 
+async def update_log_status(session: AsyncSession, *, cp_id: str, status: str) -> None:
+    """Record the latest LogStatusNotification (TC_079, OCPP 1.6
+    Security Whitepaper §4.6)."""
+    await session.execute(
+        update(ChargePoint).where(ChargePoint.cp_id == cp_id).values(last_log_status=status)
+    )
+
+
 async def record_security_event(
     session: AsyncSession,
     *,

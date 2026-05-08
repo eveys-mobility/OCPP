@@ -120,6 +120,17 @@ service OcppGateway {
   // the gateway forwards the request and translates the reply.
   // OCPP 1.6: GetCompositeSchedule.req → GetCompositeSchedule.conf.
   rpc GetCompositeSchedule(GetCompositeScheduleRequest) returns (GetCompositeScheduleResponse);
+
+  // Ask the charger to upload a log file (diagnostics OR security) to a
+  // CSMS-supplied URL. OCPP 1.6 Security Whitepaper §4.6 — required for
+  // TC_079 (security log retrieval). Sibling of GetDiagnostics; the
+  // closed `log_type` enum is what makes this distinct (without it, the
+  // operator can't fetch the security log specifically).
+  //
+  // The conf carries a status enum + optional charger-chosen filename;
+  // upload-progress transitions are surfaced via inbound
+  // LogStatusNotification → `charge_points.last_log_status`.
+  rpc GetLog(GetLogRequest) returns (GetLogResponse);
 }
 
 // -----------------------------------------------------------------------------
@@ -530,6 +541,53 @@ message GetDiagnosticsResponse {
   // Charger-chosen filename for the upload. Empty when the charger
   // declines to commit upfront (per OCPP, this field is optional).
   string file_name = 1;
+}
+
+// OCPP 1.6 Security Whitepaper §4.6 GetLog. Closed `log_type` enum
+// is the load-bearing field — operators issuing GetLog with type
+// SECURITY_LOG are how TC_079 (audit log retrieval) is satisfied.
+enum LogType {
+  LOG_TYPE_UNSPECIFIED = 0;
+  LOG_TYPE_DIAGNOSTICS = 1;
+  LOG_TYPE_SECURITY = 2;
+}
+
+message GetLogRequest {
+  string cp_id = 1;
+  LogType log_type = 2;
+  // Operator-supplied request id; charger echoes it back on every
+  // matching `LogStatusNotification` so concurrent uploads can be
+  // correlated. Required by spec.
+  int32 request_id = 3;
+  // Operator-supplied URL the charger should upload to. Required.
+  string location = 4;
+  // Optional retry parameters (charger uses defaults when zero).
+  int32 retries = 5;
+  int32 retry_interval = 6;
+  // Optional ISO-8601 UTC time-window. Charger collects log entries
+  // only within `[oldest_timestamp, latest_timestamp]`. Empty
+  // strings → unset.
+  string oldest_timestamp = 7;
+  string latest_timestamp = 8;
+}
+
+// OCPP `LogStatus` enum — the charger's immediate reply to GetLog,
+// before the upload itself starts. (Upload progress arrives later
+// via the `LogStatusNotification` inbound handler.)
+enum LogStatusEnum {
+  LOG_STATUS_UNSPECIFIED = 0;
+  LOG_STATUS_ACCEPTED = 1;
+  LOG_STATUS_REJECTED = 2;
+  // Charger has another log upload in flight; the new one was
+  // accepted but the previous one was cancelled to make room.
+  LOG_STATUS_ACCEPTED_CANCELED = 3;
+}
+
+message GetLogResponse {
+  LogStatusEnum status = 1;
+  // Charger-chosen filename for the upload. Empty when the charger
+  // declines to commit upfront (per OCPP, this field is optional).
+  string file_name = 2;
 }
 
 message UpdateFirmwareRequest {

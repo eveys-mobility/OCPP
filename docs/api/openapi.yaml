@@ -1379,6 +1379,45 @@ paths:
       summary: Get Local List Version
       tags:
       - commands
+  /api/v1/charge-points/{cp_id}/commands/get-log:
+    post:
+      description: "OCPP 1.6 Security Whitepaper §4.6 / TC_079.\n\nTell the charger\
+        \ to upload a log file. `log_type` is closed:\n`DiagnosticsLog` or `SecurityLog`.\
+        \ The whole point of this\nendpoint vs `/get-diagnostics` is the security-log\
+        \ variant —\naudit trail retrieval for compliance / incident response.\n\n\
+        Body shape:\n```json\n{\n  \"log_type\": \"SecurityLog\",\n  \"request_id\"\
+        : 42,\n  \"location\": \"https://logs.eveys.example/incoming\",\n  \"retries\"\
+        : 3,                           // optional\n  \"retry_interval\": 60,    \
+        \               // optional, seconds\n  \"oldest_timestamp\": \"2026-05-01T...\"\
+        ,   // optional, ISO-8601\n  \"latest_timestamp\": \"2026-05-08T...\"    //\
+        \ optional, ISO-8601\n}\n```"
+      operationId: get_log_api_v1_charge_points__cp_id__commands_get_log_post
+      parameters:
+      - in: path
+        name: cp_id
+        required: true
+        schema:
+          title: Cp Id
+          type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Get Log Api V1 Charge Points  Cp Id  Commands Get
+                  Log Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Get Log
+      tags:
+      - commands
   /api/v1/charge-points/{cp_id}/commands/remote-start:
     post:
       operationId: remote_start_api_v1_charge_points__cp_id__commands_remote_start_post
