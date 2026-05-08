@@ -796,6 +796,18 @@ components:
       - request_id
       title: TransactionListResponse
       type: object
+    UpdateBody:
+      description: 'PATCH body. The keys in `updates` must be allowlisted; the
+
+        values are coerced per the allowlist''s `coerce` callable.'
+      properties:
+        updates:
+          additionalProperties: true
+          description: Map of `field_name → new_value` for allowlisted fields.
+          title: Updates
+          type: object
+      title: UpdateBody
+      type: object
     ValidationError:
       properties:
         ctx:
@@ -833,6 +845,75 @@ info:
   version: 0.0.0
 openapi: 3.1.0
 paths:
+  /api/v1/admin/config:
+    get:
+      operationId: get_config_api_v1_admin_config_get
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Get Config Api V1 Admin Config Get
+                type: object
+          description: Successful Response
+      summary: GET effective runtime configuration
+      tags:
+      - admin
+    patch:
+      operationId: patch_config_api_v1_admin_config_patch
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateBody'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Patch Config Api V1 Admin Config Patch
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: PATCH allowlisted runtime overrides
+      tags:
+      - admin
+  /api/v1/admin/config/overrides/{key}:
+    delete:
+      operationId: delete_override_api_v1_admin_config_overrides__key__delete
+      parameters:
+      - in: path
+        name: key
+        required: true
+        schema:
+          title: Key
+          type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Delete Override Api V1 Admin Config Overrides  Key  Delete
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: DELETE a single runtime override (revert to env-driven default)
+      tags:
+      - admin
   /api/v1/charge-points:
     get:
       operationId: list_charge_points_route_api_v1_charge_points_get

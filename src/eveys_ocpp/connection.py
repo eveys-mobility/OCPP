@@ -187,7 +187,16 @@ class EveysChargePoint(Cpv16):
             pass
         metrics_registry.WS_MESSAGES_IN_TOTAL.labels(action=action).inc()
 
-        if is_call and self.rate_limiter is not None:
+        # Hot-checked via the runtime-override layer so an admin can
+        # flip the rate limiter without a pod restart. Default is
+        # the boot-time setting; the override takes precedence when
+        # set via PATCH /api/v1/admin/config.
+        from eveys_ocpp.runtime_overrides import get_override
+
+        rate_limit_enabled = get_override(
+            "ws_rate_limit_enabled", self.settings.ws_rate_limit_enabled
+        )
+        if is_call and self.rate_limiter is not None and rate_limit_enabled:
             allowed = await self.rate_limiter.check(self.id)
             if not allowed:
                 await self.rate_limiter.record_throttled(action=action)

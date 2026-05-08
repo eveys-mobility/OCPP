@@ -38,6 +38,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from eveys_ocpp import __version__
 from eveys_ocpp.api import (
+    admin,
     charge_points,
     charging_profiles,
     commands,
@@ -189,6 +190,7 @@ def make_app(
     app.include_router(charging_profiles.router, prefix="/api/v1")
     app.include_router(commands.router, prefix="/api/v1")
     app.include_router(timeseries.router, prefix="/api/v1")
+    app.include_router(admin.router, prefix="/api/v1")
 
     return app
 
