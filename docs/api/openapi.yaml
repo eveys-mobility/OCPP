@@ -834,6 +834,12 @@ components:
       - type
       title: ValidationError
       type: object
+  securitySchemes:
+    bearerAuth:
+      description: Static bearer token from `EVEYS_OCPP_REST_INBOUND_TOKENS` (CSV
+        allowlist). Run `make get-token` to print one from your local env.
+      scheme: bearer
+      type: http
 info:
   description: Inbound REST surface (E3-7 / E3-8). Backend services read charger and
     transaction state under `/api/v1/charge-points`, `/api/v1/transactions`, etc.,
@@ -2085,3 +2091,5 @@ paths:
       summary: Single-transaction detail
       tags:
       - transactions
+security:
+- bearerAuth: []

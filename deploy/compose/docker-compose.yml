@@ -171,12 +171,16 @@ services:
       # shell or .env at compose-up time. Empty values disable cleanly
       # (the gateway falls back to its offline policies).
       EVEYS_OCPP_REST_INBOUND_TOKENS: ${EVEYS_OCPP_REST_INBOUND_TOKENS:-}
-      # Dev-only shortcuts for the REST surface. ADR-0026 keeps both off
-      # in production: OPENAPI_ENABLED publishes the schema discovery
-      # surface; AUTH_DISABLED removes bearer-token enforcement. Setting
-      # them in the developer's `.env` is the documented dev path so a
-      # laptop can hit Swagger UI without juggling tokens.
-      EVEYS_OCPP_REST_OPENAPI_ENABLED: ${EVEYS_OCPP_REST_OPENAPI_ENABLED:-false}
+      # Dev-only shortcuts for the REST surface. ADR-0026 keeps both
+      # OFF in production: OPENAPI_ENABLED publishes the schema
+      # discovery surface; AUTH_DISABLED removes bearer-token
+      # enforcement. The COMPOSE default for OPENAPI_ENABLED is `true`
+      # so a fresh `make compose-up` already serves Swagger UI at
+      # `/api/v1/docs` — the production posture is governed by Helm /
+      # k8s, not this file. AUTH_DISABLED stays `false`: keep the
+      # bearer-token path exercised in dev (Swagger UI's "Authorize"
+      # button is the documented dev-laptop UX; see `make get-token`).
+      EVEYS_OCPP_REST_OPENAPI_ENABLED: ${EVEYS_OCPP_REST_OPENAPI_ENABLED:-true}
       EVEYS_OCPP_REST_AUTH_DISABLED: ${EVEYS_OCPP_REST_AUTH_DISABLED:-false}
       EVEYS_OCPP_BACKEND_BASE_URL: ${EVEYS_OCPP_BACKEND_BASE_URL:-}
       EVEYS_OCPP_BACKEND_TOKEN: ${EVEYS_OCPP_BACKEND_TOKEN:-}
