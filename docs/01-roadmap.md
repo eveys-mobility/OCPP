@@ -11,7 +11,7 @@
 | **2** | Full OCPP 1.6 Core | 2 weeks | All ~25 1.6 Core actions + gRPC API + Kafka events; integration tests passing |
 | **3** | Platform integration | 2 weeks | Backend REST integration: gateway calls backend `/authorize` + `/sessions/*`; gateway exposes `/api/v1/...` for read + commands; webhooks deliver async events. Specced in `docs/integration/` (ADR-0023). |
 | **4** | Observability + load test | 1 week | Dashboards live, 10k-charger swarm test passes |
-| **5** | Hardening | 2 weeks | Rate limits, reconnect-storm test, security review, pen test (core idempotency for `BootNotification`/`StopTransaction` already shipped in Phase 2 via E2-11; remaining handler-level idempotency hardening lands here) |
+| **5** | Hardening | 2 weeks | Graceful drain (rolling-deploy-safe shutdown), rate limits, reconnect-storm test, security review, pen test (core idempotency for `BootNotification`/`StopTransaction` already shipped in Phase 2 via E2-11; remaining handler-level idempotency hardening lands here) |
 | **6** | Staging soak | 1 week | 10 dev-fleet chargers running on `ocpp-gw` for 7 days, zero incidents |
 | **7** | Production rollout | 4 weeks | Wave ramp 10 → 100 → 1k → 10k → all chargers live |
 | **Parallel** | OCPP 2.0.1 + OCTT | 12 weeks (start week 4) | OCTT certification passes; 2.0.1 chargers supported |
@@ -120,6 +120,7 @@ The integration shape is documented in [`docs/integration/`](./integration/READM
 
 | Deliverable | Done when |
 |---|---|
+| Graceful drain on SIGTERM (`/api/v1/ready` flips, LB removes pod from rotation, then teardown) | Rolling restart causes no charger connection refusals |
 | Per-IP rate limit on WS upgrade (Envoy) | DoS test from one IP gets throttled |
 | Per-charger message rate cap | Flooding charger triggers backpressure, not crash |
 | Sanity-range validation on `MeterValues` | Charger reporting 100 MWh tx is quarantined |
