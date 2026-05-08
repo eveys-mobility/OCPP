@@ -26,6 +26,7 @@ Documentation for **eveys/ocpp**, the OCPP gateway service of the Eveys EV-charg
 | 15 | [OpenAPI / Swagger](./15-openapi.md) | Static spec + opt-in runtime Swagger UI — how to use both, plus the security caveat amendment to ADR-0026 | Backend team, integrators, operators |
 | 16 | [DR runbook](./16-dr-runbook.md) | Disaster-recovery drill kit — kill Postgres / Redis / pods, assert recovery against the SLOs (E5-10) | SREs, on-call |
 | 17 | [Sizing — 500–1000 CP](./17-sizing.md) | Production hardware sizing for fleets of 500–1000 chargers; minimum (1 node), middle (2 nodes), recommended (3 nodes); HA explicitly deferred | Ops, anyone provisioning staging or first-production |
+| 18 | [Charger-rollback runbook](./18-rollback-runbook.md) | Cut one specific charger off the gateway in <2 min — escalating levers (rotate, Reset.Hard, IP-block, pod-kill) with time budgets and post-action verification (E6 prep) | SREs, on-call |
 
 ## ADRs
 
@@ -160,6 +161,7 @@ The two hidden `{toctree}` directives below this section define the navigation. 
 15-openapi
 16-dr-runbook
 17-sizing
+18-rollback-runbook
 ```
 
 ```{toctree}

@@ -143,7 +143,7 @@ The integration shape is documented in [`docs/integration/`](./integration/READM
 |---|---|
 | 10 dev-fleet chargers configured against `ocpp-gw` staging endpoint | Chargers connect, heartbeat, transact for 7 days |
 | Per-charger health dashboards (error rate, msg/s, reconnects) | ✅ JSON shipped (`deploy/grafana/dashboards/03-per-charger.json` rebuilt around `$cp_id`, ClickHouse-backed). Live-against-staging validation gates on real fleet traffic in this phase. |
-| Rollback runbook tested — disconnect a charger from `ocpp-gw` in < 2 min | Drill performed and timed |
+| Rollback runbook tested — disconnect a charger from `ocpp-gw` in < 2 min | ✅ runbook drafted at [`docs/18-rollback-runbook.md`](./18-rollback-runbook.md). Timed drill against staging hardware is the remaining gate (live exercise; not code). |
 
 **Exit**: 10 real chargers run on `ocpp-gw` in staging for 7 consecutive days with zero incidents.
 
