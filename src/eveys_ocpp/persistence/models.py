@@ -455,3 +455,43 @@ class SecurityEvent(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
     tech_info: Mapped[str | None] = mapped_column(Text)
+
+
+class ChargePointCertificate(Base):
+    """Mirror of root certificates installed on a charger
+    (OCPP 1.6 Security Whitepaper §4.5, TC_075_1 / TC_075_2 / TC_076).
+
+    The charger remains the source of truth (per the
+    `local_auth_lists` convention from E2-1B); this table is the
+    operator-UI mirror — answers "what certs does this charger have?"
+    without polling. Each row is written when the gateway sees an
+    `InstallCertificate` Accepted reply, removed when it sees a
+    `DeleteCertificate` Accepted.
+
+    `sha256_hash` is the OCPP §5.1 `hash_data` identifier — used by
+    DeleteCertificate to address a specific cert without the operator
+    holding the PEM. We compute it at install-time at the gRPC
+    boundary so the column is searchable.
+    """
+
+    __tablename__ = "charge_point_certificates"
+    __table_args__ = (
+        UniqueConstraint(
+            "charge_point_id",
+            "sha256_hash",
+            name="uq_charge_point_certificates_cp_hash",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    charge_point_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("charge_points.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    certificate_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    sha256_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    pem: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )

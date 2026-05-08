@@ -1699,6 +1699,51 @@
         ]
       }
     },
+    "/api/v1/charge-points/{cp_id}/commands/certificate-signed": {
+      "post": {
+        "description": "OCPP 1.6 Security Whitepaper \u00a74.5 / TC_074. Push a signed\ncertificate chain to the charger.\n\nBody shape:\n```json\n{\n  \"certificate_chain\": \"-----BEGIN CERTIFICATE-----\\n...\\n-----BEGIN CERTIFICATE-----\\n...\"\n}\n```\n\nThe chain comes from a separate signing flow (out of gateway\nscope \u2014 see issue #112 for the deferred backend integration).\nOperators today supply the signed PEM directly.",
+        "operationId": "certificate_signed_api_v1_charge_points__cp_id__commands_certificate_signed_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cp_id",
+            "required": true,
+            "schema": {
+              "title": "Cp Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Certificate Signed Api V1 Charge Points  Cp Id  Commands Certificate Signed Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Certificate Signed",
+        "tags": [
+          "commands"
+        ]
+      }
+    },
     "/api/v1/charge-points/{cp_id}/commands/change-configuration": {
       "post": {
         "operationId": "change_configuration_api_v1_charge_points__cp_id__commands_change_configuration_post",
@@ -1870,6 +1915,51 @@
           }
         },
         "summary": "Data Transfer",
+        "tags": [
+          "commands"
+        ]
+      }
+    },
+    "/api/v1/charge-points/{cp_id}/commands/delete-certificate": {
+      "post": {
+        "description": "OCPP 1.6 Security Whitepaper \u00a74.5 / TC_076. Remove a specific\ncert from the charger by SHA-256 hash.\n\nBody shape:\n```json\n{ \"sha256_hash\": \"abc123...64-hex-chars\" }\n```\n\nThe hash is the value returned by a previous\n`/install-certificate` Accepted response. The gateway looks up\nthe stored PEM, rebuilds the OCPP \u00a75.1 `hash_data` Dict, and\ndispatches.",
+        "operationId": "delete_certificate_api_v1_charge_points__cp_id__commands_delete_certificate_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cp_id",
+            "required": true,
+            "schema": {
+              "title": "Cp Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Delete Certificate Api V1 Charge Points  Cp Id  Commands Delete Certificate Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Certificate",
         "tags": [
           "commands"
         ]
@@ -2136,6 +2226,51 @@
           }
         },
         "summary": "Get Log",
+        "tags": [
+          "commands"
+        ]
+      }
+    },
+    "/api/v1/charge-points/{cp_id}/commands/install-certificate": {
+      "post": {
+        "description": "OCPP 1.6 Security Whitepaper \u00a74.5 / TC_075. Push a root cert\nPEM to the charger.\n\nBody shape:\n```json\n{\n  \"certificate_type\": \"CentralSystemRootCertificate\",\n  \"pem\": \"-----BEGIN CERTIFICATE-----\\n...\"\n}\n```",
+        "operationId": "install_certificate_api_v1_charge_points__cp_id__commands_install_certificate_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cp_id",
+            "required": true,
+            "schema": {
+              "title": "Cp Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Install Certificate Api V1 Charge Points  Cp Id  Commands Install Certificate Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Install Certificate",
         "tags": [
           "commands"
         ]

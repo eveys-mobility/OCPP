@@ -131,6 +131,29 @@ service OcppGateway {
   // upload-progress transitions are surfaced via inbound
   // LogStatusNotification → `charge_points.last_log_status`.
   rpc GetLog(GetLogRequest) returns (GetLogResponse);
+
+  // Push a root certificate to the charger. OCPP 1.6 Security
+  // Whitepaper §4.5; TC_075_1 (Manufacturer root) / TC_075_2 (CSMS
+  // root). Operator supplies the PEM; gateway forwards verbatim and
+  // mirrors the row to `charge_point_certificates` on Accepted so the
+  // operator UI can list installed certs without polling the charger.
+  rpc InstallCertificate(InstallCertificateRequest) returns (InstallCertificateResponse);
+
+  // Remove a specific certificate from the charger by SHA-256 hash.
+  // OCPP 1.6 Security Whitepaper §4.5; TC_076. The hash is the §5.1
+  // `hash_data` identifier we recorded at InstallCertificate time;
+  // the operator just supplies the hex digest, the gateway
+  // reconstructs the spec's `hash_data` Dict.
+  rpc DeleteCertificate(DeleteCertificateRequest) returns (DeleteCertificateResponse);
+
+  // Push a signed certificate chain to the charger. OCPP 1.6 Security
+  // Whitepaper §4.5; TC_074. The matching charger-initiated
+  // SignCertificate flow (charger sends CSR → CSMS signs → CSMS pushes
+  // result via this RPC) is split: the SignCertificate handler is
+  // future work pending backend signing-service integration. Operators
+  // can still use this RPC today by supplying the signed chain
+  // directly (e.g. signed out-of-band by the platform CA tooling).
+  rpc CertificateSigned(CertificateSignedRequest) returns (CertificateSignedResponse);
 }
 
 // -----------------------------------------------------------------------------
@@ -588,6 +611,84 @@ message GetLogResponse {
   // Charger-chosen filename for the upload. Empty when the charger
   // declines to commit upfront (per OCPP, this field is optional).
   string file_name = 2;
+}
+
+// OCPP 1.6 Security Whitepaper §4.5 certificate-management types.
+// Closed `CertificateUse` distinguishes the two root-cert kinds the
+// spec defines; without it the operator can't target the right cert
+// store on the charger.
+enum CertificateUse {
+  CERTIFICATE_USE_UNSPECIFIED = 0;
+  CERTIFICATE_USE_CENTRAL_SYSTEM_ROOT = 1;
+  CERTIFICATE_USE_MANUFACTURER_ROOT = 2;
+}
+
+// OCPP `CertificateStatus` enum from InstallCertificate.conf.
+// `Failed` means the charger received the cert but couldn't process
+// it (cryptographic error); `Rejected` means policy refusal. Both
+// are non-success — operators differentiate for triage.
+enum CertificateInstallStatus {
+  CERTIFICATE_INSTALL_STATUS_UNSPECIFIED = 0;
+  CERTIFICATE_INSTALL_STATUS_ACCEPTED = 1;
+  CERTIFICATE_INSTALL_STATUS_REJECTED = 2;
+  CERTIFICATE_INSTALL_STATUS_FAILED = 3;
+}
+
+// OCPP `DeleteCertificateStatus` enum.
+enum CertificateDeleteStatus {
+  CERTIFICATE_DELETE_STATUS_UNSPECIFIED = 0;
+  CERTIFICATE_DELETE_STATUS_ACCEPTED = 1;
+  CERTIFICATE_DELETE_STATUS_FAILED = 2;
+  CERTIFICATE_DELETE_STATUS_NOT_FOUND = 3;
+}
+
+// OCPP `CertificateSignedStatus` enum (CertificateSigned.conf).
+enum CertificateSignedStatus {
+  CERTIFICATE_SIGNED_STATUS_UNSPECIFIED = 0;
+  CERTIFICATE_SIGNED_STATUS_ACCEPTED = 1;
+  CERTIFICATE_SIGNED_STATUS_REJECTED = 2;
+}
+
+message InstallCertificateRequest {
+  string cp_id = 1;
+  CertificateUse certificate_type = 2;
+  // Full PEM. Gateway treats as opaque; the charger validates
+  // signature / chain. Required.
+  string pem = 3;
+}
+
+message InstallCertificateResponse {
+  CertificateInstallStatus status = 1;
+  // SHA-256 hex digest the gateway computed at install-time. Echoed
+  // back so the operator can store it for a later DeleteCertificate
+  // without re-hashing the PEM. Empty on Rejected/Failed.
+  string sha256_hash = 2;
+}
+
+message DeleteCertificateRequest {
+  string cp_id = 1;
+  // SHA-256 hex digest of the cert to delete. Recorded at install-
+  // time on `charge_point_certificates.sha256_hash`. The OCPP
+  // `hash_data` Dict the charger expects is reconstructed at the
+  // gRPC boundary (hash_algorithm=SHA256, issuer_name_hash and
+  // serial_number from the stored row).
+  string sha256_hash = 2;
+}
+
+message DeleteCertificateResponse {
+  CertificateDeleteStatus status = 1;
+}
+
+message CertificateSignedRequest {
+  string cp_id = 1;
+  // PEM-encoded signed certificate chain — the result of a separate
+  // signing flow (out of gateway scope; see issue header). Gateway
+  // forwards verbatim. Required.
+  string certificate_chain = 2;
+}
+
+message CertificateSignedResponse {
+  CertificateSignedStatus status = 1;
 }
 
 message UpdateFirmwareRequest {

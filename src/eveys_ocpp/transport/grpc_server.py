@@ -102,6 +102,9 @@ _OCPP_CALL_DISPATCH: dict[str, type[Any]] = {
     "CancelReservation": ocpp_call.CancelReservation,
     "GetDiagnostics": ocpp_call.GetDiagnostics,
     "GetLog": ocpp_call.GetLog,
+    "InstallCertificate": ocpp_call.InstallCertificate,
+    "DeleteCertificate": ocpp_call.DeleteCertificate,
+    "CertificateSigned": ocpp_call.CertificateSigned,
     "UpdateFirmware": ocpp_call.UpdateFirmware,
     "SetChargingProfile": ocpp_call.SetChargingProfile,
     "ClearChargingProfile": ocpp_call.ClearChargingProfile,
@@ -673,6 +676,195 @@ class OcppGatewayService(gateway_grpc.OcppGatewayBase):
                 file_name=getattr(ocpp_response, "filename", "") or "",
             )
         )
+
+    async def InstallCertificate(
+        self,
+        stream: Stream[
+            gateway_pb2.InstallCertificateRequest,
+            gateway_pb2.InstallCertificateResponse,
+        ],
+    ) -> None:
+        """Push a root cert PEM to the charger (TC_075_1, TC_075_2).
+
+        On Accepted, mirror the row to `charge_point_certificates` so
+        operators can list installed certs without polling. The
+        SHA-256 hash we compute at install-time is the user-facing
+        identifier returned in the response, so a later
+        DeleteCertificate doesn't need the original PEM.
+
+        The gateway treats the PEM as opaque transport — the charger
+        validates signature / chain. We just parse enough to compute
+        the §5.1 hash_data identifier (issuer DN, public key, serial)
+        and the user-facing SHA-256 of the cert DER.
+        """
+        request = await self._recv(stream)
+        if not request.pem:
+            raise GRPCError(Status.INVALID_ARGUMENT, "pem is required")
+        if request.certificate_type == gateway_pb2.CERTIFICATE_USE_UNSPECIFIED:
+            raise GRPCError(Status.INVALID_ARGUMENT, "certificate_type is required")
+        # Parse + hash before dispatch — invalid PEM is caller error,
+        # not charger error. Avoid sending a known-bad payload.
+        from eveys_ocpp.handlers.v16 import _cert_hash
+
+        try:
+            cert = _cert_hash.parse_pem(request.pem)
+        except ValueError as exc:
+            raise GRPCError(Status.INVALID_ARGUMENT, str(exc)) from exc
+        cert_sha256 = _cert_hash.compute_cert_sha256(cert)
+
+        cert_type_value = (
+            ocpp_enums.CertificateUse.central_system_root_certificate
+            if request.certificate_type == gateway_pb2.CERTIFICATE_USE_CENTRAL_SYSTEM_ROOT
+            else ocpp_enums.CertificateUse.manufacturer_root_certificate
+        )
+        ocpp_response = await self._dispatch_ocpp_call(
+            rpc="InstallCertificate",
+            cp_id=request.cp_id,
+            ocpp_request=ocpp_call.InstallCertificate(
+                certificate_type=cert_type_value,
+                certificate=request.pem,
+            ),
+        )
+        status_str = str(getattr(ocpp_response, "status", ""))
+        status_proto = {
+            "Accepted": gateway_pb2.CERTIFICATE_INSTALL_STATUS_ACCEPTED,
+            "Rejected": gateway_pb2.CERTIFICATE_INSTALL_STATUS_REJECTED,
+            "Failed": gateway_pb2.CERTIFICATE_INSTALL_STATUS_FAILED,
+        }.get(status_str, gateway_pb2.CERTIFICATE_INSTALL_STATUS_REJECTED)
+
+        # Mirror only on Accepted — Rejected/Failed means the charger
+        # didn't take the cert; recording it would lie.
+        # Mirror only on Accepted — Rejected/Failed means the charger
+        # didn't take the cert; recording it would lie.
+        if status_proto == gateway_pb2.CERTIFICATE_INSTALL_STATUS_ACCEPTED:
+            cert_type_str = (
+                "CentralSystemRootCertificate"
+                if request.certificate_type == gateway_pb2.CERTIFICATE_USE_CENTRAL_SYSTEM_ROOT
+                else "ManufacturerRootCertificate"
+            )
+            from eveys_ocpp.persistence import repositories
+            from eveys_ocpp.persistence.db import session_scope
+
+            async with session_scope(self.session_factory) as session:
+                await repositories.upsert_charge_point_certificate(
+                    session,
+                    cp_id=request.cp_id,
+                    certificate_type=cert_type_str,
+                    sha256_hash=cert_sha256,
+                    pem=request.pem,
+                )
+        await stream.send_message(
+            gateway_pb2.InstallCertificateResponse(
+                status=status_proto,
+                sha256_hash=cert_sha256
+                if status_proto == gateway_pb2.CERTIFICATE_INSTALL_STATUS_ACCEPTED
+                else "",
+            )
+        )
+
+    async def DeleteCertificate(
+        self,
+        stream: Stream[
+            gateway_pb2.DeleteCertificateRequest,
+            gateway_pb2.DeleteCertificateResponse,
+        ],
+    ) -> None:
+        """Remove a specific cert from the charger by SHA-256 hash
+        (TC_076).
+
+        The operator passes the user-facing SHA-256 we returned at
+        InstallCertificate time. We look up the stored PEM, rebuild
+        the OCPP §5.1 `hash_data` Dict the charger expects, and
+        dispatch. On Accepted, drop the mirror row.
+        """
+        request = await self._recv(stream)
+        if not request.sha256_hash:
+            raise GRPCError(Status.INVALID_ARGUMENT, "sha256_hash is required")
+
+        from eveys_ocpp.handlers.v16 import _cert_hash
+        from eveys_ocpp.persistence import repositories
+        from eveys_ocpp.persistence.db import session_scope
+
+        async with session_scope(self.session_factory) as session:
+            pem = await repositories.get_certificate_pem_by_hash(
+                session, cp_id=request.cp_id, sha256_hash=request.sha256_hash
+            )
+        if pem is None:
+            # Operator passed a hash we never recorded. Don't dispatch
+            # — the charger would refuse a hash_data we can't build,
+            # and the operator is more likely to have a typo than the
+            # charger to have a cert we don't know about.
+            raise GRPCError(
+                Status.NOT_FOUND,
+                f"no installed certificate with sha256={request.sha256_hash}",
+            )
+
+        cert = _cert_hash.parse_pem(pem)
+        hash_data = _cert_hash.build_hash_data(cert)
+
+        ocpp_response = await self._dispatch_ocpp_call(
+            rpc="DeleteCertificate",
+            cp_id=request.cp_id,
+            ocpp_request=ocpp_call.DeleteCertificate(
+                certificate_hash_data=hash_data,
+            ),
+        )
+        status_str = str(getattr(ocpp_response, "status", ""))
+        status_proto = {
+            "Accepted": gateway_pb2.CERTIFICATE_DELETE_STATUS_ACCEPTED,
+            "Failed": gateway_pb2.CERTIFICATE_DELETE_STATUS_FAILED,
+            "NotFound": gateway_pb2.CERTIFICATE_DELETE_STATUS_NOT_FOUND,
+        }.get(status_str, gateway_pb2.CERTIFICATE_DELETE_STATUS_FAILED)
+
+        # Drop the mirror only on Accepted. NotFound on the charger
+        # side could happen if the cert was removed locally — we
+        # leave the mirror alone in that case so a subsequent
+        # operator-side investigation can see the row.
+        if status_proto == gateway_pb2.CERTIFICATE_DELETE_STATUS_ACCEPTED:
+            async with session_scope(self.session_factory) as session:
+                await repositories.delete_charge_point_certificate(
+                    session, cp_id=request.cp_id, sha256_hash=request.sha256_hash
+                )
+        await stream.send_message(gateway_pb2.DeleteCertificateResponse(status=status_proto))
+
+    async def CertificateSigned(
+        self,
+        stream: Stream[
+            gateway_pb2.CertificateSignedRequest,
+            gateway_pb2.CertificateSignedResponse,
+        ],
+    ) -> None:
+        """Push a signed certificate chain to the charger (TC_074).
+
+        The charger keeps the signed cert; the gateway does NOT
+        mirror this row to `charge_point_certificates` — that table
+        is for ROOT certs (InstallCertificate). The signed cert is
+        the charger's own identity cert; operators query it back
+        from the charger if needed via OCPP cert-listing RPCs (out
+        of scope today).
+
+        The matching charger-initiated SignCertificate flow (charger
+        sends CSR → backend signs → operator pushes via this RPC) is
+        partially supported: this RPC is the "push" half. The CSR
+        receive handler is deferred until the backend signing
+        service is wired up.
+        """
+        request = await self._recv(stream)
+        if not request.certificate_chain:
+            raise GRPCError(Status.INVALID_ARGUMENT, "certificate_chain is required")
+        ocpp_response = await self._dispatch_ocpp_call(
+            rpc="CertificateSigned",
+            cp_id=request.cp_id,
+            ocpp_request=ocpp_call.CertificateSigned(
+                certificate_chain=request.certificate_chain,
+            ),
+        )
+        status_str = str(getattr(ocpp_response, "status", ""))
+        status_proto = {
+            "Accepted": gateway_pb2.CERTIFICATE_SIGNED_STATUS_ACCEPTED,
+            "Rejected": gateway_pb2.CERTIFICATE_SIGNED_STATUS_REJECTED,
+        }.get(status_str, gateway_pb2.CERTIFICATE_SIGNED_STATUS_REJECTED)
+        await stream.send_message(gateway_pb2.CertificateSignedResponse(status=status_proto))
 
     async def UpdateFirmware(
         self,
