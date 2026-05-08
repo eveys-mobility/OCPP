@@ -111,6 +111,18 @@ jobs:
           cp deploy/envoy/certs/server.crt deploy/envoy/certs/tls.crt
           cp deploy/envoy/certs/server.key deploy/envoy/certs/tls.key
           chmod a+r deploy/envoy/certs/tls.crt deploy/envoy/certs/tls.key
+      # E5-5 — envoy.yaml's upstream cluster references
+      # /etc/envoy/upstream-certs/{tls.crt,tls.key,ca.crt}. Those
+      # paths are populated by a Helm-mounted Secret in production;
+      # in CI we stage symlinks to the same dev certs so
+      # `envoy --mode validate` finds the files.
+      - name: Stage upstream-mtls cert paths from dev certs
+        run: |
+          mkdir -p deploy/envoy/upstream-certs
+          cp deploy/envoy/certs/server.crt deploy/envoy/upstream-certs/tls.crt
+          cp deploy/envoy/certs/server.key deploy/envoy/upstream-certs/tls.key
+          cp deploy/envoy/certs/server.crt deploy/envoy/upstream-certs/ca.crt
+          chmod a+r deploy/envoy/upstream-certs/*
       - name: envoy --mode validate (k8s config)
         run: |
           docker run --rm -v "$(pwd)/deploy/envoy:/etc/envoy:ro" \

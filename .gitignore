@@ -63,3 +63,7 @@ AGENTS.md
 # scripts/gen-dev-certs.sh. Never commit; production certs come from
 # cert-manager / external-secrets, not the repo.
 deploy/envoy/certs/
+# E5-5 — upstream-cert mount path. CI stages dev certs here for
+# `envoy --mode validate`; production mounts from a Helm-provisioned
+# Secret. Never commit.
+deploy/envoy/upstream-certs/
