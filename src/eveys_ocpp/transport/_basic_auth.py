@@ -45,6 +45,12 @@ OUTCOME_MALFORMED = "malformed"
 OUTCOME_USERNAME_MISMATCH = "username_mismatch"
 OUTCOME_NO_CREDENTIAL = "no_credential"
 OUTCOME_BAD_PASSWORD = "bad_password"
+# DB lookup failed (table missing on a fresh stack, Postgres down,
+# etc.). Fail closed — return 401, log loud — rather than letting
+# the exception bubble up and become a 500 to the charger. From the
+# charger's perspective an auth-time DB outage IS a credential
+# failure: we can't prove the charger is who it says it is.
+OUTCOME_DB_ERROR = "db_error"
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,6 +82,47 @@ def _parse_basic_header(header: str | None) -> tuple[str, str] | None:
         return None
     username, _, password = decoded.partition(":")
     return username, password
+
+
+# Sentinel returned by `_lookup_or_none` when the DB lookup itself
+# failed (vs. cleanly returning "no credential row"). Distinguishing
+# the two matters: missing row in permissive mode is "let them in",
+# whereas DB error must always reject.
+_DB_ERROR = object()
+
+
+async def _lookup_or_none(
+    session_factory: async_sessionmaker[AsyncSession],
+    *,
+    cp_id: str,
+) -> str | None | object:
+    """Look up the stored bcrypt hash for `cp_id`, returning:
+
+    - the hash string if a row exists
+    - ``None`` if no row exists (clean miss)
+    - ``_DB_ERROR`` sentinel on any DB exception (table missing,
+      Postgres unreachable, etc.)
+
+    Catching at this boundary is what stops a fresh-stack
+    `UndefinedTableError` from becoming a 500 to the charger. The
+    caller maps `_DB_ERROR` to `OUTCOME_DB_ERROR` + 401 — fail
+    closed; the charger reconnects with backoff like any other
+    auth failure.
+    """
+    try:
+        async with session_factory() as session:
+            return await get_credential_hash(session, cp_id=cp_id)
+    except Exception as exc:
+        # Loud structured log so an operator sees the deploy-time
+        # mistake. The cp_id is already in the WS upgrade path so
+        # it's not a secret leak.
+        log.warning(
+            "basic_auth.db_lookup_failed",
+            cp_id=cp_id,
+            error_type=type(exc).__name__,
+            error=str(exc),
+        )
+        return _DB_ERROR
 
 
 async def verify_basic_auth(
@@ -117,8 +164,9 @@ async def verify_basic_auth(
         outcome = OUTCOME_NO_HEADER if not auth_header else OUTCOME_MALFORMED
         if settings.ws_basic_auth_required:
             return AuthResult(accepted=False, outcome=outcome)
-        async with session_factory() as session:
-            stored_hash = await get_credential_hash(session, cp_id=cp_id)
+        stored_hash = await _lookup_or_none(session_factory, cp_id=cp_id)
+        if stored_hash is _DB_ERROR:
+            return AuthResult(accepted=False, outcome=OUTCOME_DB_ERROR)
         if stored_hash is None:
             return AuthResult(accepted=True, outcome=OUTCOME_OK)
         # Charger has a credential row but didn't present creds —
@@ -130,8 +178,9 @@ async def verify_basic_auth(
     if username != cp_id:
         return AuthResult(accepted=False, outcome=OUTCOME_USERNAME_MISMATCH)
 
-    async with session_factory() as session:
-        stored_hash = await get_credential_hash(session, cp_id=cp_id)
+    stored_hash = await _lookup_or_none(session_factory, cp_id=cp_id)
+    if stored_hash is _DB_ERROR:
+        return AuthResult(accepted=False, outcome=OUTCOME_DB_ERROR)
 
     if stored_hash is None:
         # No credential row. Permissive default lets unprovisioned
@@ -141,6 +190,9 @@ async def verify_basic_auth(
             return AuthResult(accepted=False, outcome=OUTCOME_NO_CREDENTIAL)
         return AuthResult(accepted=True, outcome=OUTCOME_OK)
 
+    # By here we've ruled out _DB_ERROR (returned above) and None
+    # (the no-row branch above). Narrow for the type checker.
+    assert isinstance(stored_hash, str)
     try:
         ok = bcrypt.checkpw(password.encode("utf-8"), stored_hash.encode("utf-8"))
     except ValueError:

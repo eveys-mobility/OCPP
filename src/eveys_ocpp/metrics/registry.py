@@ -243,9 +243,11 @@ WS_BASIC_AUTH_TOTAL: Counter = Counter(
     "eveys_ocpp_ws_basic_auth_total",
     "WS-edge Basic Auth verification outcomes (E5-6). `outcome` is a "
     "closed enum: ok, no_header, malformed, username_mismatch, "
-    "no_credential, bad_password. Sustained non-`ok` rate at a stable "
-    "cp_id (visible in the structured log line, not a label) is a "
-    "credential-rotation incident or an active probe.",
+    "no_credential, bad_password, db_error. Sustained non-`ok` rate "
+    "at a stable cp_id (visible in the structured log line, not a "
+    "label) is a credential-rotation incident or an active probe. "
+    "`db_error` specifically points at a deploy-time mistake "
+    "(missing migrations, Postgres outage) — page on it.",
     labelnames=("outcome",),
 )
 
