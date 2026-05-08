@@ -24,6 +24,7 @@ from .models import (
     LocalAuthList,
     LocalAuthListEntry,
     Reservation,
+    SecurityEvent,
     Transaction,
 )
 
@@ -95,6 +96,40 @@ async def update_firmware_status(session: AsyncSession, *, cp_id: str, status: s
     """Record the latest FirmwareStatusNotification (E2-1F)."""
     await session.execute(
         update(ChargePoint).where(ChargePoint.cp_id == cp_id).values(last_firmware_status=status)
+    )
+
+
+async def record_security_event(
+    session: AsyncSession,
+    *,
+    cp_id: str,
+    event_type: str,
+    reported_at: datetime,
+    tech_info: str | None,
+) -> None:
+    """Insert a row into `security_events` for an inbound
+    SecurityEventNotification (TC_077 / TC_078, OCPP 1.6 Security
+    Whitepaper §4).
+
+    Append-only — operators read the table via the audit query
+    surface; we never UPDATE or DELETE here. If the charger doesn't
+    yet have a row in `charge_points`, the FK fails — that's
+    intentional, callers should make sure the BootNotification
+    handler has run first.
+    """
+    cp_pk = await get_charge_point_pk(session, cp_id=cp_id)
+    if cp_pk is None:
+        # Defensive: a SecurityEventNotification before BootNotification
+        # would orphan the row. Fail loud — this is a charger
+        # protocol error, not a routine retry.
+        raise ValueError(f"unknown cp_id for security event: {cp_id!r}")
+    session.add(
+        SecurityEvent(
+            charge_point_id=cp_pk,
+            event_type=event_type,
+            reported_at=reported_at,
+            tech_info=tech_info,
+        )
     )
 
 

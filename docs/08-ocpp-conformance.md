@@ -84,7 +84,7 @@ A row moves from 🟡 to ✅ only when **all** of the following are true:
 | TC_075_1 | Install ManufacturerRootCertificate | ⏳ | Phase 5 | — | |
 | TC_075_2 | Install CentralSystemRootCertificate | ⏳ | Phase 5 | — | |
 | TC_076 | Delete a specific certificate | ⏳ | Phase 5 | — | |
-| TC_078 | Invalid CentralSystemCertificate Security Event | ⏳ | Phase 5 | — | |
+| TC_078 | Invalid CentralSystemCertificate Security Event | 🟡 | [`handlers/v16/security_event_notification.py`](../src/eveys_ocpp/handlers/v16/security_event_notification.py) | [test_security_event_notification.py](../tests/unit/handlers/v16/test_security_event_notification.py) | Charger-initiated SecurityEventNotification (OCPP 1.6 Security Whitepaper §4). Audit-grade row in `security_events` (append-only, FK to `charge_points`, migration `0007`); Kafka envelope `cp.security_event` for SIEM consumers. Handler covers all 18 spec event types — TC_077 (ChargePoint cert variant) shares the same row in the Advanced Security profile section below. |
 | TC_079 | Get Security Log | ⏳ | Phase 5 | — | |
 | TC_080 | Secure Firmware Update | ⏳ | Phase 5 | — | |
 | TC_081 | Secure Firmware Update — Invalid Signature | ⏳ | Phase 5 | — | |
@@ -129,7 +129,7 @@ These are charger-initiated actions the CSMS must respond to. Appendix C tests t
 | TC ID | Scenario | Status | Implementation |
 |---|---|---|---|
 | TC_074 | Update Charge Point Certificate by request of Central System | ⏳ Phase 5 | mTLS work (E5-5) |
-| TC_077 | Invalid ChargePointCertificate Security Event | ⏳ Phase 5 | |
+| TC_077 | Invalid ChargePointCertificate Security Event | 🟡 | [`handlers/v16/security_event_notification.py`](../src/eveys_ocpp/handlers/v16/security_event_notification.py); same handler as TC_078 — charger reports `type=InvalidSecurityEventCertificate` for either the CP or CSMS variant. Tests in [test_security_event_notification.py](../tests/unit/handlers/v16/test_security_event_notification.py). |
 | TC_087 | TLS — Client-side certificate — valid certificate | ⏳ Phase 5 | |
 
 ---

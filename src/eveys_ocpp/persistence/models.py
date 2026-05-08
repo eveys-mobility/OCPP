@@ -421,3 +421,32 @@ class ChargingSchedulePeriod(Base):
     start_period: Mapped[int] = mapped_column(nullable=False)
     limit: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
     number_phases: Mapped[int | None] = mapped_column()
+
+
+class SecurityEvent(Base):
+    """One row per `SecurityEventNotification` from a charger
+    (OCPP 1.6 Security Whitepaper §4, TC_077 / TC_078).
+
+    Audit-grade log, NOT latest-wins. Operator alerting / SIEM read
+    this table for security posture. The 18 spec-defined event types
+    are stored as the charger-reported string — same forward-compat
+    convention as `charge_points.last_status` / `error_code`.
+
+    `reported_at` is the charger's claimed timestamp (untrusted per
+    AGENTS rule 7); `received_at` is the trustworthy ordering anchor.
+    """
+
+    __tablename__ = "security_events"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    charge_point_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("charge_points.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    reported_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    received_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    tech_info: Mapped[str | None] = mapped_column(Text)
