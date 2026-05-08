@@ -57,7 +57,7 @@
 
 ## Phase 2 — Full OCPP 1.6 Core (weeks 2–3)
 
-**Status**: ✅ exit gate met 2026-05-04. The remaining ~20 long-tail OCPP 1.6 Core handlers ship alongside Phase 3+ as new handlers slot into the existing pipeline. Detail in [`02-tasks.md`](./02-tasks.md#phase-2--full-ocpp-16-core).
+**Status**: ✅ exit gate met 2026-05-04. **Phase 2 Core is complete** — every charger-initiated handler and every CSMS→charger command on the OCPP 1.6 Core profile is shipped + tested ([conformance matrix](./08-ocpp-conformance.md) was refreshed in #106 / PR-pending; the previous "~20 long-tail handlers remaining" note was bookkeeping debt, not handler debt — those rows already had implementations and just hadn't been promoted from ⏳ in the matrix). What remains are the **Phase 5 security extensions** (TC_073+: certificate management, secure firmware update, security event log) — genuinely deferred. Detail in [`02-tasks.md`](./02-tasks.md#phase-2--full-ocpp-16-core).
 
 **Goal**: complete protocol coverage + clean internal API.
 
