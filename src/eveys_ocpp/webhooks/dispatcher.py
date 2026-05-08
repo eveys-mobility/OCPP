@@ -217,7 +217,10 @@ class WebhookDispatcher:
             return  # disabled event type
 
         body_bytes = json.dumps(body, separators=(",", ":")).encode("utf-8")
-        signature = compute_signature(body_bytes, self._settings.webhook_secret)
+        # E5-7: webhook_secret is a SecretStr; unwrap once at the
+        # signing boundary. compute_signature takes the raw key and
+        # never logs it.
+        signature = compute_signature(body_bytes, self._settings.webhook_secret.get_secret_value())
 
         await self._post_with_retry(
             url=url,

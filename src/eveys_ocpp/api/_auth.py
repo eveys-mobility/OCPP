@@ -60,7 +60,10 @@ def make_bearer_auth_middleware(
     (ADR-0001) so a runtime env change requires a pod restart, which
     is the same model as every other Settings-driven knob.
     """
-    allowlist = parse_token_allowlist(settings.rest_inbound_tokens)
+    # E5-7: rest_inbound_tokens is a SecretStr. Unwrap here at the
+    # parser boundary; the resulting `set[str]` lives only inside the
+    # closure, never in a Settings dump.
+    allowlist = parse_token_allowlist(settings.rest_inbound_tokens.get_secret_value())
     auth_disabled = settings.rest_auth_disabled
 
     if auth_disabled:

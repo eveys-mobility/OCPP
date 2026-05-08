@@ -70,7 +70,7 @@ def _client_against_mock(
     app = build_app(config)
     http = httpx.AsyncClient(
         base_url="http://mock/api/eveys",
-        headers={"Authorization": f"Bearer {settings.backend_token}"},
+        headers={"Authorization": f"Bearer {settings.backend_token.get_secret_value()}"},
         transport=httpx.ASGITransport(app=app),
         timeout=httpx.Timeout(settings.backend_timeout_default_seconds),
     )
@@ -81,7 +81,7 @@ def _client_against_mock(
     )
     return BackendHTTPClient(
         base_url=settings.backend_base_url,
-        token=settings.backend_token,
+        token=settings.backend_token.get_secret_value(),
         http=http,
         breaker=breaker,
         settings=settings,
@@ -97,7 +97,7 @@ def _client_with_transport(
     settings = settings or _settings_for_test()
     http = httpx.AsyncClient(
         base_url="http://mock/api/eveys",
-        headers={"Authorization": f"Bearer {settings.backend_token}"},
+        headers={"Authorization": f"Bearer {settings.backend_token.get_secret_value()}"},
         transport=httpx.MockTransport(handler),
         timeout=httpx.Timeout(settings.backend_timeout_default_seconds),
     )
@@ -108,7 +108,7 @@ def _client_with_transport(
     )
     return BackendHTTPClient(
         base_url=settings.backend_base_url,
-        token=settings.backend_token,
+        token=settings.backend_token.get_secret_value(),
         http=http,
         breaker=breaker,
         settings=settings,

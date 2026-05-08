@@ -163,9 +163,14 @@ class BackendHTTPClient:
                     "production."
                 ),
             )
+        # E5-7: backend_token is a SecretStr; unwrap once here at the
+        # HTTP boundary. The raw value is held inside the httpx client's
+        # default headers from this point on; tests assert no Settings
+        # dump leaks it.
+        token_value = settings.backend_token.get_secret_value()
         http = httpx.AsyncClient(
             base_url=settings.backend_base_url.rstrip("/"),
-            headers={"Authorization": f"Bearer {settings.backend_token}"},
+            headers={"Authorization": f"Bearer {token_value}"},
             timeout=httpx.Timeout(settings.backend_timeout_default_seconds),
             verify=settings.outbound_tls_verify,
         )
@@ -176,7 +181,7 @@ class BackendHTTPClient:
         )
         return cls(
             base_url=settings.backend_base_url,
-            token=settings.backend_token,
+            token=token_value,
             http=http,
             breaker=breaker,
             settings=settings,

@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Final
 
 from annotated_types import Ge, Le, MaxLen, MinLen
+from pydantic import SecretStr
 from pydantic.fields import FieldInfo
 from pydantic_settings import BaseSettings
 
@@ -209,6 +210,13 @@ def _format_default_for_doc(info: FieldInfo) -> str:
     default = info.default
     if default is None:
         return "(none)"
+    # E5-7: SecretStr defaults never expose the wrapped value in
+    # the doc. Even dev-grade defaults (e.g. the local Postgres DSN
+    # with `eveys:eveys`) are written as a placeholder so the
+    # committed file is uniformly safe to share. Operators still
+    # set the real value via env var.
+    if isinstance(default, SecretStr):
+        return "(empty)" if default.get_secret_value() == "" else "(secret; redacted)"
     if isinstance(default, str):
         if default == "":
             return "(empty)"

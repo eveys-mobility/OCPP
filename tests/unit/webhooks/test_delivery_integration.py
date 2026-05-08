@@ -92,7 +92,7 @@ async def test_envelope_delivers_signed_request_with_correct_headers() -> None:
     assert verify_signature(
         bytes(req.content),
         req.headers["x-eveys-signature"],
-        s.webhook_secret,
+        s.webhook_secret.get_secret_value(),
     )
 
     # Body is the JSON envelope, not the raw protobuf.

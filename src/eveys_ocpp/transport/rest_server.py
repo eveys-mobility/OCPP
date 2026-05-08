@@ -83,7 +83,9 @@ async def serve_forever(
         host=settings.rest_host,
         port=settings.rest_port,
         auth_disabled=settings.rest_auth_disabled,
-        token_count=_count_tokens(settings.rest_inbound_tokens),
+        # E5-7: SecretStr unwrap at the count boundary; token values
+        # never reach the log.
+        token_count=_count_tokens(settings.rest_inbound_tokens.get_secret_value()),
     )
     try:
         await server.serve()
