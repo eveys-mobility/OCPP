@@ -45,20 +45,30 @@ static_resources:
                 stream_idle_timeout: 0s
                 request_timeout: 0s
                 http_filters:
+                  # E5-2 — per-source-IP rate limit on WS upgrades.
+                  # See envoy.local.yaml for the full reasoning. The
+                  # k8s shape is identical so behaviour matches dev.
+                  # Reminder: with 2+ Envoy replicas, the effective
+                  # per-source cap is replicas × per-replica.
+                  # Distributed rate-limit (RLS) lands when there's
+                  # a measured need; until then this is enough for
+                  # the order-of-magnitude attacker-mitigation goal.
                   - name: envoy.filters.http.local_ratelimit
                     typed_config:
                       "@type": type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit
                       stat_prefix: ws_upgrade_local_rate_limit
                       token_bucket:
-                        max_tokens: 1000000
-                        tokens_per_fill: 1000000
-                        fill_interval: 1s
+                        max_tokens: 60
+                        tokens_per_fill: 30
+                        fill_interval: 60s
+                      local_rate_limit_per_downstream_connection: true
                       filter_enabled:
                         runtime_key: local_rate_limit_enabled
-                        default_value: { numerator: 0, denominator: HUNDRED }
+                        default_value: { numerator: 100, denominator: HUNDRED }
                       filter_enforced:
                         runtime_key: local_rate_limit_enforced
-                        default_value: { numerator: 0, denominator: HUNDRED }
+                        default_value: { numerator: 100, denominator: HUNDRED }
+                      enable_x_ratelimit_headers: DRAFT_VERSION_03
                   - name: envoy.filters.http.router
                     typed_config:
                       "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router

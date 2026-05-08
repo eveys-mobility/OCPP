@@ -60,23 +60,53 @@ static_resources:
                 stream_idle_timeout: 0s
                 request_timeout: 0s
                 http_filters:
-                  # Rate-limit filter slot is reserved for E5-2.
-                  # Disabled (no descriptors) until that task lands.
+                  # E5-2 — per-source-IP rate limit on WS upgrades.
+                  # `local_rate_limit_per_downstream_connection: true`
+                  # makes Envoy maintain a separate token bucket for
+                  # each downstream **connection** rather than a
+                  # single global bucket. Each charger TCP connection
+                  # gets its own 60-token bucket refilling at 30/min;
+                  # one chatty charger or one attacker can't starve
+                  # other connections.
+                  #
+                  # Per-connection vs strictly per-IP: a single source
+                  # IP that opens many connections gets many buckets.
+                  # In practice WS upgrade is the *first* request on
+                  # the connection, so the cap on connection birth-
+                  # rate is what matters and per-connection equals
+                  # per-IP-per-attempt. An attacker that opens
+                  # thousands of TCP connections from one IP still
+                  # gets capped because each connection's first
+                  # upgrade attempt either succeeds or fails the
+                  # filter — they can't "cycle" the bucket. For a
+                  # truly aggregated per-IP limit we'd use a
+                  # rate-limit service (RLS); deferred until measured
+                  # need (see ADR-0007 § Risks).
+                  #
+                  # Tight enough that a single attacker can't open
+                  # thousands of WS streams a minute, generous enough
+                  # that a fleet of ~50 chargers behind one NAT can
+                  # power-cycle without throttling.
                   - name: envoy.filters.http.local_ratelimit
                     typed_config:
                       "@type": type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit
                       stat_prefix: ws_upgrade_local_rate_limit
-                      # Effectively unlimited until E5-2 sets values.
                       token_bucket:
-                        max_tokens: 1000000
-                        tokens_per_fill: 1000000
-                        fill_interval: 1s
+                        max_tokens: 60
+                        tokens_per_fill: 30
+                        fill_interval: 60s
+                      local_rate_limit_per_downstream_connection: true
                       filter_enabled:
                         runtime_key: local_rate_limit_enabled
-                        default_value: { numerator: 0, denominator: HUNDRED }
+                        default_value: { numerator: 100, denominator: HUNDRED }
                       filter_enforced:
                         runtime_key: local_rate_limit_enforced
-                        default_value: { numerator: 0, denominator: HUNDRED }
+                        default_value: { numerator: 100, denominator: HUNDRED }
+                      # Set X-RateLimit-* response headers so a
+                      # legitimate client driven over the limit can
+                      # see what's happening. Less mysterious than
+                      # raw 429s.
+                      enable_x_ratelimit_headers: DRAFT_VERSION_03
                   - name: envoy.filters.http.router
                     typed_config:
                       "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
