@@ -1,26 +1,38 @@
 # Grafana provisioning
 
-Five dashboards covering the gateway's `eveys_ocpp_*` metrics, plus a
-Prometheus datasource provisioning file. These ship as deploy artifacts
-— the gateway's compose stack does not run Grafana itself; you mount
-these files into your own Grafana instance.
+Six dashboards covering the gateway's `eveys_ocpp_*` metrics + the
+per-charger event tables in ClickHouse, plus Prometheus + ClickHouse
+datasource provisioning files. These ship as deploy artifacts — the
+gateway's compose stack does not run Grafana itself; you mount these
+files into your own Grafana instance.
 
 ## What's here
 
 | File | Purpose |
 | --- | --- |
 | `provisioning/datasources/prometheus.yml` | Default Prometheus datasource (URL via `${PROMETHEUS_URL}`, defaults to `http://prometheus:9090`) |
+| `provisioning/datasources/clickhouse.yml` | ClickHouse datasource for the per-charger dashboard. Plugin: `grafana-clickhouse-datasource`. URL via `${CLICKHOUSE_HOST}` / `${CLICKHOUSE_PORT}` (default `clickhouse:9000`). |
 | `provisioning/dashboards/eveys.yml` | Auto-loads dashboards from `/var/lib/grafana/dashboards/eveys` into the `eveys/ocpp` folder |
 | `dashboards/01-fleet-overview.json` | Fleet-wide rollup — first stop when triaging |
 | `dashboards/02-per-pod.json` | One pod under the lens (templated `pod_id` picker) |
-| `dashboards/03-per-charger.json` | Per-charger context — note: handler metrics are intentionally **not** labelled by `cp_id` (cardinality), so this dashboard pairs Prometheus with logs/Postgres/ClickHouse for true per-charger drill-down |
+| `dashboards/03-per-charger.json` | Per-charger drill-down (templated `$cp_id` picker, ClickHouse-backed). Last-seen, errors/min, msg/min, status timeline, BootNotification rate, MeterValues sample rate. Phase 6 prep. |
 | `dashboards/04-reconnect-storms.json` | Reconnect / handshake / heartbeat health — the page-at-3am view |
 | `dashboards/05-transactions.json` | Charging-session lifecycle: starts, stops, Kafka publish, webhook delivery, consumer lag |
+| `dashboards/06-slos.json` | Five SLOs (E4-8 recording rules) — the contractual view |
 
-All dashboards reference the `prometheus` datasource UID. If your
-Grafana already has a Prometheus datasource with a different UID,
-either override it via this provisioning file or rename your existing
-datasource UID to `prometheus`.
+Datasource UIDs:
+
+- Prometheus → `prometheus` (used by every dashboard except 03)
+- ClickHouse → `clickhouse` (used by 03 only)
+
+If your Grafana already has Prometheus / ClickHouse datasources with
+different UIDs, either override the provisioning files here or rename
+your existing UIDs.
+
+The ClickHouse datasource needs the `grafana-clickhouse-datasource`
+plugin. For Docker:
+`GF_INSTALL_PLUGINS=grafana-clickhouse-datasource`. For the official
+Helm chart: `grafana.plugins: [grafana-clickhouse-datasource]`.
 
 ## Mounting into Grafana (Docker)
 
@@ -34,6 +46,10 @@ services:
       - ./deploy/grafana/dashboards:/var/lib/grafana/dashboards/eveys:ro
     environment:
       - PROMETHEUS_URL=http://prometheus:9090
+      - CLICKHOUSE_HOST=clickhouse
+      - CLICKHOUSE_PORT=9000
+      - CLICKHOUSE_DB=events
+      - GF_INSTALL_PLUGINS=grafana-clickhouse-datasource
 ```
 
 ## Mounting into Grafana (Kubernetes)
