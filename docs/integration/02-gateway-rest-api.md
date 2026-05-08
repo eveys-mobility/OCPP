@@ -456,6 +456,26 @@ When a downstream component is degraded, `components.<name>` becomes `degraded` 
 
 ---
 
+## `GET /api/v1/ready`
+
+Readiness probe — distinct from `/health`. Returns `200` when the pod is accepting new connections, `503` once the pod has begun draining for shutdown.
+
+```json
+{ "status": "ready", "request_id": "<uuid>" }
+```
+
+When draining (SIGTERM received, drain mechanism engaged):
+
+```json
+{ "status": "draining", "request_id": "<uuid>", "draining_for_seconds": 4.2 }
+```
+
+Auth-exempt — the load balancer's readiness probe doesn't carry a bearer token. Used by Kubernetes / Envoy / any LB that respects HTTP readiness probes: a 503 here removes the pod from the rotation pool before the process actually exits, so chargers don't get connection refusals during rolling deploys.
+
+`/health` reports component liveness (Postgres, Redis); `/ready` reports willingness to accept new connections. Monitor both.
+
+---
+
 ## Error responses
 
 Errors return a consistent shape (not the success-shape envelope):

@@ -69,7 +69,7 @@ These constraints don't fit a typical request/response service. `eveys/ocpp` is 
 ## Goals
 
 1. **Dedicated runtime for long-lived WS connections.** No shared loop with HTTP/cron workloads.
-2. **Survive rolling restarts.** No fleet-wide reconnect storms.
+2. **Survive rolling restarts.** No fleet-wide reconnect storms. Each pod exposes an auth-exempt `GET /api/v1/ready` probe that flips to 503 on SIGTERM; the load balancer drains the pod from rotation before the process exits, so chargers reconnecting during a deploy land on a healthy sibling pod without seeing connection refusals.
 3. **Linear scale-out** with charger count. From day-one fleet to 320k chargers on the same architecture.
 4. **Stable internal contract** (gRPC + Kafka). The rest of the platform doesn't touch sockets.
 5. **Observable** at per-charger granularity. Localize any incident in < 5 minutes.

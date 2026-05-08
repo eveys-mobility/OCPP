@@ -140,6 +140,15 @@ Recorded as `slo:webhook_delivery:ratio_7d`.
 
 ---
 
+## Related observability — graceful drain
+
+Not a separate SLO (the failure mode rolls up into SLO 1 — a refused charger boot during a deploy looks the same as any other refused boot in the SLI). Worth flagging because the mechanism is its own moving part:
+
+- `GET /api/v1/ready` returns 200 normally and 503 once the pod is draining. The load balancer's readiness probe reads this; a 503 removes the pod from rotation before the process exits.
+- The drain itself isn't directly metric'd today — it surfaces through the readiness endpoint and through SLO 1's acceptance ratio. If rolling deploys ever start showing as a dip in `slo:boot_acceptance:ratio_30d`, the LB-side probe interval is the first thing to check (must be ≤ `shutdown_readiness_propagation_seconds`, default 10 s).
+
+---
+
 ## What's intentionally NOT here
 
 - **Alerting on SLO breach.** Alertmanager + paging integration is its own task — deferred until on-call is staffed (Phase 7). The dashboard panels go yellow/red on breach but nothing pages.
