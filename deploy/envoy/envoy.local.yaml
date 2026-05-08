@@ -19,11 +19,13 @@
 # with ADR-0007's "consequences" section.
 
 admin:
-  # Powerful interface — bound to localhost only so the admin port
-  # never escapes the container. `docker exec envoy ...` is how an
-  # operator reaches it during dev triage.
+  # Local-dev: bound to 0.0.0.0 so the host can reach it on the
+  # mapped 19901 port for triage (`curl localhost:19901/clusters`).
+  # The Envoy distroless image ships without nc/curl/wget so
+  # docker-exec'ing a probe is impractical. Production envoy.yaml
+  # keeps the loopback-only bind.
   address:
-    socket_address: { address: 127.0.0.1, port_value: 9901 }
+    socket_address: { address: 0.0.0.0, port_value: 9901 }
 
 static_resources:
   # ---------------------------------------------------------------
@@ -194,9 +196,22 @@ static_resources:
                     # Compose service DNS — k8s production overrides
                     # this with EDS-discovered endpoints.
                     socket_address: { address: ocpp, port_value: 9000 }
+                  # `host:` in `http_health_check` only sets the HTTP
+                  # `Host` header — it does NOT change the destination
+                  # port. To health-check a different port than the
+                  # cluster's traffic port, use
+                  # `health_check_config.port_value` here on the
+                  # endpoint. We route WS traffic to :9000 (the WS
+                  # server) but health-check :8080 (the REST
+                  # /api/v1/ready endpoint).
+                  health_check_config:
+                    port_value: 8080
       # Health check the gateway's readiness endpoint (PR #43).
       # Envoy stops routing to a pod whose /api/v1/ready returns
-      # 503, which is exactly the graceful-drain signal.
+      # 503, which is exactly the graceful-drain signal. The WS
+      # server on :9000 doesn't speak HTTP, so we point Envoy at
+      # the REST surface on :8080 via `health_check_config.port_value`
+      # above.
       health_checks:
         - timeout: 2s
           interval: 3s
@@ -204,11 +219,6 @@ static_resources:
           healthy_threshold: 1
           http_health_check:
             path: /api/v1/ready
-            host: ocpp:8080
-        # The healthcheck speaks HTTP/1.1 to :8080 (REST surface),
-        # not the WS port. Envoy can't health-check a WS upgrade
-        # path directly; targeting /api/v1/ready is intentional and
-        # better — it mirrors what k8s readiness probes will use.
       # Apply slow-start to the cluster so a recovering pod ramps.
       # 60 s is generous; tune down if rolling-deploy churn is
       # well-paced and the fleet is small.

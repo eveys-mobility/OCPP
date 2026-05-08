@@ -58,6 +58,7 @@ _EXPECTED_CONTAINERS = (
     "eveys-ocpp-clickhouse",
     "eveys-ocpp-clickhouse-ingestor",
     "eveys-ocpp",
+    "eveys-ocpp-envoy",
 )
 
 # Host ports the compose file publishes. Used by tests that drive the
@@ -67,6 +68,9 @@ HOST_PG_PORT = 5432
 # Compose remaps CH HTTP from the canonical 8123 to 8124 to dodge a
 # Homebrew `clickhouse server` already on the laptop (issue #24).
 HOST_CH_HTTP_PORT = 8124
+# Envoy edge — TLS-fronted entry point + admin port.
+HOST_ENVOY_TLS_PORT = 19443
+HOST_ENVOY_ADMIN_PORT = 19901
 
 # Where the published ports actually answer. On a laptop this is
 # `localhost`. Under GitLab Docker-in-Docker the test process and the
