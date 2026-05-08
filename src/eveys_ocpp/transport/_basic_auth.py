@@ -110,7 +110,20 @@ async def verify_basic_auth(
     """
     parsed = _parse_basic_header(auth_header)
     if parsed is None:
+        # No / malformed header. In permissive mode (the dev / e2e /
+        # fleet-migration default) we still accept *if* the charger
+        # has no credential row — that's the whole point of the
+        # permissive default. Strict mode rejects unconditionally.
         outcome = OUTCOME_NO_HEADER if not auth_header else OUTCOME_MALFORMED
+        if settings.ws_basic_auth_required:
+            return AuthResult(accepted=False, outcome=outcome)
+        async with session_factory() as session:
+            stored_hash = await get_credential_hash(session, cp_id=cp_id)
+        if stored_hash is None:
+            return AuthResult(accepted=True, outcome=OUTCOME_OK)
+        # Charger has a credential row but didn't present creds —
+        # reject even in permissive mode (otherwise provisioning a
+        # password would do nothing).
         return AuthResult(accepted=False, outcome=outcome)
 
     username, password = parsed

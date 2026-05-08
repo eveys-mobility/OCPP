@@ -94,10 +94,13 @@ def settings_strict() -> Settings:
 
 
 @pytest.mark.asyncio
-async def test_no_header_is_rejected(
+async def test_no_header_in_permissive_mode_with_no_credential_accepts(
     settings_permissive: Settings,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Permissive default: a charger that doesn't send any auth and
+    has no credential row provisioned still gets through. This is the
+    fleet-migration shim — production flips ws_basic_auth_required."""
     monkeypatch.setattr(
         "eveys_ocpp.transport._basic_auth.get_credential_hash",
         AsyncMock(return_value=None),
@@ -108,12 +111,74 @@ async def test_no_header_is_rejected(
         session_factory=_session_factory_returning(None),
         settings=settings_permissive,
     )
+    assert result == AuthResult(accepted=True, outcome=OUTCOME_OK)
+
+
+@pytest.mark.asyncio
+async def test_no_header_with_provisioned_credential_rejects() -> None:
+    """Once a credential is provisioned, a missing header is a hard
+    reject — even in permissive mode. Otherwise rotating in a password
+    would do nothing."""
+    from eveys_ocpp.transport._basic_auth import hash_password
+
+    settings_permissive = Settings(ws_basic_auth_required=False)
+    stored = hash_password("hunter2")
+    import unittest.mock as _mock
+
+    with _mock.patch(
+        "eveys_ocpp.transport._basic_auth.get_credential_hash",
+        AsyncMock(return_value=stored),
+    ):
+        result = await verify_basic_auth(
+            cp_id="CP_001",
+            auth_header=None,
+            session_factory=_session_factory_returning(stored),
+            settings=settings_permissive,
+        )
     assert result == AuthResult(accepted=False, outcome=OUTCOME_NO_HEADER)
 
 
 @pytest.mark.asyncio
-async def test_malformed_header_is_rejected(
+async def test_no_header_in_strict_mode_rejects(
+    settings_strict: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Strict mode: no header → reject regardless of credential row."""
+    monkeypatch.setattr(
+        "eveys_ocpp.transport._basic_auth.get_credential_hash",
+        AsyncMock(return_value=None),
+    )
+    result = await verify_basic_auth(
+        cp_id="CP_001",
+        auth_header=None,
+        session_factory=_session_factory_returning(None),
+        settings=settings_strict,
+    )
+    assert result == AuthResult(accepted=False, outcome=OUTCOME_NO_HEADER)
+
+
+@pytest.mark.asyncio
+async def test_malformed_header_in_permissive_mode_with_no_credential_accepts(
     settings_permissive: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Same permissive-acceptance branch for a malformed header."""
+    monkeypatch.setattr(
+        "eveys_ocpp.transport._basic_auth.get_credential_hash",
+        AsyncMock(return_value=None),
+    )
+    result = await verify_basic_auth(
+        cp_id="CP_001",
+        auth_header="Bearer wrong-scheme",
+        session_factory=_session_factory_returning(None),
+        settings=settings_permissive,
+    )
+    assert result == AuthResult(accepted=True, outcome=OUTCOME_OK)
+
+
+@pytest.mark.asyncio
+async def test_malformed_header_in_strict_mode_rejects(
+    settings_strict: Settings,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
@@ -124,7 +189,7 @@ async def test_malformed_header_is_rejected(
         cp_id="CP_001",
         auth_header="Bearer wrong-scheme",
         session_factory=_session_factory_returning(None),
-        settings=settings_permissive,
+        settings=settings_strict,
     )
     assert result == AuthResult(accepted=False, outcome=OUTCOME_MALFORMED)
 
