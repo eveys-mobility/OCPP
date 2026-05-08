@@ -24,6 +24,7 @@ Documentation for **eveys/ocpp**, the OCPP gateway service of the Eveys EV-charg
 | 13 | [Load testing](./13-load-testing.md) | The `tools/load` rig — how to drive the gateway at scale and capture pass/fail evidence per the Phase 4 exit criteria (E4-6) | SREs, anyone planning a staging load run |
 | 14 | [SLOs](./14-slos.md) | The five service-level objectives the gateway commits to — SLI math, targets, windows, error budgets, breach consequences (E4-8) | SREs, on-call, leadership |
 | 15 | [OpenAPI / Swagger](./15-openapi.md) | Static spec + opt-in runtime Swagger UI — how to use both, plus the security caveat amendment to ADR-0026 | Backend team, integrators, operators |
+| 16 | [DR runbook](./16-dr-runbook.md) | Disaster-recovery drill kit — kill Postgres / Redis / pods, assert recovery against the SLOs (E5-10) | SREs, on-call |
 
 ## ADRs
 
@@ -156,6 +157,7 @@ The two hidden `{toctree}` directives below this section define the navigation. 
 13-load-testing
 14-slos
 15-openapi
+16-dr-runbook
 ```
 
 ```{toctree}

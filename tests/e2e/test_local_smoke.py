@@ -175,7 +175,7 @@ async def running_service() -> AsyncIterator[None]:
     from eveys_ocpp.transport.ws_server import serve_forever as serve_ws_forever
 
     settings = get_settings()
-    db_engine = make_engine(settings.db_url)
+    db_engine = make_engine(settings.db_url.get_secret_value())
     session_factory = make_session_factory(db_engine)
     registry = Registry.from_settings(settings)
     connections = ConnectionMap()
