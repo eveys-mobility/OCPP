@@ -50,6 +50,18 @@ jobs:
           docker --version
           docker compose version
 
+      # `deploy/envoy/certs/` is gitignored (committing dev certs would
+      # defeat the secret=True discipline). Envoy in the compose stack
+      # mounts that path read-only and crashes on boot if the keys are
+      # missing — which kills the compose-smoke job since #99 wired
+      # Envoy into `_EXPECTED_CONTAINERS`. Same step the envoy-validate
+      # job in quality.yml runs. Short cert lifetime — these only have
+      # to outlive the job.
+      - name: Generate dev certs for Envoy
+        run: |
+          bash scripts/gen-dev-certs.sh 30
+          chmod a+r deploy/envoy/certs/server.crt deploy/envoy/certs/server.key
+
       - name: Build compose images
         # Split from `make compose-smoke` so a build failure is a distinct,
         # faster signal than a stack-startup failure.
