@@ -708,7 +708,7 @@ async def test_remote_start_routes_across_two_pods_with_real_ws(redis_client: Re
     from eveys_ocpp.transport.ws_server import serve_forever as serve_ws_forever
 
     pod_a_settings = get_settings()
-    pod_a_db = make_engine(pod_a_settings.db_url)
+    pod_a_db = make_engine(pod_a_settings.db_url.get_secret_value())
     pod_a_session_factory = make_session_factory(pod_a_db)
     pod_a_registry = Registry.from_settings(pod_a_settings)
     pod_a_connections = ConnectionMap()
