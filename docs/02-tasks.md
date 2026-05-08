@@ -128,7 +128,7 @@ Integration shape locked in [ADR-0023](./adr/0023-backend-rest-integration.md) a
 | E5-5 | mTLS between internal services | Pod-to-pod requires valid cert |
 | E5-6 | Basic Auth at WS edge + per-CP password store | Bad creds rejected at edge |
 | E5-7 | Secrets in vault, mounted as env vars | No secrets in repo |
-| E5-8 | `pip-audit` + Dependabot in CI | New CVEs surface within 24h |
+| E5-8 | `pip-audit` + Dependabot in CI | ✅ done — `pip-audit` runs on PR + push to main + daily cron (06:00 UTC) via `.github/workflows/security.yml`; `make audit` mirrors it locally. Dependabot watches three ecosystems weekly: pip (pyproject), github-actions (workflow pins), docker (`deploy/Dockerfile`). Dev-dep bumps grouped into one PR/week; runtime patches grouped; minor/major runtime bumps stay individual. |
 | E5-9 | External pen test | Report received |
 | E5-10 | DR drill (kill DB / Redis / pods) | Recovery < SLO targets |
 

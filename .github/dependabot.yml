@@ -1,0 +1,85 @@
+# Dependabot config (E5-8) — weekly bumps for Python deps and the GitHub
+# Actions we pin in workflows. Pairs with `.github/workflows/security.yml`:
+# pip-audit catches *known* CVEs in what we currently have; Dependabot
+# pulls us forward so we don't sit on stale versions where a CVE
+# eventually lands.
+#
+# Cadence: weekly. Daily would generate noise without a security win
+# (pip-audit already provides the daily-CVE signal). Monthly is too slow
+# for a security-track config — by the time a Dependabot PR lands, the
+# CVE may have been public for weeks.
+#
+# Grouping reduces PR volume: a single "dev-dependencies" PR per week
+# beats five separate ruff / mypy / pytest bumps.
+
+version: 2
+
+updates:
+  # Python — driven by pyproject.toml's runtime + [dev] extras.
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Etc/UTC"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "python"
+    commit-message:
+      # Match the conventional-commit hook in pre-commit. `chore(deps)`
+      # is the closest fit: a maintenance change that touches no
+      # behaviour.
+      prefix: "chore(deps)"
+      include: "scope"
+    groups:
+      # Dev tooling moves together; one weekly PR for the whole batch.
+      dev-dependencies:
+        dependency-type: "development"
+        update-types:
+          - "minor"
+          - "patch"
+      # Runtime patches grouped so a 0.1.0 → 0.1.1 across several libs
+      # is one review, not five. Major and minor bumps stay individual
+      # so they get the attention they deserve.
+      runtime-patches:
+        dependency-type: "production"
+        update-types:
+          - "patch"
+
+  # GitHub Actions — pins like `actions/checkout@v4` get bumped here.
+  # The pinned major versions (`@v4`) accept patch updates implicitly,
+  # but Dependabot proposes the SHA-pinned form when a vulnerability
+  # in an action surfaces.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Etc/UTC"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "github-actions"
+    commit-message:
+      prefix: "chore(deps)"
+      include: "scope"
+
+  # Docker base images in deploy/. Currently only deploy/Dockerfile;
+  # Dependabot will follow the FROM directives.
+  - package-ecosystem: "docker"
+    directory: "/deploy"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Etc/UTC"
+    open-pull-requests-limit: 3
+    labels:
+      - "dependencies"
+      - "docker"
+    commit-message:
+      prefix: "chore(deps)"
+      include: "scope"

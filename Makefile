@@ -19,7 +19,7 @@ COMPOSE    := docker compose -f deploy/compose/docker-compose.yml $(COMPOSE_ENV)
 .PHONY: help doctor install format lint types tests e2e smoke compose-smoke precommit clean distclean \
         compose-up compose-down compose-status compose-down-volumes compose-wait \
         build-image protoc ch-migrate docs docs-clean config-export config-export-check config-schema \
-        openapi-export openapi-export-check
+        openapi-export openapi-export-check audit
 
 # ---- meta -------------------------------------------------------------------
 
@@ -33,6 +33,7 @@ help:
 	@echo "  make lint               run ruff check"
 	@echo "  make types              run mypy --strict on src/"
 	@echo "  make tests              full pre-commit gate: lint + types + pytest with coverage"
+	@echo "  make audit              pip-audit against resolved venv (E5-8)"
 	@echo "  make precommit          run all pre-commit hooks against every file (no commit needed)"
 	@echo ""
 	@echo "Local stack (data plane):"
@@ -122,6 +123,18 @@ types: install
 
 tests: lint types
 	$(VENV)/bin/pytest
+
+# E5-8 — pip-audit scans the resolved venv against the PyPI advisory DB
+# (PyUp / OSV). Local mirror of the CI job in .github/workflows/security.yml
+# so engineers can repro a CVE finding before pushing. Non-zero exit on
+# any unfixed advisory.
+#
+# `--skip-editable` excludes the eveys-ocpp package itself (it's installed
+# editable; pip-audit can't look it up on PyPI). The project path argument
+# tells pip-audit to audit the resolved environment from `pyproject.toml`,
+# which is the surface we actually ship.
+audit: install
+	$(VENV)/bin/pip-audit --strict --skip-editable .
 
 precommit: install
 	$(VENV)/bin/pre-commit run --all-files

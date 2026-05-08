@@ -1,0 +1,43 @@
+# Security gate (E5-8) — pip-audit scans the resolved Python environment
+# against the PyPI advisory DB (PyUp + OSV).
+#
+# Three triggers:
+#
+# 1. PR — every change runs the audit so a vulnerable transitive dep
+#    landing via dependency-bump PRs gets caught before merge.
+# 2. Push to main — defence in depth; covers direct pushes (rare per
+#    project policy) and merge commits with auto-resolved deps.
+# 3. Daily schedule (06:00 UTC) — surfaces a CVE that was disclosed
+#    after the last code change. The roadmap's Phase 5 exit gate asks
+#    for "new CVEs surface within 24h"; the daily run delivers that.
+#
+# The job is intentionally separate from `quality.yml` so a CVE finding
+# doesn't gate code-quality work, and so the daily schedule doesn't fire
+# the lint / type / config-reference jobs.
+name: security
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    # 06:00 UTC daily — chosen so it runs before EU working hours start,
+    # giving on-call a chance to triage before the team logs in.
+    - cron: "0 6 * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  pip-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-python-venv
+      - name: pip-audit
+        # `--skip-editable` excludes the eveys-ocpp package itself
+        # (installed editable; not on PyPI). The trailing `.` tells
+        # pip-audit to audit the resolved environment from
+        # `pyproject.toml` rather than re-running pip resolution.
+        # `--strict` causes any unfixed advisory to fail the job.
+        run: .venv/bin/pip-audit --strict --skip-editable .
