@@ -61,6 +61,7 @@ _CATEGORY_ORDER: Final[tuple[str, ...]] = (
     "tracing",
     "sentry",
     "shutdown",
+    "auth",
 )
 
 # Human-readable H2 heading per category. Mirrors the hand-written seed.
@@ -85,6 +86,7 @@ _SECTION_TITLES: Final[dict[str, str]] = {
     "tracing": "OpenTelemetry tracing (Phase 4 / E4-3)",
     "sentry": "Sentry error tracking (Phase 4 / E4-4)",
     "shutdown": "Graceful shutdown",
+    "auth": "User authentication (issue #84)",
 }
 
 # Optional per-section blockquote shown immediately under the H2.

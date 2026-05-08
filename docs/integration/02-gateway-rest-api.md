@@ -16,6 +16,70 @@ Read [README.md](./README.md) first for auth, correlation, and timestamp convent
 
 ---
 
+## Auth — login + logout
+
+Two coexisting bearer-token schemes:
+
+- **Static service tokens** — `EVEYS_OCPP_REST_INBOUND_TOKENS` (CSV). Long-lived, used by trusted backend services (eveys-backend). No login round-trip; just `Authorization: Bearer <token>`.
+- **Opaque user tokens** — issued by `POST /api/v1/auth/login` against username + password (or the env-only superadmin). Stored in Redis with a TTL, revocable via `POST /api/v1/auth/logout`. Per-pod scope: a token issued by pod A is honoured by pod A only. Both pods see it once cluster-wide token replication lands (future work).
+
+The middleware accepts either kind on every endpoint. `/api/v1/auth/login` and `/api/v1/health` are the only auth-exempt paths.
+
+### `POST /api/v1/auth/login`
+
+**Request**:
+
+```json
+{ "username": "alice", "password": "hunter2" }
+```
+
+**Response (`200`)**:
+
+```json
+{
+  "access_token": "<48-byte-base64url>",
+  "token_type": "Bearer",
+  "expires_at": "2026-05-08T12:34:56Z",
+  "scope": "user",
+  "request_id": "<uuid>"
+}
+```
+
+`scope` is `"superadmin"` for the env-configured root account, `"user"` for any DB-row user. Token lifetime is `EVEYS_OCPP_AUTH_TOKEN_TTL_SECONDS` (default `3600`).
+
+**Failure** — uniform `401` regardless of why (wrong password, unknown username, expired account). Detailed reason goes to the structured log only, never the wire — login is not a username-existence oracle.
+
+```json
+{ "error": "invalid credentials", "error_code": "UNAUTHORIZED", "request_id": "<uuid>" }
+```
+
+`503` if Redis is unreachable — tokens cannot be persisted, so login fails closed rather than handing out an unstorable token.
+
+### `POST /api/v1/auth/logout`
+
+Revokes the bearer token in the `Authorization` header. Static service tokens are not revocable here (they're env-driven); the endpoint returns `200` with `revoked: false` for those.
+
+**Request** — no body; the token is in the header.
+
+**Response (`200`)**:
+
+```json
+{ "revoked": true, "request_id": "<uuid>" }
+```
+
+A logout request with an unknown / expired token is rejected by the auth middleware *before* the handler runs (`401`) — this prevents `/auth/logout` from being a token-validity oracle.
+
+### Superadmin
+
+The superadmin account is configured via env, not the DB:
+
+- `EVEYS_OCPP_SUPERADMIN_USERNAME` — username string.
+- `EVEYS_OCPP_SUPERADMIN_PASSWORD_HASH` — bcrypt hash (not plaintext) of the password.
+
+This means the bootstrap path doesn't depend on a DB row. The CRUD endpoints for managing other operator accounts (PR-B, future) require a superadmin token.
+
+---
+
 ## Read endpoints
 
 ### `GET /api/v1/charge-points`

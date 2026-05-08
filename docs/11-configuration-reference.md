@@ -226,6 +226,14 @@ sensitivity.
 | `EVEYS_OCPP_SHUTDOWN_READINESS_PROPAGATION_SECONDS` | `10.0` | 0.0–120.0 | tunable | no | Wall time the gateway holds between flipping `/ready` to 503 and beginning real teardown. Must be >= the load balancer's readiness probe interval x failure threshold so the LB has time to remove this pod from rotation before connections actually drop. | Too low → LB still sends new connections to a draining pod (chargers see refusals). Too high → slow rolling deploys. 10 s suits a 3 s/2-failure k8s probe. |
 | `EVEYS_OCPP_SHUTDOWN_GRACE_PERIOD_SECONDS` | `25.0` | 1.0–300.0 | tunable | no | Hard upper bound on the whole drain → teardown sequence. After this, the TaskGroup is cancelled even if drain hasn't fully completed. Set the k8s `terminationGracePeriodSeconds` to this value plus a small buffer (e.g. +5 s) so kubelet's SIGKILL doesn't beat the gateway's own clean exit. | Bounds worst-case shutdown latency. Must exceed `shutdown_readiness_propagation_seconds` with margin for TaskGroup teardown (bus stop, redis aclose, span flush). |
 
+## User authentication (issue #84)
+
+| Variable | Default | Range | Stability | Secret | What it does | Impact of changing |
+|---|---|---|---|---|---|---|
+| `EVEYS_OCPP_SUPERADMIN_USERNAME` | (empty) | string | structural | no | Superadmin login username. Empty → no superadmin (the user system is effectively disabled). Set in production to enable the multi-tenant user UI; the matching bcrypt hash goes in `superadmin_password_hash`. | Identity that can manage every other user via /api/v1/admin/users. Treat it like a root credential — rotate the hash on staff change. |
+| `EVEYS_OCPP_SUPERADMIN_PASSWORD_HASH` | (empty) | — | structural | **yes** | bcrypt hash of the superadmin password. Operator pre-computes via `python -c 'import bcrypt; print(bcrypt.hashpw(b"...", bcrypt.gensalt()).decode())'` and sets `EVEYS_OCPP_SUPERADMIN_PASSWORD_HASH=$2b$12$...`. Plaintext-in-env is never a thing — process listings, k8s pod manifests, and pod-spec exporters all see env vars. | Empty + `superadmin_username` set is a bootstrap error and fails loud at first login attempt. Wrong hash format means every login attempt fails (bcrypt.checkpw rejects). |
+| `EVEYS_OCPP_AUTH_TOKEN_TTL_SECONDS` | `3600` | 60–86400 | tunable | no | TTL on user access tokens (Redis-backed; opaque, not JWT). Default 1 hour. Tokens expire automatically; revoke early via logout or the admin endpoint. | Lower → users re-login more often (annoying); higher → a leaked token stays usable longer. 1 hour is the standard trade-off; tighten for high-security tenants. |
+
 ---
 
 ## Common operations

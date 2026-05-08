@@ -48,6 +48,9 @@ from eveys_ocpp.api import (
     timeseries,
     transactions,
 )
+from eveys_ocpp.api import (
+    auth as auth_router,
+)
 from eveys_ocpp.api._auth import make_bearer_auth_middleware
 from eveys_ocpp.api._errors import (
     ApiError,
@@ -191,6 +194,7 @@ def make_app(
     app.include_router(commands.router, prefix="/api/v1")
     app.include_router(timeseries.router, prefix="/api/v1")
     app.include_router(admin.router, prefix="/api/v1")
+    app.include_router(auth_router.router, prefix="/api/v1")
 
     return app
 

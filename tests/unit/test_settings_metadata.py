@@ -33,6 +33,7 @@ ALLOWED_CATEGORIES = {
     "tracing",
     "sentry",
     "shutdown",
+    "auth",
 }
 
 ALLOWED_STABILITY = {"tunable", "structural", "dev-only"}

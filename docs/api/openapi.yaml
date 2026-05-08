@@ -424,6 +424,23 @@ components:
       - request_id
       title: HealthResponse
       type: object
+    LoginBody:
+      properties:
+        password:
+          maxLength: 256
+          minLength: 1
+          title: Password
+          type: string
+        username:
+          maxLength: 64
+          minLength: 1
+          title: Username
+          type: string
+      required:
+      - username
+      - password
+      title: LoginBody
+      type: object
     MeterValueSample:
       properties:
         connector_id:
@@ -914,6 +931,48 @@ paths:
       summary: DELETE a single runtime override (revert to env-driven default)
       tags:
       - admin
+  /api/v1/auth/login:
+    post:
+      operationId: login_api_v1_auth_login_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginBody'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Login Api V1 Auth Login Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Exchange username + password for an opaque access token
+      tags:
+      - auth
+  /api/v1/auth/logout:
+    post:
+      operationId: logout_api_v1_auth_logout_post
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Logout Api V1 Auth Logout Post
+                type: object
+          description: Successful Response
+      summary: Revoke the bearer token on the request
+      tags:
+      - auth
   /api/v1/charge-points:
     get:
       operationId: list_charge_points_route_api_v1_charge_points_get

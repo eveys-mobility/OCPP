@@ -421,3 +421,88 @@ class ChargingSchedulePeriod(Base):
     start_period: Mapped[int] = mapped_column(nullable=False)
     limit: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
     number_phases: Mapped[int | None] = mapped_column()
+
+
+# ---- User accounts (multi-tenant operator UI; issue #84 PR-A) -----------
+
+
+class User(Base):
+    """One row per operator account that logs in via username + password.
+
+    The superadmin is NOT in this table — superadmin lives in env via
+    `Settings.superadmin_username` + `superadmin_password_hash` so the
+    bootstrap doesn't depend on a DB row. Every other user is a row
+    here, managed by the superadmin via the admin endpoints (PR-B).
+
+    `expires_at` denies new logins past the timestamp; existing tokens
+    stay valid until their own Redis TTL elapses. Revoke the token
+    directly to kill an active session immediately.
+    """
+
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    username: Mapped[str] = mapped_column(String(64), unique=True, index=True, nullable=False)
+    password_hash: Mapped[str] = mapped_column(String(128), nullable=False)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    # Per-user webhook URL (issue #84). PR-B surfaces it on the
+    # CRUD endpoints; a future PR wires the webhook dispatcher to
+    # fan out events per-user (in addition to the existing
+    # service-level webhooks the eveys-backend consumes). String
+    # length matches `webhook_url_*` settings in `settings.py`.
+    webhook_url: Mapped[str | None] = mapped_column(Text)
+
+    # Incident-alert contact channels (issue #84). Used by the alert
+    # dispatcher when a charger this user owns goes offline / faults
+    # / etc. Both email and phone are nullable: a tenant may opt out
+    # of one channel. `contact_name` is the display name used in
+    # alert templates ("Hi {contact_name}, …").
+    email: Mapped[str | None] = mapped_column(String(254))
+    phone: Mapped[str | None] = mapped_column(String(32))
+    contact_name: Mapped[str | None] = mapped_column(String(128))
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    chargers: Mapped[list[UserChargePoint]] = relationship(
+        back_populates="user", cascade="all, delete-orphan"
+    )
+
+
+class UserChargePoint(Base):
+    """Many-to-many: which chargers a user is allowed to see.
+
+    PR-C wires the read-endpoint filtering off this table. Superadmin
+    and service-token callers bypass it; only regular users are
+    filtered.
+    """
+
+    __tablename__ = "user_charge_points"
+    __table_args__ = (
+        UniqueConstraint("user_id", "charge_point_id", name="uq_user_charge_points_pair"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    charge_point_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("charge_points.id", ondelete="CASCADE"),
+        index=True,
+        nullable=False,
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    user: Mapped[User] = relationship(back_populates="chargers")

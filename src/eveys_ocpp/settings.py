@@ -1732,6 +1732,67 @@ class Settings(BaseSettings):
         },
     )
 
+    # ---- User auth (issue #84 PR-A) -------------------------------------
+    superadmin_username: str = Field(
+        default="",
+        description=(
+            "Superadmin login username. Empty → no superadmin (the user "
+            "system is effectively disabled). Set in production to enable "
+            "the multi-tenant user UI; the matching bcrypt hash goes in "
+            "`superadmin_password_hash`."
+        ),
+        json_schema_extra={
+            "category": "auth",
+            "impact": (
+                "Identity that can manage every other user via /api/v1/admin/users. "
+                "Treat it like a root credential — rotate the hash on staff change."
+            ),
+            "secret": False,
+            "stability": "structural",
+        },
+    )
+    superadmin_password_hash: SecretStr = Field(
+        default=SecretStr(""),
+        description=(
+            "bcrypt hash of the superadmin password. Operator pre-"
+            "computes via `python -c 'import bcrypt; "
+            'print(bcrypt.hashpw(b"...", bcrypt.gensalt()).decode())\'` '
+            "and sets `EVEYS_OCPP_SUPERADMIN_PASSWORD_HASH=$2b$12$...`. "
+            "Plaintext-in-env is never a thing — process listings, "
+            "k8s pod manifests, and pod-spec exporters all see env vars."
+        ),
+        json_schema_extra={
+            "category": "auth",
+            "impact": (
+                "Empty + `superadmin_username` set is a bootstrap error and "
+                "fails loud at first login attempt. Wrong hash format means "
+                "every login attempt fails (bcrypt.checkpw rejects)."
+            ),
+            "secret": True,
+            "stability": "structural",
+        },
+    )
+    auth_token_ttl_seconds: int = Field(
+        default=3600,
+        ge=60,
+        le=86_400,
+        description=(
+            "TTL on user access tokens (Redis-backed; opaque, not JWT). "
+            "Default 1 hour. Tokens expire automatically; revoke early via "
+            "logout or the admin endpoint."
+        ),
+        json_schema_extra={
+            "category": "auth",
+            "impact": (
+                "Lower → users re-login more often (annoying); higher → a "
+                "leaked token stays usable longer. 1 hour is the standard "
+                "trade-off; tighten for high-security tenants."
+            ),
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+
 
 def get_settings() -> Settings:
     """Build a fresh `Settings` from the current environment.
