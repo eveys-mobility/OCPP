@@ -1,166 +1,284 @@
 {
-  "annotations": {
+  "title": "eveys/ocpp — Per-charger drill-down",
+  "uid": "eveys-ocpp-per-charger",
+  "schemaVersion": 38,
+  "version": 1,
+  "editable": true,
+  "graphTooltip": 1,
+  "refresh": "1m",
+  "time": {
+    "from": "now-24h",
+    "to": "now"
+  },
+  "tags": ["eveys-ocpp", "per-charger", "phase-6"],
+  "templating": {
     "list": [
       {
-        "builtIn": 1,
-        "datasource": {"type": "grafana", "uid": "-- Grafana --"},
-        "enable": true,
-        "hide": true,
-        "iconColor": "rgba(0, 211, 255, 1)",
-        "name": "Annotations & Alerts",
-        "type": "dashboard"
+        "name": "cp_id",
+        "type": "query",
+        "datasource": {
+          "type": "grafana-clickhouse-datasource",
+          "uid": "clickhouse"
+        },
+        "query": {
+          "rawSql": "SELECT DISTINCT cp_id FROM cp_status WHERE occurred_at >= now() - INTERVAL 30 DAY ORDER BY cp_id",
+          "format": 1
+        },
+        "refresh": 1,
+        "includeAll": false,
+        "multi": false,
+        "label": "charger",
+        "current": {
+          "text": "",
+          "value": ""
+        },
+        "description": "Pick a charger that has been active in the last 30 days. The list is bounded by the cp_status partition window — chargers older than that need a longer lookup."
       }
     ]
   },
-  "description": "One charge point under the lens. Drill into a specific cp_id when an operator says 'this charger is misbehaving' — answers 'what's this charger sending, how is it being routed, are its writes succeeding?' NOTE: handler/registry metrics are NOT labelled by cp_id (that would blow up cardinality), so this dashboard mostly shows aggregated views filtered by labels we DO carry: action, endpoint, topic.",
-  "editable": true,
-  "fiscalYearStartMonth": 0,
-  "graphTooltip": 1,
-  "links": [
-    {"title": "Fleet overview", "type": "link", "url": "/d/eveys-ocpp-fleet", "targetBlank": false}
-  ],
-  "liveNow": false,
   "panels": [
     {
-      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "id": 1,
       "type": "text",
-      "gridPos": {"h": 3, "w": 24, "x": 0, "y": 0},
-      "id": 100,
+      "title": "",
+      "gridPos": {"h": 4, "w": 24, "x": 0, "y": 0},
       "options": {
         "mode": "markdown",
-        "content": "**Per-charger view caveat.** OCPP metrics in this stack are deliberately **not** labelled by `cp_id` — a single warehouse can run thousands of chargers, and a per-`cp_id` Prometheus series for every action/outcome combo would explode cardinality. To trace one charger end-to-end, **also** check:\n\n- **Logs** — `kubectl logs -l app=eveys-ocpp -f | jq 'select(.cp_id==\"<cp_id>\")'`\n- **Postgres** — `SELECT * FROM charge_points WHERE cp_id = '<cp_id>'; SELECT * FROM transactions WHERE charge_point_id = '<cp_id>' ORDER BY id DESC LIMIT 10;`\n- **ClickHouse** — `SELECT * FROM cp.meter WHERE cp_id = '<cp_id>' ORDER BY ts DESC LIMIT 50;`\n\nThe panels below show fleet-wide aggregates that contextualise the single-charger picture you'll build from logs + DB."
+        "content": "## Per-charger drill-down\n\nProduction Prometheus metrics deliberately carry **no `cp_id` label** (cardinality blow-up at 1000+ chargers; see `src/eveys_ocpp/metrics/registry.py`). Per-charger panels here read directly from the ClickHouse event tables (`cp_boot`, `cp_status`, `cp_meter`, `tx_started`) that the gateway's Kafka→CH ingestor writes (E2-13, E2-14).\n\nUse this dashboard to drill into a specific charger after the fleet view (01) flagged it. **Last seen** is the cheapest liveness signal — Prometheus's `eveys_ocpp_registry_online_chargers` is fleet-wide, so the per-charger online state is inferred from recent activity rather than a presence ping."
       }
     },
     {
-      "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "unit": "ops"}},
-      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 3},
-      "id": 1,
-      "title": "Inbound CALL rate by action (fleet)",
-      "type": "timeseries",
-      "options": {"legend": {"displayMode": "table", "placement": "right"}},
-      "targets": [
-        {
-          "expr": "sum by (action) (rate(eveys_ocpp_ws_messages_in_total[1m]))",
-          "legendFormat": "{{action}}",
-          "refId": "A",
-          "datasource": {"type": "prometheus", "uid": "prometheus"}
-        }
-      ]
-    },
-    {
-      "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "unit": "ops"}},
-      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 3},
       "id": 2,
-      "title": "StatusNotification by status (fleet)",
-      "type": "timeseries",
-      "options": {"legend": {"displayMode": "table", "placement": "right"}},
+      "type": "stat",
+      "title": "Last seen",
+      "description": "Most recent occurred_at across cp_status / cp_meter for this charger. A green colour means activity in the last 5 min; yellow within the hour; red after.",
+      "gridPos": {"h": 5, "w": 6, "x": 0, "y": 4},
+      "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "dateTimeFromNow",
+          "color": {"mode": "thresholds"},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "red", "value": null},
+              {"color": "yellow", "value": -3600},
+              {"color": "green", "value": -300}
+            ]
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "textMode": "value",
+        "colorMode": "background"
+      },
       "targets": [
         {
-          "expr": "sum by (status, error_code) (rate(eveys_ocpp_status_notifications_total[5m]))",
-          "legendFormat": "{{status}} ({{error_code}})",
           "refId": "A",
-          "datasource": {"type": "prometheus", "uid": "prometheus"}
+          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+          "rawSql": "SELECT max(occurred_at) AS last_seen FROM (SELECT occurred_at FROM cp_status WHERE cp_id = '$cp_id' UNION ALL SELECT occurred_at FROM cp_meter WHERE cp_id = '$cp_id') WHERE occurred_at >= now() - INTERVAL 7 DAY",
+          "format": 1
         }
       ]
     },
     {
-      "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "unit": "ops"}},
-      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 12},
       "id": 3,
-      "title": "Authorize results (accepted / invalid / expired / blocked / concurrent)",
-      "type": "timeseries",
-      "options": {"legend": {"displayMode": "table", "placement": "right"}},
+      "type": "stat",
+      "title": "Boots in window",
+      "description": "BootNotification events for this charger in the dashboard time range. Many boots in a tight window = power-cycle storm or firmware loop.",
+      "gridPos": {"h": 5, "w": 6, "x": 6, "y": 4},
+      "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {"mode": "thresholds"},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "yellow", "value": 5},
+              {"color": "red", "value": 20}
+            ]
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "textMode": "value"
+      },
       "targets": [
         {
-          "expr": "sum by (status) (rate(eveys_ocpp_authorize_total[5m]))",
-          "legendFormat": "{{status}}",
           "refId": "A",
-          "datasource": {"type": "prometheus", "uid": "prometheus"}
+          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+          "rawSql": "SELECT count() FROM cp_boot WHERE cp_id = '$cp_id' AND occurred_at >= $__fromTime AND occurred_at <= $__toTime",
+          "format": 1
         }
       ]
     },
     {
-      "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "unit": "ops"}},
-      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 12},
       "id": 4,
-      "title": "Authorize cache hits vs misses",
-      "type": "timeseries",
-      "options": {"legend": {"displayMode": "table", "placement": "right"}},
+      "type": "stat",
+      "title": "Transactions started",
+      "description": "StartTransaction count for this charger across the dashboard window.",
+      "gridPos": {"h": 5, "w": 6, "x": 12, "y": 4},
+      "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+      "fieldConfig": {
+        "defaults": {"unit": "short"}
+      },
+      "options": {
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "textMode": "value"
+      },
       "targets": [
         {
-          "expr": "sum(rate(eveys_ocpp_authorize_cache_hits_total[5m]))",
-          "legendFormat": "hits",
           "refId": "A",
-          "datasource": {"type": "prometheus", "uid": "prometheus"}
-        },
-        {
-          "expr": "sum(rate(eveys_ocpp_authorize_cache_misses_total[5m]))",
-          "legendFormat": "misses",
-          "refId": "B",
-          "datasource": {"type": "prometheus", "uid": "prometheus"}
+          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+          "rawSql": "SELECT count() FROM tx_started WHERE cp_id = '$cp_id' AND occurred_at >= $__fromTime AND occurred_at <= $__toTime",
+          "format": 1
         }
       ]
     },
     {
-      "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "unit": "ops"}},
-      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 21},
       "id": 5,
-      "title": "Start / Stop transactions",
-      "type": "timeseries",
-      "options": {"legend": {"displayMode": "table", "placement": "right"}},
+      "type": "stat",
+      "title": "Errors in window",
+      "description": "StatusNotification rows where error_code != 'NoError'. Sustained non-zero = page-worthy.",
+      "gridPos": {"h": 5, "w": 6, "x": 18, "y": 4},
+      "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {"mode": "thresholds"},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "yellow", "value": 1},
+              {"color": "red", "value": 10}
+            ]
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "textMode": "value",
+        "colorMode": "background"
+      },
       "targets": [
         {
-          "expr": "sum(rate(eveys_ocpp_start_transactions_total[5m]))",
-          "legendFormat": "starts",
           "refId": "A",
-          "datasource": {"type": "prometheus", "uid": "prometheus"}
-        },
-        {
-          "expr": "sum by (reason) (rate(eveys_ocpp_stop_transactions_total[5m]))",
-          "legendFormat": "stops ({{reason}})",
-          "refId": "B",
-          "datasource": {"type": "prometheus", "uid": "prometheus"}
+          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+          "rawSql": "SELECT count() FROM cp_status WHERE cp_id = '$cp_id' AND error_code != 'NoError' AND occurred_at >= $__fromTime AND occurred_at <= $__toTime",
+          "format": 1
         }
       ]
     },
     {
-      "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "unit": "ops"}},
-      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 21},
       "id": 6,
-      "title": "MeterValues — messages & individual samples",
       "type": "timeseries",
-      "options": {"legend": {"displayMode": "table", "placement": "right"}},
+      "title": "Inbound message rate (msg/min)",
+      "description": "All inbound traffic for this charger: StatusNotifications + MeterValues + BootNotifications, bucketed per minute. Watch for sustained zeros (silent charger) or spikes (chatty charger / loop).",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 9},
+      "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+      "fieldConfig": {
+        "defaults": {"unit": "mpm", "custom": {"drawStyle": "line", "lineInterpolation": "linear", "fillOpacity": 10}}
+      },
+      "options": {"legend": {"showLegend": true, "displayMode": "table", "placement": "bottom"}},
       "targets": [
         {
-          "expr": "sum(rate(eveys_ocpp_meter_values_total[5m]))",
-          "legendFormat": "messages",
           "refId": "A",
-          "datasource": {"type": "prometheus", "uid": "prometheus"}
-        },
+          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+          "rawSql": "SELECT toStartOfMinute(occurred_at) AS t, 'status' AS source, count() AS c FROM cp_status WHERE cp_id = '$cp_id' AND $__timeFilter(occurred_at) GROUP BY t UNION ALL SELECT toStartOfMinute(occurred_at) AS t, 'meter' AS source, count() AS c FROM cp_meter WHERE cp_id = '$cp_id' AND $__timeFilter(occurred_at) GROUP BY t UNION ALL SELECT toStartOfMinute(occurred_at) AS t, 'boot' AS source, count() AS c FROM cp_boot WHERE cp_id = '$cp_id' AND $__timeFilter(occurred_at) GROUP BY t ORDER BY t",
+          "format": 0
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Error rate (errors/min)",
+      "description": "StatusNotifications with non-NoError error_code, per minute. Annotated by error_code so a flapping vendor_error pattern is visible.",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 9},
+      "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+      "fieldConfig": {
+        "defaults": {"unit": "errors/min", "custom": {"drawStyle": "line", "lineInterpolation": "linear", "fillOpacity": 10}}
+      },
+      "options": {"legend": {"showLegend": true, "displayMode": "table", "placement": "bottom"}},
+      "targets": [
         {
-          "expr": "sum(rate(eveys_ocpp_meter_value_samples_total[5m]))",
-          "legendFormat": "samples",
-          "refId": "B",
-          "datasource": {"type": "prometheus", "uid": "prometheus"}
+          "refId": "A",
+          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+          "rawSql": "SELECT toStartOfMinute(occurred_at) AS t, error_code, count() AS c FROM cp_status WHERE cp_id = '$cp_id' AND error_code != 'NoError' AND $__timeFilter(occurred_at) GROUP BY t, error_code ORDER BY t",
+          "format": 0
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "state-timeline",
+      "title": "Status by connector",
+      "description": "Each connector's StatusNotification stream — Available / Preparing / Charging / Faulted / Unavailable etc. The whole story of what the charger has been doing in one strip.",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 17},
+      "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+      "fieldConfig": {
+        "defaults": {"custom": {"fillOpacity": 80, "lineWidth": 0}}
+      },
+      "options": {
+        "showValue": "auto",
+        "alignValue": "left",
+        "rowHeight": 0.9,
+        "mergeValues": true,
+        "legend": {"showLegend": true, "displayMode": "list", "placement": "bottom"}
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+          "rawSql": "SELECT occurred_at AS t, concat('connector_', toString(connector_id)) AS connector, status FROM cp_status WHERE cp_id = '$cp_id' AND $__timeFilter(occurred_at) ORDER BY t",
+          "format": 0
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Reconnects (BootNotifications/min)",
+      "description": "BootNotification rate for this charger. Spikes correlate with power glitches, network instability, or firmware reboot loops. The gateway's idempotency cache de-duplicates retries (E2-11), so each row here is a logical boot, not a retry.",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 25},
+      "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+      "fieldConfig": {
+        "defaults": {"unit": "boots/min", "custom": {"drawStyle": "bars", "lineWidth": 1, "fillOpacity": 60}}
+      },
+      "options": {"legend": {"showLegend": false}},
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+          "rawSql": "SELECT toStartOfMinute(occurred_at) AS t, count() AS boots FROM cp_boot WHERE cp_id = '$cp_id' AND $__timeFilter(occurred_at) GROUP BY t ORDER BY t",
+          "format": 0
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "MeterValues sample rate (samples/min)",
+      "description": "Charger-reported MeterValues rate. Every transaction-active charger should be reporting — a flat zero during what should be a charging session is a clue.",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 25},
+      "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+      "fieldConfig": {
+        "defaults": {"unit": "samples/min", "custom": {"drawStyle": "line", "lineInterpolation": "linear", "fillOpacity": 10}}
+      },
+      "options": {"legend": {"showLegend": false}},
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+          "rawSql": "SELECT toStartOfMinute(occurred_at) AS t, count() AS samples FROM cp_meter WHERE cp_id = '$cp_id' AND $__timeFilter(occurred_at) GROUP BY t ORDER BY t",
+          "format": 0
         }
       ]
     }
-  ],
-  "refresh": "30s",
-  "schemaVersion": 38,
-  "tags": ["eveys", "ocpp", "charger"],
-  "templating": {"list": []},
-  "time": {"from": "now-1h", "to": "now"},
-  "timepicker": {},
-  "timezone": "",
-  "title": "eveys/ocpp — Per-charger context",
-  "uid": "eveys-ocpp-charger",
-  "version": 1,
-  "weekStart": ""
+  ]
 }

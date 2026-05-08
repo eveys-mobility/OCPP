@@ -1,0 +1,38 @@
+apiVersion: 1
+
+# ClickHouse datasource — required by `dashboards/03-per-charger.json`
+# for true per-cp_id drill-down. Per-charger metrics deliberately
+# carry NO cp_id Prometheus label (cardinality bomb at 1000+
+# chargers; see `src/eveys_ocpp/metrics/registry.py`), so per-charger
+# panels read the same data straight from the `cp_meter` /
+# `cp_status` tables that the gateway's Kafka→ClickHouse ingestor
+# writes (E2-13, E2-14).
+#
+# Plugin: `grafana-clickhouse-datasource` (Altinity's official). The
+# operator's Grafana must have it installed — for compose-based dev
+# add `GF_INSTALL_PLUGINS=grafana-clickhouse-datasource` to the
+# Grafana service env. For Helm, the chart values usually carry
+# `grafana.plugins:`.
+#
+# Native protocol port (9000) is the default; HTTP (8123) works too
+# but the native protocol is what the gateway's read client uses, so
+# keeping the same path here keeps the connection-failure surface
+# small.
+datasources:
+  - name: ClickHouse
+    uid: clickhouse
+    type: grafana-clickhouse-datasource
+    access: proxy
+    isDefault: false
+    editable: false
+    jsonData:
+      host: ${CLICKHOUSE_HOST:-clickhouse}
+      port: ${CLICKHOUSE_PORT:-9000}
+      protocol: native
+      defaultDatabase: ${CLICKHOUSE_DB:-events}
+      tlsSkipVerify: false
+    secureJsonData:
+      # Empty for compose / single-tenant dev. In production, mount
+      # the password via a Secret and template into the env that
+      # backs ${CLICKHOUSE_PASSWORD}.
+      password: ${CLICKHOUSE_PASSWORD:-}
