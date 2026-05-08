@@ -62,6 +62,11 @@ spec:
               mountPath: /etc/envoy/certs
               readOnly: true
             {{- end }}
+            {{- if .Values.envoy.upstreamMtls.secretName }}
+            - name: envoy-upstream-mtls
+              mountPath: /etc/envoy/upstream-certs
+              readOnly: true
+            {{- end }}
           resources:
             {{- toYaml .Values.envoy.resources | nindent 12 }}
           # Envoy's admin endpoint exposes /ready which goes 200 once
@@ -95,4 +100,19 @@ spec:
                 path: tls.crt
               - key: tls.key
                 path: tls.key
+        {{- end }}
+        {{- if .Values.envoy.upstreamMtls.secretName }}
+        - name: envoy-upstream-mtls
+          secret:
+            secretName: {{ .Values.envoy.upstreamMtls.secretName }}
+            # Three keys: client cert, client key, and the CA the
+            # gateway side signs with (so we trust the gateway's
+            # server cert).
+            items:
+              - key: tls.crt
+                path: tls.crt
+              - key: tls.key
+                path: tls.key
+              - key: ca.crt
+                path: ca.crt
         {{- end }}

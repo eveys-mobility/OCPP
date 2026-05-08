@@ -106,6 +106,18 @@ gateway:
     # plain k8s Secrets, so the chart doesn't care which.
     name: ""
 
+  # E5-5 — mTLS on the WS server (the Envoy↔gateway upstream leg).
+  # Off by default. When enabled, the chart mounts a TLS Secret at
+  # /etc/eveys-ocpp/mtls/ and sets the matching EVEYS_OCPP_WS_MTLS_*
+  # env vars on the gateway pod. The same Secret should also be
+  # referenced from envoy.upstreamMtls.secretName so both sides
+  # rotate together.
+  mtls:
+    enabled: false
+    # The k8s Secret with three keys: tls.crt (server cert), tls.key
+    # (server key), ca.crt (CA used to verify the Envoy client cert).
+    secretName: ""
+
 # ---- Envoy ---------------------------------------------------------
 envoy:
   image:
@@ -133,6 +145,17 @@ envoy:
     # Reference to an existing TLS Secret (cert-manager output,
     # external-secrets, or hand-rolled). The chart mounts it at
     # /etc/envoy/certs/ matching the path baked into envoy.yaml.
+    secretName: ""
+
+  # E5-5 — upstream mTLS to the gateway. Mounts the CA + Envoy's
+  # client cert at /etc/envoy/upstream-certs/ matching the paths
+  # baked into envoy.yaml's `transport_socket`. Pairs with the
+  # gateway's `ws_mtls_enabled=True` toggle. Empty values leave the
+  # transport_socket block in the rendered config but no Secret
+  # mount — Envoy will then fail to start, which is loud-fail on
+  # purpose: enabling mTLS on the gateway side without certs on
+  # the Envoy side is a misconfiguration.
+  upstreamMtls:
     secretName: ""
 
   # The envoy.yaml ConfigMap is rendered from

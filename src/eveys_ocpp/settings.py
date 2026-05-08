@@ -1631,6 +1631,85 @@ class Settings(BaseSettings):
         },
     )
 
+    # ---- mTLS for the Envoy → gateway leg (E5-5) ------------------------
+    ws_mtls_enabled: bool = Field(
+        default=False,
+        description=(
+            "When True, the WS server requires client TLS authentication "
+            "(`ssl.CERT_REQUIRED`) on inbound connections. The peer must "
+            "present a certificate signed by the CA at `ws_mtls_ca_path`. "
+            "Used in production to authenticate the Envoy → gateway leg "
+            "(E5-5, ADR-0011); off in compose dev because charger sims "
+            "don't carry certs."
+        ),
+        json_schema_extra={
+            "category": "ws_server",
+            "impact": (
+                "Enabling without setting cert / key / ca paths fails "
+                "loud at boot. Disabling in production drops the in-"
+                "cluster authentication boundary — the WS server then "
+                "trusts whatever can reach `:9000`."
+            ),
+            "secret": False,
+            "stability": "structural",
+        },
+    )
+    ws_mtls_cert_path: str = Field(
+        default="",
+        description=(
+            "Filesystem path to the gateway's server certificate (PEM). "
+            "Loaded into the WS server's `SSLContext` when "
+            "`ws_mtls_enabled=True`. In k8s the operator mounts this "
+            "from a TLS Secret via the Helm chart."
+        ),
+        json_schema_extra={
+            "category": "ws_server",
+            "impact": (
+                "Wrong path → boot fails with `FileNotFoundError`. The "
+                "cert is the gateway's own identity to Envoy."
+            ),
+            "secret": False,
+            "stability": "structural",
+        },
+    )
+    ws_mtls_key_path: str = Field(
+        default="",
+        description=(
+            "Filesystem path to the gateway's server private key (PEM). "
+            "Loaded with `ws_mtls_cert_path` into the `SSLContext`."
+        ),
+        json_schema_extra={
+            "category": "ws_server",
+            "impact": (
+                "Path leak isn't a secret leak — the file at the path "
+                "is. File permissions on the mount are the operator's "
+                "concern; the gateway just `open()`s it once at boot."
+            ),
+            "secret": False,
+            "stability": "structural",
+        },
+    )
+    ws_mtls_ca_path: str = Field(
+        default="",
+        description=(
+            "Filesystem path to the CA bundle (PEM) used to verify the "
+            "client cert Envoy presents on each upstream connection. "
+            "Anything signed by this CA is trusted; rotate the bundle "
+            "to revoke."
+        ),
+        json_schema_extra={
+            "category": "ws_server",
+            "impact": (
+                "Trust anchor for the Envoy-side identity. A widened "
+                "CA (e.g. a public root) effectively disables the "
+                "auth boundary. Mount it as a tightly-scoped private "
+                "CA, not a public one."
+            ),
+            "secret": False,
+            "stability": "structural",
+        },
+    )
+
 
 def get_settings() -> Settings:
     """Build a fresh `Settings` from the current environment.

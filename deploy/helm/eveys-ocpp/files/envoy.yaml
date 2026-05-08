@@ -106,6 +106,27 @@ static_resources:
                     socket_address:
                       address: gateway-headless.eveys-ocpp.svc.cluster.local
                       port_value: 9000
+      # E5-5 — client-side TLS to the gateway. Pairs with the
+      # gateway's ws_mtls_enabled=True mode (settings.py). Cert
+      # paths are mounted from a TLS Secret by the Helm chart;
+      # without that mount this block is harmless because the
+      # filenames don't exist and `envoy --mode validate` ignores
+      # transport_socket file paths at validate time.
+      #
+      # When mTLS is off (compose dev, or the Helm-values toggle
+      # disables it), the chart renders this cluster without the
+      # transport_socket block — see deploy/helm/.../envoy-configmap.yaml
+      # which is the source of truth for the *deployed* shape.
+      transport_socket:
+        name: envoy.transport_sockets.tls
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+          common_tls_context:
+            tls_certificates:
+              - certificate_chain: { filename: /etc/envoy/upstream-certs/tls.crt }
+                private_key: { filename: /etc/envoy/upstream-certs/tls.key }
+            validation_context:
+              trusted_ca: { filename: /etc/envoy/upstream-certs/ca.crt }
       health_checks:
         - timeout: 2s
           interval: 3s
