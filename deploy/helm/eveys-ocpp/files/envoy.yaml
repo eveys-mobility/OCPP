@@ -106,6 +106,13 @@ static_resources:
                     socket_address:
                       address: gateway-headless.eveys-ocpp.svc.cluster.local
                       port_value: 9000
+                  # `host:` in `http_health_check` only sets the HTTP
+                  # `Host` header, not the destination port. Use
+                  # `health_check_config.port_value` here so Envoy
+                  # health-checks :8080 (REST /api/v1/ready) while
+                  # WS traffic still goes to :9000.
+                  health_check_config:
+                    port_value: 8080
       # E5-5 — client-side TLS to the gateway. Pairs with the
       # gateway's ws_mtls_enabled=True mode (settings.py). Cert
       # paths are mounted from a TLS Secret by the Helm chart;
@@ -134,4 +141,3 @@ static_resources:
           healthy_threshold: 1
           http_health_check:
             path: /api/v1/ready
-            host: gateway-headless.eveys-ocpp.svc.cluster.local:8080

@@ -203,6 +203,29 @@ services:
       redis: { condition: service_healthy }
       kafka: { condition: service_healthy }
       clickhouse: { condition: service_healthy }
+    # Envoy's first health-check fires the moment it starts and a
+    # network-level failure on attempt #1 puts the upstream in a
+    # state Envoy doesn't always reschedule from. Adding a
+    # healthcheck here lets Envoy's `depends_on: condition:
+    # service_healthy` wait until /api/v1/ready answers 200 before
+    # Envoy boots — first health-check is then guaranteed to land
+    # on a ready REST listener.
+    healthcheck:
+      test:
+        - CMD
+        - python3.13
+        - -c
+        - |
+          import urllib.request, sys
+          try:
+              with urllib.request.urlopen("http://127.0.0.1:8080/api/v1/ready", timeout=2) as r:
+                  sys.exit(0 if r.status == 200 else 1)
+          except Exception:
+              sys.exit(1)
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
 
   # Sidecar consumer for the Kafka → ClickHouse pipeline (E2-14, ADR-0020).
   # Reuses the same image as the gateway — entry point is overridden to run
@@ -247,11 +270,22 @@ services:
     container_name: eveys-ocpp-envoy
     ports:
       - "19443:443"     # wss:// — TLS-fronted entry point
+      # Admin (local-dev only). The distroless envoy image has no
+      # shell tools to probe admin from `docker exec`, so we bind it
+      # to 0.0.0.0 inside the container (envoy.local.yaml) and map
+      # it here for `curl http://localhost:19901/clusters` triage.
+      # Production envoy.yaml keeps the loopback-only bind.
+      - "19901:9901"    # admin/triage — DO NOT mirror this to production
     volumes:
       - ../envoy/envoy.local.yaml:/etc/envoy/envoy.yaml:ro
       - ../envoy/certs:/etc/envoy/certs:ro
     depends_on:
-      ocpp: { condition: service_started }
+      # Wait for the gateway to be HEALTHY (REST listener answering
+      # /api/v1/ready), not just STARTED. Without this, Envoy fires
+      # its first health-check while the gateway is still binding
+      # ports, the network-level failure poisons the upstream, and
+      # Envoy never recovers without a manual restart.
+      ocpp: { condition: service_healthy }
     restart: unless-stopped
 
 volumes:
