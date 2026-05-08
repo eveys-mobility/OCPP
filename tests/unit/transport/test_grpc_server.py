@@ -2833,3 +2833,249 @@ async def test_certificate_signed_empty_chain_returns_invalid_argument(
     finally:
         server.close()
         await server.wait_closed()
+
+
+# ---- TC_080, TC_081 — SignedUpdateFirmware -------------------------------
+#
+# Same fixture pattern as the cert-mgmt tests above. _make_pem
+# already defined; reuse it for the signing certificate field.
+
+
+@pytest.mark.asyncio
+async def test_signed_update_firmware_accepted_round_trip(
+    fake_session_factory: Any, settings: Settings
+) -> None:
+    """Happy path: charger replies Accepted; gateway maps the OCPP
+    enum to the proto LOG_STATUS_ACCEPTED. The §4.4 firmware Dict
+    must include all 4 required spec keys."""
+    pem = _make_pem(cn="firmware-signer", serial=0xF00D)
+    cp = MagicMock()
+    cp.id = "CP_001"
+    response = MagicMock(status="Accepted")
+    cp.call = AsyncMock(return_value=response)
+    cm = ConnectionMap()
+    cm.add(cp)
+    service = OcppGatewayService(
+        session_factory=fake_session_factory, settings=settings, connections=cm
+    )
+    server, port = await _spawn_server(service)
+    try:
+        async with Channel("127.0.0.1", port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            response_grpc = await stub.SignedUpdateFirmware(
+                gateway_pb2.SignedUpdateFirmwareRequest(
+                    cp_id="CP_001",
+                    request_id=42,
+                    location="https://fw.example/v2.bin",
+                    retrieve_date_time="2026-05-09T00:00:00+00:00",
+                    install_date_time="2026-05-09T03:00:00+00:00",
+                    signing_certificate=pem,
+                    signature="ZGVhZGJlZWY=",
+                )
+            )
+        assert response_grpc.status == gateway_pb2.SIGNED_FIRMWARE_UPDATE_STATUS_ACCEPTED
+        # The §4.4 firmware Dict the charger received must have the
+        # spec's exact key names — a typo would silently fail the
+        # spec validation on the charger side.
+        sent = cp.call.await_args.args[0]
+        assert sent.firmware["location"] == "https://fw.example/v2.bin"
+        assert sent.firmware["retrieveDateTime"] == "2026-05-09T00:00:00+00:00"
+        assert sent.firmware["installDateTime"] == "2026-05-09T03:00:00+00:00"
+        assert sent.firmware["signingCertificate"] == pem
+        assert sent.firmware["signature"] == "ZGVhZGJlZWY="
+        assert sent.request_id == 42
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_signed_update_firmware_invalid_certificate_status_maps(
+    fake_session_factory: Any, settings: Settings
+) -> None:
+    """TC_081 expectation: charger rejects with `InvalidCertificate`
+    when the signing cert isn't trusted. Must round-trip to the
+    proto enum so operator alerting sees the specific reason."""
+    pem = _make_pem()
+    cp = MagicMock()
+    cp.id = "CP_001"
+    response = MagicMock(status="InvalidCertificate")
+    cp.call = AsyncMock(return_value=response)
+    cm = ConnectionMap()
+    cm.add(cp)
+    service = OcppGatewayService(
+        session_factory=fake_session_factory, settings=settings, connections=cm
+    )
+    server, port = await _spawn_server(service)
+    try:
+        async with Channel("127.0.0.1", port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            response_grpc = await stub.SignedUpdateFirmware(
+                gateway_pb2.SignedUpdateFirmwareRequest(
+                    cp_id="CP_001",
+                    request_id=1,
+                    location="https://x/",
+                    retrieve_date_time="2026-05-09T00:00:00+00:00",
+                    signing_certificate=pem,
+                    signature="QUJD",
+                )
+            )
+        assert response_grpc.status == gateway_pb2.SIGNED_FIRMWARE_UPDATE_STATUS_INVALID_CERTIFICATE
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_signed_update_firmware_revoked_certificate_status_maps(
+    fake_session_factory: Any, settings: Settings
+) -> None:
+    """Charger CRL/OCSP check failed — operator misconfiguration
+    (used a revoked cert). Must surface specifically, not collapse
+    to generic Rejected."""
+    pem = _make_pem()
+    cp = MagicMock()
+    cp.id = "CP_001"
+    response = MagicMock(status="RevokedCertificate")
+    cp.call = AsyncMock(return_value=response)
+    cm = ConnectionMap()
+    cm.add(cp)
+    service = OcppGatewayService(
+        session_factory=fake_session_factory, settings=settings, connections=cm
+    )
+    server, port = await _spawn_server(service)
+    try:
+        async with Channel("127.0.0.1", port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            response_grpc = await stub.SignedUpdateFirmware(
+                gateway_pb2.SignedUpdateFirmwareRequest(
+                    cp_id="CP_001",
+                    request_id=1,
+                    location="https://x/",
+                    retrieve_date_time="2026-05-09T00:00:00+00:00",
+                    signing_certificate=pem,
+                    signature="QUJD",
+                )
+            )
+        assert response_grpc.status == gateway_pb2.SIGNED_FIRMWARE_UPDATE_STATUS_REVOKED_CERTIFICATE
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_signed_update_firmware_optional_install_date_time_omitted(
+    fake_session_factory: Any, settings: Settings
+) -> None:
+    """`installDateTime` is optional per §4.4 — empty proto field
+    means "install immediately after download". The Dict the charger
+    receives must NOT contain the key when empty (some chargers
+    treat presence-with-empty-value as a parse error)."""
+    pem = _make_pem()
+    cp = MagicMock()
+    cp.id = "CP_001"
+    response = MagicMock(status="Accepted")
+    cp.call = AsyncMock(return_value=response)
+    cm = ConnectionMap()
+    cm.add(cp)
+    service = OcppGatewayService(
+        session_factory=fake_session_factory, settings=settings, connections=cm
+    )
+    server, port = await _spawn_server(service)
+    try:
+        async with Channel("127.0.0.1", port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            await stub.SignedUpdateFirmware(
+                gateway_pb2.SignedUpdateFirmwareRequest(
+                    cp_id="CP_001",
+                    request_id=1,
+                    location="https://x/",
+                    retrieve_date_time="2026-05-09T00:00:00+00:00",
+                    # install_date_time left empty
+                    signing_certificate=pem,
+                    signature="QUJD",
+                )
+            )
+        sent = cp.call.await_args.args[0]
+        assert "installDateTime" not in sent.firmware
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_signed_update_firmware_invalid_signing_cert_returns_invalid_argument(
+    fake_session_factory: Any, settings: Settings
+) -> None:
+    """Malformed signing-cert PEM is operator error — reject at the
+    boundary BEFORE dispatching. The charger never sees a known-bad
+    payload."""
+    cp = MagicMock()
+    cp.id = "CP_001"
+    cp.call = AsyncMock()
+    cm = ConnectionMap()
+    cm.add(cp)
+    service = OcppGatewayService(
+        session_factory=fake_session_factory, settings=settings, connections=cm
+    )
+    server, port = await _spawn_server(service)
+    try:
+        async with Channel("127.0.0.1", port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            with pytest.raises(GRPCError) as exc:
+                await stub.SignedUpdateFirmware(
+                    gateway_pb2.SignedUpdateFirmwareRequest(
+                        cp_id="CP_001",
+                        request_id=1,
+                        location="https://x/",
+                        retrieve_date_time="2026-05-09T00:00:00+00:00",
+                        signing_certificate=(
+                            "-----BEGIN CERTIFICATE-----\n"
+                            "not-real-base64\n"
+                            "-----END CERTIFICATE-----"
+                        ),
+                        signature="QUJD",
+                    )
+                )
+        assert exc.value.status == Status.INVALID_ARGUMENT
+        cp.call.assert_not_awaited()
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_signed_update_firmware_empty_signature_returns_invalid_argument(
+    fake_session_factory: Any, settings: Settings
+) -> None:
+    """An empty signature is meaningless — the charger has nothing
+    to verify against. Reject at the boundary so operator notices."""
+    pem = _make_pem()
+    cp = MagicMock()
+    cp.id = "CP_001"
+    cp.call = AsyncMock()
+    cm = ConnectionMap()
+    cm.add(cp)
+    service = OcppGatewayService(
+        session_factory=fake_session_factory, settings=settings, connections=cm
+    )
+    server, port = await _spawn_server(service)
+    try:
+        async with Channel("127.0.0.1", port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            with pytest.raises(GRPCError) as exc:
+                await stub.SignedUpdateFirmware(
+                    gateway_pb2.SignedUpdateFirmwareRequest(
+                        cp_id="CP_001",
+                        request_id=1,
+                        location="https://x/",
+                        retrieve_date_time="2026-05-09T00:00:00+00:00",
+                        signing_certificate=pem,
+                        signature="",
+                    )
+                )
+        assert exc.value.status == Status.INVALID_ARGUMENT
+        cp.call.assert_not_awaited()
+    finally:
+        server.close()
+        await server.wait_closed()

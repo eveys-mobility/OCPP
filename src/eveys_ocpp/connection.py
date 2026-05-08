@@ -25,6 +25,7 @@ from eveys_ocpp.handlers.v16 import (
     log_status_notification,
     meter_values,
     security_event_notification,
+    signed_firmware_status_notification,
     start_transaction,
     status_notification,
     stop_transaction,
@@ -159,6 +160,12 @@ class EveysChargePoint(Cpv16):
     @on(Action.log_status_notification)
     async def on_log_status_notification(self, **kwargs: Any) -> call_result.LogStatusNotification:
         return await log_status_notification.handle(self, **kwargs)
+
+    @on(Action.signed_firmware_status_notification)
+    async def on_signed_firmware_status_notification(
+        self, **kwargs: Any
+    ) -> call_result.SignedFirmwareStatusNotification:
+        return await signed_firmware_status_notification.handle(self, **kwargs)
 
     # ---- Prometheus instrumentation hooks (E4-1) ----------------------------
     # Override the library's inbound and outbound dispatch points so we

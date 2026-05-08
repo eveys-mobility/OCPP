@@ -106,6 +106,7 @@ _OCPP_CALL_DISPATCH: dict[str, type[Any]] = {
     "DeleteCertificate": ocpp_call.DeleteCertificate,
     "CertificateSigned": ocpp_call.CertificateSigned,
     "UpdateFirmware": ocpp_call.UpdateFirmware,
+    "SignedUpdateFirmware": ocpp_call.SignedUpdateFirmware,
     "SetChargingProfile": ocpp_call.SetChargingProfile,
     "ClearChargingProfile": ocpp_call.ClearChargingProfile,
     "GetCompositeSchedule": ocpp_call.GetCompositeSchedule,
@@ -895,6 +896,84 @@ class OcppGatewayService(gateway_grpc.OcppGatewayBase):
             ),
         )
         await stream.send_message(gateway_pb2.UpdateFirmwareResponse())
+
+    async def SignedUpdateFirmware(
+        self,
+        stream: Stream[
+            gateway_pb2.SignedUpdateFirmwareRequest,
+            gateway_pb2.SignedUpdateFirmwareResponse,
+        ],
+    ) -> None:
+        """Trigger a signed firmware update on the charger
+        (TC_080 happy path / TC_081 invalid signature). OCPP 1.6
+        Security Whitepaper §4.4.
+
+        Sibling of `UpdateFirmware`; the difference is the bundle
+        carries the signing cert PEM and the firmware blob signature
+        which the charger uses to verify the firmware before
+        installing.
+
+        The gateway is pure transport + boundary validation here. It
+        does NOT sign firmware, verify signatures against blobs, or
+        check signing-cert chain of trust. The charger does all of
+        that — and reports back via `SignedFirmwareStatusNotification`
+        with one of: SignatureVerified, InvalidSignature,
+        InstallVerificationFailed, etc.
+        """
+        request = await self._recv(stream)
+        if not request.location:
+            raise GRPCError(Status.INVALID_ARGUMENT, "location is required")
+        if not request.retrieve_date_time:
+            raise GRPCError(Status.INVALID_ARGUMENT, "retrieve_date_time is required")
+        if not request.signing_certificate:
+            raise GRPCError(Status.INVALID_ARGUMENT, "signing_certificate is required")
+        if not request.signature:
+            raise GRPCError(Status.INVALID_ARGUMENT, "signature is required")
+
+        # Parse the signing cert at the boundary — reject malformed
+        # PEMs before the charger sees them. Same defense-in-depth as
+        # InstallCertificate. We don't store the cert (it's the
+        # operator's release-tooling concern, not gateway state); we
+        # just ensure it's well-formed.
+        from eveys_ocpp.handlers.v16 import _cert_hash
+
+        try:
+            _cert_hash.parse_pem(request.signing_certificate)
+        except ValueError as exc:
+            raise GRPCError(Status.INVALID_ARGUMENT, f"signing_certificate: {exc}") from exc
+
+        # Construct the OCPP §4.4 firmware Dict per spec.
+        firmware: dict[str, str] = {
+            "location": request.location,
+            "retrieveDateTime": request.retrieve_date_time,
+            "signingCertificate": request.signing_certificate,
+            "signature": request.signature,
+        }
+        if request.install_date_time:
+            firmware["installDateTime"] = request.install_date_time
+
+        ocpp_response = await self._dispatch_ocpp_call(
+            rpc="SignedUpdateFirmware",
+            cp_id=request.cp_id,
+            ocpp_request=ocpp_call.SignedUpdateFirmware(
+                request_id=request.request_id,
+                firmware=firmware,
+                retries=request.retries or None,
+                retry_interval=request.retry_interval or None,
+            ),
+        )
+        status_str = str(getattr(ocpp_response, "status", ""))
+        # Unknown status → REJECTED rather than UNSPECIFIED. Operators
+        # interpret REJECTED as "didn't happen", which is the safer
+        # reading of an unrecognised charger reply.
+        status_proto = {
+            "Accepted": gateway_pb2.SIGNED_FIRMWARE_UPDATE_STATUS_ACCEPTED,
+            "Rejected": gateway_pb2.SIGNED_FIRMWARE_UPDATE_STATUS_REJECTED,
+            "AcceptedCanceled": (gateway_pb2.SIGNED_FIRMWARE_UPDATE_STATUS_ACCEPTED_CANCELED),
+            "InvalidCertificate": (gateway_pb2.SIGNED_FIRMWARE_UPDATE_STATUS_INVALID_CERTIFICATE),
+            "RevokedCertificate": (gateway_pb2.SIGNED_FIRMWARE_UPDATE_STATUS_REVOKED_CERTIFICATE),
+        }.get(status_str, gateway_pb2.SIGNED_FIRMWARE_UPDATE_STATUS_REJECTED)
+        await stream.send_message(gateway_pb2.SignedUpdateFirmwareResponse(status=status_proto))
 
     # ---- E2-1E — Smart Charging profile (ADR-0022) -------------------------
 

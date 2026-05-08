@@ -929,3 +929,66 @@ async def test_delete_certificate_missing_hash_returns_400(
         json={},
     )
     assert response.status_code == 400
+
+
+# ---- TC_080, TC_081 — SignedUpdateFirmware REST --------------------------
+
+
+@pytest.mark.asyncio
+async def test_signed_update_firmware_returns_status_from_charger(
+    client: httpx.AsyncClient, fake_command_service: MagicMock
+) -> None:
+    _set_response(fake_command_service, _stub_response(status="Accepted"))
+    pem = _gen_pem()
+
+    response = await client.post(
+        "/api/v1/charge-points/CP_001/commands/signed-update-firmware",
+        json={
+            "request_id": 42,
+            "location": "https://fw.example/v2.bin",
+            "retrieve_date_time": "2026-05-09T00:00:00+00:00",
+            "signing_certificate": pem,
+            "signature": "ZGVhZGJlZWY=",
+        },
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "Accepted"
+
+
+@pytest.mark.asyncio
+async def test_signed_update_firmware_invalid_pem_returns_400(
+    client: httpx.AsyncClient, fake_command_service: MagicMock
+) -> None:
+    """A malformed signing-cert is operator error — REST surface
+    rejects with 400 BEFORE dispatching."""
+    response = await client.post(
+        "/api/v1/charge-points/CP_001/commands/signed-update-firmware",
+        json={
+            "request_id": 1,
+            "location": "https://x/",
+            "retrieve_date_time": "2026-05-09T00:00:00+00:00",
+            "signing_certificate": "not-a-real-pem",
+            "signature": "QUJD",
+        },
+    )
+    assert response.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_signed_update_firmware_missing_required_field_returns_400(
+    client: httpx.AsyncClient,
+) -> None:
+    """`signature` is required — without it the charger has nothing
+    to verify against."""
+    pem = _gen_pem()
+    response = await client.post(
+        "/api/v1/charge-points/CP_001/commands/signed-update-firmware",
+        json={
+            "request_id": 1,
+            "location": "https://x/",
+            "retrieve_date_time": "2026-05-09T00:00:00+00:00",
+            "signing_certificate": pem,
+            # no signature
+        },
+    )
+    assert response.status_code == 400
