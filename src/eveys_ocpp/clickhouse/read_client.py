@@ -78,6 +78,10 @@ class ClickHouseReadClient:
 
         # ARRAY JOIN flattens the Nested column; the route caller pages
         # with `limit + 1` for next-page detection.
+        #
+        # `asynch` substitutes via `query.format(**escape_params(params))`,
+        # so placeholders are `{name}` — NOT the DB-API `%(name)s` shape.
+        # See `fetch_latest_connector_statuses` for the same convention.
         sql = """
             SELECT
                 event_id,
@@ -95,9 +99,9 @@ class ClickHouseReadClient:
                 sv.unit AS unit
             FROM cp_meter
             ARRAY JOIN sampled_values AS sv
-            WHERE cp_id = %(cp_id)s
-              AND occurred_at >= %(from_ts)s
-              AND occurred_at <= %(to_ts)s
+            WHERE cp_id = {cp_id}
+              AND occurred_at >= {from_ts}
+              AND occurred_at <= {to_ts}
         """
         params: dict[str, Any] = {
             "cp_id": cp_id,
@@ -105,12 +109,12 @@ class ClickHouseReadClient:
             "to_ts": started_to,
         }
         if connector_id is not None:
-            sql += " AND connector_id = %(connector_id)s"
+            sql += " AND connector_id = {connector_id}"
             params["connector_id"] = connector_id
         if measurand is not None:
-            sql += " AND measurand = %(measurand)s"
+            sql += " AND measurand = {measurand}"
             params["measurand"] = measurand
-        sql += " ORDER BY occurred_at, event_id LIMIT %(limit)s"
+        sql += " ORDER BY occurred_at, event_id LIMIT {limit}"
         params["limit"] = limit
 
         async with self._conn.cursor() as cursor:
@@ -196,6 +200,10 @@ class ClickHouseReadClient:
         [from, to]. One row per transition (no ARRAY JOIN needed)."""
         assert self._conn is not None  # narrowed by start()
 
+        # Same `{name}` placeholder convention as `fetch_meter_values` /
+        # `fetch_latest_connector_statuses` — `asynch` uses
+        # `query.format(**escape_params(params))`, not DB-API
+        # `%(name)s`.
         sql = """
             SELECT
                 event_id,
@@ -209,9 +217,9 @@ class ClickHouseReadClient:
                 vendor_error_code,
                 charger_reported_at
             FROM cp_status
-            WHERE cp_id = %(cp_id)s
-              AND occurred_at >= %(from_ts)s
-              AND occurred_at <= %(to_ts)s
+            WHERE cp_id = {cp_id}
+              AND occurred_at >= {from_ts}
+              AND occurred_at <= {to_ts}
         """
         params: dict[str, Any] = {
             "cp_id": cp_id,
@@ -219,9 +227,9 @@ class ClickHouseReadClient:
             "to_ts": started_to,
         }
         if connector_id is not None:
-            sql += " AND connector_id = %(connector_id)s"
+            sql += " AND connector_id = {connector_id}"
             params["connector_id"] = connector_id
-        sql += " ORDER BY occurred_at, event_id LIMIT %(limit)s"
+        sql += " ORDER BY occurred_at, event_id LIMIT {limit}"
         params["limit"] = limit
 
         async with self._conn.cursor() as cursor:
