@@ -11,6 +11,12 @@
 #
 # Grouping reduces PR volume: a single "dev-dependencies" PR per week
 # beats five separate ruff / mypy / pytest bumps.
+#
+# Commit-prefix note: `prefix: "chore(deps)"` alone produces
+# `chore(deps): bump foo from x to y in /deploy`. Adding
+# `include: "scope"` would *append* the ecosystem name as a second
+# scope, producing the doubled `chore(deps)(deps):` we saw in PR #46
+# / #47 / #48. We deliberately omit `include: scope` here.
 
 version: 2
 
@@ -28,11 +34,7 @@ updates:
       - "dependencies"
       - "python"
     commit-message:
-      # Match the conventional-commit hook in pre-commit. `chore(deps)`
-      # is the closest fit: a maintenance change that touches no
-      # behaviour.
       prefix: "chore(deps)"
-      include: "scope"
     groups:
       # Dev tooling moves together; one weekly PR for the whole batch.
       dev-dependencies:
@@ -65,10 +67,16 @@ updates:
       - "github-actions"
     commit-message:
       prefix: "chore(deps)"
-      include: "scope"
 
   # Docker base images in deploy/. Currently only deploy/Dockerfile;
   # Dependabot will follow the FROM directives.
+  #
+  # Python *major* bumps are explicitly ignored — the project pins to
+  # Python 3.13 in three places (`requires-python` in pyproject.toml,
+  # `python_version = "3.13"` in mypy config, and the distroless
+  # runtime stage hard-copies `/usr/local/lib/python3.13/...` paths).
+  # A 3.14 base would fail CI immediately and need a deliberate human
+  # migration. Patch bumps within 3.13.x still flow.
   - package-ecosystem: "docker"
     directory: "/deploy"
     schedule:
@@ -82,4 +90,8 @@ updates:
       - "docker"
     commit-message:
       prefix: "chore(deps)"
-      include: "scope"
+    ignore:
+      - dependency-name: "python"
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"
