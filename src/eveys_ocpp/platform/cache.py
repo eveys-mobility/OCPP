@@ -76,7 +76,15 @@ class AuthorizeCache:
         outage / malformed value. The caller continues to the backend
         on None (cache miss is indistinguishable from "no Redis").
         """
-        if not self._settings.backend_authorize_cache_enabled:
+        # Read fresh per call so an admin override on
+        # backend_authorize_cache_enabled takes effect without a pod
+        # restart.
+        from eveys_ocpp.runtime_overrides import get_override
+
+        if not get_override(
+            "backend_authorize_cache_enabled",
+            self._settings.backend_authorize_cache_enabled,
+        ):
             return None
 
         try:
@@ -116,7 +124,12 @@ class AuthorizeCache:
         TTL of 0 (disabled via the boolean knob) makes this a no-op;
         callers don't need to gate the call.
         """
-        if not self._settings.backend_authorize_cache_enabled:
+        from eveys_ocpp.runtime_overrides import get_override
+
+        if not get_override(
+            "backend_authorize_cache_enabled",
+            self._settings.backend_authorize_cache_enabled,
+        ):
             return
 
         payload = json.dumps(

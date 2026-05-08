@@ -476,6 +476,77 @@ Auth-exempt — the load balancer's readiness probe doesn't carry a bearer token
 
 ---
 
+## Admin runtime config — `GET / PATCH / DELETE /api/v1/admin/config`
+
+Per-pod runtime overrides for a tightly-scoped allowlist of `Settings` fields. The gateway's `Settings` is frozen (env vars are the source of truth and most fields bind into a SQLAlchemy engine / TCP socket / Kafka producer at boot), but a small set is read fresh on every use and can be flipped without a rolling deploy. This surface is the operator UX for those.
+
+**Per-pod scope.** Hitting these endpoints on pod A doesn't affect pod B. Cluster-wide propagation via Redis pub/sub is a future enhancement; for fleet-wide changes, deploy a new env value and roll out.
+
+### `GET /api/v1/admin/config`
+
+Returns the current effective `Settings` dump (secrets auto-redact via E5-7) plus the in-process overrides currently in effect plus the allowlist for `PATCH`.
+
+```json
+{
+  "settings": {
+    "log_level": "INFO",
+    "ws_rate_limit_enabled": true,
+    "rest_inbound_tokens": "**********",
+    "db_url": "**********",
+    "...": "..."
+  },
+  "overrides": { "log_level": "DEBUG" },
+  "allowlist": {
+    "log_level": "stdlib logging level applied to every emit.",
+    "ws_rate_limit_enabled": "Per-charger CALL rate limiter (E5-3) kill-switch.",
+    "backend_authorize_cache_enabled": "Per-pod Authorize cache (E3-4) kill-switch."
+  },
+  "scope": "per-pod",
+  "request_id": "<uuid>"
+}
+```
+
+### `PATCH /api/v1/admin/config`
+
+Body: `{"updates": {"<field>": <value>, ...}}`. Each field must be in the allowlist. Non-allowlisted fields → `400 BAD_REQUEST` with the allowed list in the message.
+
+Tolerant value coercion: bools accept `true` / `"true"` / `1`; `log_level` is validated against the same `Literal[...]` as `Settings.log_level`. Atomicity is **not** promised — if a PATCH carries one allowed and one rejected field, the allowed one stays in effect and the response surfaces both halves so the operator can revert deliberately.
+
+`log_level` updates take effect immediately via `logging.getLogger().setLevel(...)`. The other fields' read sites consult overrides per-call, so the next message / next Authorize / next CALL picks up the new value.
+
+```json
+{
+  "applied": { "log_level": "DEBUG" },
+  "overrides": { "log_level": "DEBUG" },
+  "scope": "per-pod",
+  "request_id": "<uuid>"
+}
+```
+
+### `DELETE /api/v1/admin/config/overrides/{key}`
+
+Clears one override. Subsequent reads fall back to the boot-time `Settings` value. Idempotent: clearing a key that was never set returns `cleared: false` rather than 404.
+
+```json
+{
+  "cleared": true,
+  "key": "log_level",
+  "overrides": {},
+  "scope": "per-pod",
+  "request_id": "<uuid>"
+}
+```
+
+### Allowlist criteria
+
+A field gets allowlisted when:
+1. The runtime read site reads it fresh on every use (not cached at boot).
+2. The value is operator-meaningful at runtime (not `db_url` / `ws_port` / `kafka_brokers` — those bind to a socket / producer at boot and changing them via PATCH would either be a no-op or a bug).
+
+Adding a new allowlisted field is a deliberate `runtime_overrides.py` edit plus a matching `get_override(...)` call site.
+
+---
+
 ## Error responses
 
 Errors return a consistent shape (not the success-shape envelope):

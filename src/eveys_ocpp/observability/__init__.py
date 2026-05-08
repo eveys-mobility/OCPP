@@ -36,6 +36,7 @@ from eveys_ocpp.observability.tracing import (
 )
 
 __all__ = [
+    "apply_log_level",
     "bind_contextvars",
     "bind_sentry_scope",
     "clear_contextvars",
@@ -114,3 +115,24 @@ def get_logger(name: str | None = None) -> structlog.stdlib.BoundLogger:
     """Return a configured logger. Use module `__name__` as the argument."""
     logger: structlog.stdlib.BoundLogger = structlog.get_logger(name)
     return logger
+
+
+def apply_log_level(level: str) -> None:
+    """Apply a runtime log-level change to stdlib loggers.
+
+    The structlog filtering wrapper class is fixed at
+    `configure_logging` time and can't be re-bound without
+    reconfiguring every cached logger — but most output flows
+    through stdlib (asyncpg, websockets, the structlog mirror at
+    `logging.basicConfig`), so flipping the stdlib level catches
+    the bulk of what an operator wants when they bump verbosity
+    via the admin endpoint.
+
+    A future improvement could swap the structlog wrapper too, at
+    the cost of dropping the `cache_logger_on_first_use=True`
+    optimisation. Not worth it for v0.
+    """
+    numeric = getattr(logging, level.upper(), None)
+    if not isinstance(numeric, int):
+        raise ValueError(f"unknown log level: {level!r}")
+    logging.getLogger().setLevel(numeric)
