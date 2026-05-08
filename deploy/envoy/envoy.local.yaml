@@ -60,23 +60,52 @@ static_resources:
                 stream_idle_timeout: 0s
                 request_timeout: 0s
                 http_filters:
-                  # Rate-limit filter slot is reserved for E5-2.
-                  # Disabled (no descriptors) until that task lands.
+                  # E5-2 — per-source-IP rate limit on WS upgrades.
+                  # The default `token_bucket` here is the fallback
+                  # when no descriptor matches — kept generous so
+                  # internal health checks don't get throttled. The
+                  # real limit is the per-`remote_address` descriptor
+                  # below: 60 burst, 30/min sustained per source IP.
+                  # That's tight enough that a single attacker can't
+                  # open thousands of WS streams a minute, generous
+                  # enough that a fleet of ~50 chargers behind one
+                  # NAT can power-cycle without throttling.
                   - name: envoy.filters.http.local_ratelimit
                     typed_config:
                       "@type": type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit
                       stat_prefix: ws_upgrade_local_rate_limit
-                      # Effectively unlimited until E5-2 sets values.
+                      # Fallback bucket — applied when no descriptor
+                      # matches. Set generous so non-IP-tagged
+                      # internal traffic (health probes, etc.) flows
+                      # unblocked. The real cap is the descriptor
+                      # below.
                       token_bucket:
-                        max_tokens: 1000000
-                        tokens_per_fill: 1000000
-                        fill_interval: 1s
+                        max_tokens: 100000
+                        tokens_per_fill: 100000
+                        fill_interval: 60s
                       filter_enabled:
                         runtime_key: local_rate_limit_enabled
-                        default_value: { numerator: 0, denominator: HUNDRED }
+                        default_value: { numerator: 100, denominator: HUNDRED }
                       filter_enforced:
                         runtime_key: local_rate_limit_enforced
-                        default_value: { numerator: 0, denominator: HUNDRED }
+                        default_value: { numerator: 100, denominator: HUNDRED }
+                      # Per-descriptor bucket — populated from the
+                      # `rate_limits` action on the route below.
+                      # `remote_address` extracts the connection's
+                      # source IP, so each unique source gets its own
+                      # 60-token bucket refilling at 30/min.
+                      descriptors:
+                        - entries:
+                            - key: remote_address
+                          token_bucket:
+                            max_tokens: 60
+                            tokens_per_fill: 30
+                            fill_interval: 60s
+                      # Set X-RateLimit-* response headers so a
+                      # legitimate client driven over the limit can
+                      # see what's happening. Less mysterious than
+                      # raw 429s.
+                      enable_x_ratelimit_headers: DRAFT_VERSION_03
                   - name: envoy.filters.http.router
                     typed_config:
                       "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
@@ -85,6 +114,16 @@ static_resources:
                   virtual_hosts:
                     - name: ocpp_gateway
                       domains: ["*"]
+                      # E5-2 — per-virtual-host rate-limit actions
+                      # feed the local_ratelimit filter's descriptor
+                      # matcher above. `remote_address` extracts the
+                      # connection's source IP; that becomes the
+                      # bucket key. Without this, the filter has no
+                      # descriptors to match against and falls back
+                      # to the global token_bucket only.
+                      rate_limits:
+                        - actions:
+                            - remote_address: {}
                       routes:
                         - match: { prefix: "/" }
                           route:
