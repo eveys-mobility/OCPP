@@ -154,6 +154,17 @@ service OcppGateway {
   // can still use this RPC today by supplying the signed chain
   // directly (e.g. signed out-of-band by the platform CA tooling).
   rpc CertificateSigned(CertificateSignedRequest) returns (CertificateSignedResponse);
+
+  // Trigger a signed firmware update. OCPP 1.6 Security Whitepaper §4.4;
+  // TC_080 (happy path) / TC_081 (invalid signature). Sibling of the
+  // plain `UpdateFirmware` RPC — the difference is the bundle carries
+  // the signing cert PEM and the firmware blob signature, which the
+  // charger uses to verify the firmware before installing.
+  //
+  // The gateway is pure transport + boundary validation here; it does
+  // NOT sign firmware, verify signatures against blobs, or check
+  // signing-cert chain of trust. The charger does all of that.
+  rpc SignedUpdateFirmware(SignedUpdateFirmwareRequest) returns (SignedUpdateFirmwareResponse);
 }
 
 // -----------------------------------------------------------------------------
@@ -689,6 +700,60 @@ message CertificateSignedRequest {
 
 message CertificateSignedResponse {
   CertificateSignedStatus status = 1;
+}
+
+// OCPP 1.6 Security Whitepaper §4.4 SignedUpdateFirmware status enum.
+// 5 values, vs the plain UpdateFirmware which has none (the conf is
+// empty). The two new-vs-existing values are `InvalidCertificate`
+// (charger rejected the signing cert at request time, before download)
+// and `RevokedCertificate` (charger checked CRL/OCSP and the cert is
+// revoked). Both indicate operator misconfiguration.
+enum SignedFirmwareUpdateStatus {
+  SIGNED_FIRMWARE_UPDATE_STATUS_UNSPECIFIED = 0;
+  SIGNED_FIRMWARE_UPDATE_STATUS_ACCEPTED = 1;
+  SIGNED_FIRMWARE_UPDATE_STATUS_REJECTED = 2;
+  // Charger had a previous signed-firmware update in flight; the new
+  // one was accepted but the previous one was cancelled to make room.
+  // Same shape as GetLog's AcceptedCanceled.
+  SIGNED_FIRMWARE_UPDATE_STATUS_ACCEPTED_CANCELED = 3;
+  SIGNED_FIRMWARE_UPDATE_STATUS_INVALID_CERTIFICATE = 4;
+  SIGNED_FIRMWARE_UPDATE_STATUS_REVOKED_CERTIFICATE = 5;
+}
+
+message SignedUpdateFirmwareRequest {
+  string cp_id = 1;
+  // Operator-supplied request id; charger echoes it back on every
+  // matching `SignedFirmwareStatusNotification` so concurrent updates
+  // can be correlated. Required by spec.
+  int32 request_id = 2;
+  // URL the charger should download the firmware image from. The
+  // charger will verify the downloaded blob against `signature` using
+  // `signing_certificate`. Required.
+  string location = 3;
+  // ISO-8601 UTC time at which the charger may *start* the download.
+  // Allows operator-scheduled rollouts. Required by spec.
+  string retrieve_date_time = 4;
+  // Optional ISO-8601 UTC time when the charger may install the
+  // downloaded firmware. Empty → charger installs immediately after
+  // download.
+  string install_date_time = 5;
+  // PEM-encoded certificate the charger should use to verify the
+  // firmware signature. The gateway parses this to ensure it's a
+  // well-formed PEM (rejects garbage at the boundary), but does NOT
+  // verify chain of trust — that's the charger's responsibility.
+  // Required.
+  string signing_certificate = 6;
+  // Base64-encoded signature of the firmware blob, produced by the
+  // private key matching `signing_certificate`'s public key.
+  // Gateway never inspects the bytes — pure transport. Required.
+  string signature = 7;
+  // Optional retry parameters (charger uses defaults when zero).
+  int32 retries = 8;
+  int32 retry_interval = 9;
+}
+
+message SignedUpdateFirmwareResponse {
+  SignedFirmwareUpdateStatus status = 1;
 }
 
 message UpdateFirmwareRequest {

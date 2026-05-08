@@ -887,6 +887,86 @@ async def update_firmware(request: Request, cp_id: str) -> dict[str, Any]:
     return {"request_id": request.state.request_id}
 
 
+@router.post(_BASE + "/signed-update-firmware")
+async def signed_update_firmware(request: Request, cp_id: str) -> dict[str, Any]:
+    """OCPP 1.6 Security Whitepaper §4.4 / TC_080, TC_081. Trigger a
+    signed firmware update on the charger.
+
+    Body shape:
+    ```json
+    {
+      "request_id": 42,
+      "location": "https://fw.example/v2.bin",
+      "retrieve_date_time": "2026-05-09T00:00:00+00:00",
+      "install_date_time": "2026-05-09T03:00:00+00:00",
+      "signing_certificate": "-----BEGIN CERTIFICATE-----\\n...",
+      "signature": "<base64 signature of firmware blob>",
+      "retries": 3,
+      "retry_interval": 60
+    }
+    ```
+
+    The gateway is pure transport + boundary validation here — it
+    parses the signing cert PEM at the boundary (rejects malformed
+    ones with 400 BEFORE dispatching), but does NOT verify chain of
+    trust against any installed roots, and does NOT verify the
+    signature against the firmware blob. The charger does both.
+
+    Operators learn whether the update completed successfully via
+    inbound `SignedFirmwareStatusNotification` flow which populates
+    `charge_points.last_firmware_status` — including the security-
+    specific values `SignatureVerified` and `InvalidSignature`.
+    """
+    body = await _body(request)
+    request_id_value = int(_require(body, "request_id"))
+    location = str(_require(body, "location"))
+    retrieve_date_time = str(_require(body, "retrieve_date_time"))
+    signing_certificate = str(_require(body, "signing_certificate"))
+    signature = str(_require(body, "signature"))
+    install_date_time = body.get("install_date_time")
+    retries = body.get("retries")
+    retry_interval = body.get("retry_interval")
+
+    # Parse the signing cert at the REST boundary too — rejecting
+    # malformed PEMs with 400 here gives operators a clearer error
+    # than the gRPC INVALID_ARGUMENT bubbling up.
+    from eveys_ocpp.handlers.v16 import _cert_hash
+
+    try:
+        _cert_hash.parse_pem(signing_certificate)
+    except ValueError as exc:
+        raise ApiError(
+            status_code=400,
+            error_code=ERR_BAD_REQUEST,
+            message=f"signing_certificate: {exc}",
+        ) from exc
+
+    firmware: dict[str, str] = {
+        "location": location,
+        "retrieveDateTime": retrieve_date_time,
+        "signingCertificate": signing_certificate,
+        "signature": signature,
+    }
+    if install_date_time:
+        firmware["installDateTime"] = str(install_date_time)
+
+    ocpp_response = await dispatch_ocpp_call(
+        request,
+        rpc="SignedUpdateFirmware",
+        cp_id=cp_id,
+        ocpp_request=ocpp_call.SignedUpdateFirmware(
+            request_id=request_id_value,
+            firmware=firmware,
+            retries=int(retries) if retries else None,
+            retry_interval=int(retry_interval) if retry_interval else None,
+        ),
+    )
+    return {
+        "status": str(getattr(ocpp_response, "status", "")),
+        "request_id": request.state.request_id,
+    }
+
+
 # ---- Smart Charging (E2-1E, ADR-0022) --------------------------------------
 
 

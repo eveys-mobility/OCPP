@@ -1785,6 +1785,49 @@ paths:
       summary: Set Charging Profile
       tags:
       - commands
+  /api/v1/charge-points/{cp_id}/commands/signed-update-firmware:
+    post:
+      description: "OCPP 1.6 Security Whitepaper §4.4 / TC_080, TC_081. Trigger a\n\
+        signed firmware update on the charger.\n\nBody shape:\n```json\n{\n  \"request_id\"\
+        : 42,\n  \"location\": \"https://fw.example/v2.bin\",\n  \"retrieve_date_time\"\
+        : \"2026-05-09T00:00:00+00:00\",\n  \"install_date_time\": \"2026-05-09T03:00:00+00:00\"\
+        ,\n  \"signing_certificate\": \"-----BEGIN CERTIFICATE-----\\n...\",\n  \"\
+        signature\": \"<base64 signature of firmware blob>\",\n  \"retries\": 3,\n\
+        \  \"retry_interval\": 60\n}\n```\n\nThe gateway is pure transport + boundary\
+        \ validation here — it\nparses the signing cert PEM at the boundary (rejects\
+        \ malformed\nones with 400 BEFORE dispatching), but does NOT verify chain\
+        \ of\ntrust against any installed roots, and does NOT verify the\nsignature\
+        \ against the firmware blob. The charger does both.\n\nOperators learn whether\
+        \ the update completed successfully via\ninbound `SignedFirmwareStatusNotification`\
+        \ flow which populates\n`charge_points.last_firmware_status` — including the\
+        \ security-\nspecific values `SignatureVerified` and `InvalidSignature`."
+      operationId: signed_update_firmware_api_v1_charge_points__cp_id__commands_signed_update_firmware_post
+      parameters:
+      - in: path
+        name: cp_id
+        required: true
+        schema:
+          title: Cp Id
+          type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Signed Update Firmware Api V1 Charge Points  Cp Id  Commands
+                  Signed Update Firmware Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Signed Update Firmware
+      tags:
+      - commands
   /api/v1/charge-points/{cp_id}/commands/trigger-message:
     post:
       operationId: trigger_message_api_v1_charge_points__cp_id__commands_trigger_message_post
