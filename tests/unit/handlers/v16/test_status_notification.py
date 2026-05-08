@@ -113,3 +113,78 @@ async def test_handler_survives_kafka_publish_exception(
 
     assert isinstance(result, call_result.StatusNotification)
     fake_producer.publish.assert_awaited_once()
+
+
+# ---- TC_024 — non-NoError error_code propagation --------------------------
+#
+# OCPP 1.6 §6.21 enumerates 17 charger error codes (ConnectorLockFailure,
+# PowerSwitchFailure, EVCommunicationError, etc). The existing tests
+# above all pass `error_code="NoError"` — they don't prove the handler
+# carries a real fault through to Kafka or the Prometheus counter. A
+# hypothetical filter that strips non-NoError codes (or a typo in the
+# proto field) would silently break operator visibility into faults.
+# This test pins the propagation contract.
+
+
+@pytest.mark.asyncio
+async def test_lock_failure_error_code_flows_to_kafka_envelope(
+    fake_cp: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A charger reporting a faulted connector with
+    `error_code=ConnectorLockFailure` must surface that exact value
+    on the Kafka envelope's `cp_status.error_code` field. Operator
+    dashboards (and downstream alerting) rely on it."""
+    monkeypatch.setattr(status_notification, "update_status", AsyncMock())
+    fake_producer = AsyncMock()
+    fake_cp.event_producer = fake_producer
+
+    await status_notification.handle(
+        fake_cp,
+        connector_id=1,
+        status="Faulted",
+        error_code="ConnectorLockFailure",
+        info="lock motor stalled",
+        vendor_error_code="VENDOR-LOCK-7",
+        timestamp="2026-05-08T22:00:00+00:00",
+    )
+
+    fake_producer.publish.assert_awaited_once()
+    envelope = events_pb2.EventEnvelope()
+    envelope.ParseFromString(fake_producer.publish.await_args.kwargs["value"])
+    assert envelope.cp_status.status == "Faulted"
+    assert envelope.cp_status.error_code == "ConnectorLockFailure"
+    # Vendor-extension fields must round-trip too — operators page on
+    # vendor_error_code when the OCPP standard code isn't specific
+    # enough.
+    assert envelope.cp_status.vendor_error_code == "VENDOR-LOCK-7"
+    assert envelope.cp_status.info == "lock motor stalled"
+
+
+@pytest.mark.asyncio
+async def test_metric_label_carries_error_code(
+    fake_cp: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`STATUS_NOTIFICATIONS_TOTAL` is labelled by both `status` and
+    `error_code`; both must reflect the charger's report. Without
+    this, the fleet dashboard's "faults by error_code" panel is
+    silently empty."""
+    from eveys_ocpp.metrics import registry as metrics_registry
+
+    monkeypatch.setattr(status_notification, "update_status", AsyncMock())
+
+    # Capture the current value to confirm it increments by 1.
+    before = metrics_registry.STATUS_NOTIFICATIONS_TOTAL.labels(
+        status="Faulted", error_code="EVCommunicationError"
+    )._value.get()
+
+    await status_notification.handle(
+        fake_cp,
+        connector_id=1,
+        status="Faulted",
+        error_code="EVCommunicationError",
+    )
+
+    after = metrics_registry.STATUS_NOTIFICATIONS_TOTAL.labels(
+        status="Faulted", error_code="EVCommunicationError"
+    )._value.get()
+    assert after == before + 1
