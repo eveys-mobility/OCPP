@@ -14,13 +14,20 @@ import sys
 
 from tools.load.report import render_markdown
 from tools.load.scenario import ScenarioResult
-from tools.load.scenarios import boot_storm, reconnect_storm
+from tools.load.scenarios import boot_storm, postgres_kill, reconnect_storm, redis_kill
 
 # Closed registry of scenarios. Adding a new scenario means a one-line
 # edit here plus a new module under `tools/load/scenarios/`.
+#
+# DR drill scenarios (E5-10) sit here alongside load scenarios because
+# they share the simulator + Markdown reporter machinery. They differ
+# in shape — they kill infrastructure rather than driving load — but
+# the runner doesn't need to care.
 _SCENARIOS = {
     "boot_storm": boot_storm,
     "reconnect_storm": reconnect_storm,
+    "postgres_kill": postgres_kill,
+    "redis_kill": redis_kill,
 }
 
 
