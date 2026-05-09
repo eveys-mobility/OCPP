@@ -24,30 +24,21 @@
 
 # eveys-mobility/ocpp
 
-OCPP 1.6 / 2.0.1 CSMS gateway. Charger-facing WebSocket termination,
-schema-validated message dispatch, and a stable backend-facing
-contract (REST + gRPC + Kafka + webhooks). Built to plug in front of
-any backend that owns the user / session / billing domain.
+OCPP 1.6 / 2.0.1 CSMS gateway. Terminates charger WebSockets,
+schema-validates and dispatches OCPP messages, and exposes a
+backend-facing contract over REST, gRPC, Kafka, and webhooks.
 
-Built for horizontal scale: multi-pod from day one, sticky charger
-routing via Envoy ring-hash on `cp_id`, Redis-backed online registry,
-Redis pub/sub cross-pod command bus, idempotency cache for inbound
-replays, Kafka-tailing ClickHouse ingestor for telemetry, graceful
-drain on `SIGTERM`. Python 3.13 + asyncio + uvloop, all transports
-(WS, gRPC, REST, Kafka producer) running inside one
-`asyncio.TaskGroup`.
+Python 3.13 + asyncio + uvloop. Horizontally scaled out of the box:
+Envoy ring-hash on `cp_id`, Redis-backed online registry and
+cross-pod command bus, idempotency cache for inbound replays,
+Kafka-tailing ClickHouse ingestor for telemetry, graceful drain on
+`SIGTERM`. Apache-2.0.
 
-Backend-agnostic. The gateway depends on its backend peer only
-through the HTTP contract in
-[`docs/integration/01-backend-rest-contract.md`](./docs/integration/01-backend-rest-contract.md)
-— `/authorize`, `/sessions/open`, `/sessions/close`,
-`/charge-points/register`. Any backend that implements those
-endpoints can sit behind it. Apache-2.0 licensed.
-
-**Status.** OCPP 1.6 Core profile complete (per-test-case matrix:
-[`docs/08-ocpp-conformance.md`](./docs/08-ocpp-conformance.md)).
-OCPP 2.0.1 in progress, isolated under `handlers/v201/`. OCTT
-certification target: see [`docs/09-certification-readiness.md`](./docs/09-certification-readiness.md).
+**Status.** OCPP 1.6 Core profile complete; 2.0.1 in progress under
+`handlers/v201/`. Conformance matrix:
+[`docs/08-ocpp-conformance.md`](./docs/08-ocpp-conformance.md). OCTT
+certification target:
+[`docs/09-certification-readiness.md`](./docs/09-certification-readiness.md).
 
 > New to this repo? [Try it in 5 minutes](#try-it-in-5-minutes).
 
