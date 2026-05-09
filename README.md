@@ -22,7 +22,7 @@
   <a href="https://github.com/eveys-mobility/OCPP/commits/main"><img alt="Last commit" src="https://img.shields.io/github/last-commit/eveys-mobility/OCPP"></a>
 </p>
 
-# eveys/ocpp
+# eveys-mobility/ocpp
 
 OCPP 1.6 / 2.0.1 CSMS gateway. Charger-facing WebSocket termination,
 schema-validated message dispatch, and a stable backend-facing
@@ -37,13 +37,12 @@ drain on `SIGTERM`. Python 3.13 + asyncio + uvloop, all transports
 (WS, gRPC, REST, Kafka producer) running inside one
 `asyncio.TaskGroup`.
 
-The repo is developed and deployed by [Eveys](https://eveys.com) as
-the charger-facing tier of its EV-charging platform, but it depends
-on the Eveys backend only through the documented HTTP contract in
-[`docs/integration/01-backend-rest-contract.md`](./docs/integration/01-backend-rest-contract.md).
-Any backend that implements that contract — `/authorize`,
-`/sessions/open`, `/sessions/close`, `/charge-points/register` — can
-sit behind it. Apache-2.0 licensed.
+Backend-agnostic. The gateway depends on its backend peer only
+through the HTTP contract in
+[`docs/integration/01-backend-rest-contract.md`](./docs/integration/01-backend-rest-contract.md)
+— `/authorize`, `/sessions/open`, `/sessions/close`,
+`/charge-points/register`. Any backend that implements those
+endpoints can sit behind it. Apache-2.0 licensed.
 
 **Status.** OCPP 1.6 Core profile complete (per-test-case matrix:
 [`docs/08-ocpp-conformance.md`](./docs/08-ocpp-conformance.md)).
@@ -92,7 +91,7 @@ event loop on one process, supervised by `asyncio.TaskGroup` (see
 | Kafka producer | `EVEYS_OCPP_KAFKA_BROKERS` | gateway → bus | Versioned event envelope (`proto/events/v1/events.proto`), `cp_id` partition key. Topics: `cp.boot`, `cp.status`, `cp.meter`, `tx.started`. |
 | Webhooks | gateway-initiated HTTP POST | gateway → backend | Kafka-tailing dispatcher with HMAC-signed envelopes and exponential-backoff retry ([ADR-0027](./docs/adr/0027-webhook-delivery.md)). Push counterpart to Kafka consumer-group subscription. |
 
-The gateway also calls the Eveys backend on the OCPP hot path —
+The gateway also calls the configured backend on the OCPP hot path —
 `POST /api/eveys/authorize`, `/sessions/open`, `/sessions/close`,
 `/charge-points/register` — over `httpx`. Asymmetric envelope
 (outbound enveloped, inbound raw); contract in
@@ -123,10 +122,10 @@ The gateway also calls the Eveys backend on the OCPP hot path —
         ▼               ▼               ▼               ▼
    ┌─────────┐    ┌─────────┐    ┌──────────┐   ┌─────────────┐
    │Postgres │    │  Redis  │    │  Kafka   │   │ Backend     │
-   │         │    │ • online│    │          │   │  (Eveys     │
-   │relational│   │   reg.  │    │event     │   │   API,      │
-   │ state   │    │ • pub/  │    │firehose  │   │   separate  │
-   │         │    │   sub   │    │          │   │   service)  │
+   │         │    │ • online│    │          │   │ (peer       │
+   │relational│   │   reg.  │    │event     │   │  service,   │
+   │ state   │    │ • pub/  │    │firehose  │   │  per        │
+   │         │    │   sub   │    │          │   │  contract)  │
    │         │    │   bus   │    │          │   └─────────────┘
    │         │    │ • idem. │    │          │     ↑      ↑
    │         │    │   cache │    │          │     │      │
@@ -150,10 +149,10 @@ The gateway also calls the Eveys backend on the OCPP hot path —
 
 Two boundary rules:
 
-- Chargers connect only to `eveys/ocpp`. No other service holds an
+- Chargers connect only to the gateway. No other service holds an
   OCPP socket.
-- `eveys/ocpp` owns no user, billing, or session state. All of those
-  decisions are deferred to the Eveys backend over REST per
+- The gateway owns no user, billing, or session state. All of those
+  decisions are deferred to the configured backend over REST per
   [`docs/integration/01-backend-rest-contract.md`](./docs/integration/01-backend-rest-contract.md).
 
 Component-level narrative: [`docs/00-overview.md`](./docs/00-overview.md).
@@ -494,7 +493,7 @@ Quick reference for OCPP vocabulary used throughout the codebase:
 | Term | Definition |
 |---|---|
 | OCPP | Open Charge Point Protocol; charger ↔ CSMS messaging spec by the [Open Charge Alliance](https://www.openchargealliance.org/). This service implements **OCPP-J 1.6** and **OCPP 2.0.1**. |
-| CSMS | Charging Station Management System — the OCPP server role. `eveys/ocpp` is a CSMS. |
+| CSMS | Charging Station Management System — the OCPP server role. This service is a CSMS. |
 | CP / charge point | A single physical charger. |
 | `cp_id` | Charge-point identifier; carried on every log line, metric, and DB row. The WS URL path (`/<cp_id>`) is the consistent-hash key for Envoy. |
 | OCPP CALL | One protocol message — `BootNotification`, `Authorize`, `StartTransaction`, `MeterValues`, `StopTransaction`, `StatusNotification`, etc. |
