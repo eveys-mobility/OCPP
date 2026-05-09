@@ -187,6 +187,117 @@ class ClickHouseReadClient:
             out.setdefault(cp_id, []).append(record)
         return out
 
+    async def fetch_transaction_telemetry(
+        self,
+        *,
+        cp_id: str,
+        transaction_id: int,
+    ) -> dict[str, Any]:
+        """Bounded telemetry snapshot for one transaction.
+
+        Two scans of `cp_meter` filtered by (`cp_id`, `transaction_id`) —
+        one for SoC start/last, one for per-phase voltage/current/power.
+        The transaction id pins the work so a long-running session can't
+        blow up the result set: at most 1 row from the SoC query and 9
+        from the phases query (3 phases x 3 measurands).
+
+        Returns a dict shaped for `TransactionTelemetry`:
+            {
+                "soc": {"start_pct": ..., "last_pct": ..., "last_at": ...},
+                "phases": {"L1": {voltage_v, current_a, power_w, last_at}, ...},
+            }
+
+        Phases the charger never reported are absent from `phases`. SoC
+        fields are `None` when no SoC sample exists for the transaction.
+        """
+        assert self._conn is not None  # narrowed by start()
+
+        # Both queries restrict to (cp_id, transaction_id) so the
+        # MergeTree partition + order key (cp_id, occurred_at) prunes
+        # the scan. The string-cast on `value` matches `cp_meter`'s
+        # column type — sampled values are stored as Strings (DDL
+        # at clickhouse/ddl/0002_create_cp_meter.sql); cast at read.
+        soc_sql = """
+            SELECT
+                argMin(toFloat64OrNull(sv.value), occurred_at) AS start_pct,
+                argMax(toFloat64OrNull(sv.value), occurred_at) AS last_pct,
+                max(occurred_at) AS last_at
+            FROM cp_meter
+            ARRAY JOIN sampled_values AS sv
+            WHERE cp_id = {cp_id}
+              AND transaction_id = {transaction_id}
+              AND sv.measurand = 'SoC'
+        """
+        phases_sql = """
+            SELECT
+                sv.phase AS phase,
+                sv.measurand AS measurand,
+                argMax(toFloat64OrNull(sv.value), occurred_at) AS value,
+                max(occurred_at) AS last_at
+            FROM cp_meter
+            ARRAY JOIN sampled_values AS sv
+            WHERE cp_id = {cp_id}
+              AND transaction_id = {transaction_id}
+              AND sv.phase IN ('L1', 'L2', 'L3')
+              AND sv.measurand IN ('Voltage', 'Current.Import', 'Power.Active.Import')
+            GROUP BY phase, measurand
+        """
+        params: dict[str, Any] = {"cp_id": cp_id, "transaction_id": transaction_id}
+
+        async with self._conn.cursor() as cursor:
+            await cursor.execute(soc_sql, params)
+            soc_cols = [d[0] for d in cursor.description]
+            soc_rows = await cursor.fetchall()
+
+            await cursor.execute(phases_sql, params)
+            phase_cols = [d[0] for d in cursor.description]
+            phase_rows = await cursor.fetchall()
+
+        soc: dict[str, Any] = {"start_pct": None, "last_pct": None, "last_at": None}
+        if soc_rows:
+            row = dict(zip(soc_cols, soc_rows[0], strict=True))
+            # `max(occurred_at)` over an empty filter yields the epoch sentinel
+            # (1970-01-01) on ClickHouse — guard so we don't surface that as
+            # a real timestamp.
+            last_at = row["last_at"]
+            has_data = row["start_pct"] is not None or row["last_pct"] is not None
+            soc = {
+                "start_pct": row["start_pct"],
+                "last_pct": row["last_pct"],
+                "last_at": last_at.isoformat() if has_data and last_at is not None else None,
+            }
+
+        phases: dict[str, dict[str, Any]] = {}
+        _measurand_to_field = {
+            "Voltage": "voltage_v",
+            "Current.Import": "current_a",
+            "Power.Active.Import": "power_w",
+        }
+        for raw in phase_rows:
+            row = dict(zip(phase_cols, raw, strict=True))
+            phase = row["phase"]
+            field = _measurand_to_field.get(row["measurand"])
+            if field is None:
+                continue
+            snap = phases.setdefault(
+                phase,
+                {"voltage_v": None, "current_a": None, "power_w": None, "last_at": None},
+            )
+            snap[field] = row["value"]
+            # `last_at` per phase = max occurred_at across that phase's
+            # measurands (groupBy is per measurand; we fold here).
+            row_last = row["last_at"]
+            if row_last is not None and (snap["last_at"] is None or row_last > snap["last_at"]):
+                snap["last_at"] = row_last
+
+        # Format last_at strings only after the fold so comparisons
+        # above stay on native datetimes.
+        for snap in phases.values():
+            if snap["last_at"] is not None:
+                snap["last_at"] = snap["last_at"].isoformat()
+
+        return {"soc": soc, "phases": phases}
+
     async def fetch_status_history(
         self,
         *,

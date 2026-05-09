@@ -9,12 +9,21 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 
+from eveys_ocpp.api._app import make_app
+from eveys_ocpp.settings import Settings
 
-def _tx_row(transaction_id: int = 999, *, stopped: bool = False) -> dict[str, Any]:
+
+def _tx_row(
+    transaction_id: int = 999,
+    *,
+    stopped: bool = False,
+    cp_id: str = "CP_001",
+) -> dict[str, Any]:
     return {
         "id": transaction_id,
         "transaction_id": transaction_id,
         "charge_point_id": 1,
+        "cp_id": cp_id,
         "connector_id": 1,
         "id_tag": "RFID_001",
         "meter_start_wh": 1_000_000,
@@ -235,3 +244,113 @@ async def test_list_global_does_not_collide_with_detail_route(
     listing = await client.get("/api/v1/transactions")
     assert listing.status_code == 200
     assert listing.json()["transactions"] == []
+
+
+# ----- telemetry on detail endpoint -----------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_detail_includes_telemetry_block(
+    client: httpx.AsyncClient,
+    fake_ch_client: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Detail response stitches the ClickHouse telemetry snapshot under
+    `telemetry`, scoped by (cp_id, transaction_id)."""
+    from eveys_ocpp.api import transactions as tx_module
+
+    monkeypatch.setattr(
+        tx_module,
+        "get_transaction_by_id",
+        AsyncMock(return_value=_tx_row(transaction_id=999, stopped=True, cp_id="CP_BERLIN_001")),
+    )
+    fake_ch_client.fetch_transaction_telemetry = AsyncMock(
+        return_value={
+            "soc": {
+                "start_pct": 38.0,
+                "last_pct": 81.0,
+                "last_at": "2026-05-05T15:00:00+00:00",
+            },
+            "phases": {
+                "L1": {
+                    "voltage_v": 231.4,
+                    "current_a": 14.8,
+                    "power_w": 3417.3,
+                    "last_at": "2026-05-05T15:00:00+00:00",
+                },
+            },
+        }
+    )
+
+    response = await client.get("/api/v1/transactions/999")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["telemetry"]["soc"]["start_pct"] == 38.0
+    assert body["telemetry"]["soc"]["last_pct"] == 81.0
+    assert body["telemetry"]["phases"]["L1"]["voltage_v"] == 231.4
+    assert body["telemetry"]["phases"]["L1"]["current_a"] == 14.8
+    assert body["telemetry"]["phases"]["L1"]["power_w"] == 3417.3
+
+    fake_ch_client.fetch_transaction_telemetry.assert_awaited_once_with(
+        cp_id="CP_BERLIN_001", transaction_id=999
+    )
+
+
+@pytest.mark.asyncio
+async def test_detail_telemetry_null_when_no_ch_client(
+    settings: Settings,
+    fake_session_factory: Any,
+    fake_registry: Any,
+    fake_command_service: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Compose-smoke / unit-test gateways may run without ClickHouse —
+    surface `telemetry: null` instead of 500ing on a detail call."""
+    app = make_app(
+        session_factory=fake_session_factory,
+        settings=settings,
+        registry=fake_registry,
+        redis=None,
+        command_service=fake_command_service,
+        ch_client=None,
+    )
+
+    from eveys_ocpp.api import transactions as tx_module
+
+    monkeypatch.setattr(
+        tx_module, "get_transaction_by_id", AsyncMock(return_value=_tx_row(transaction_id=42))
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://gw",
+        headers={"Authorization": "Bearer test-token-foundation"},
+    ) as ac:
+        response = await ac.get("/api/v1/transactions/42")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["transaction_id"] == 42
+    assert body["telemetry"] is None
+
+
+@pytest.mark.asyncio
+async def test_list_responses_have_no_telemetry_field(
+    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Telemetry is detail-only — list responses must stay Postgres-only
+    so cursor pages don't fan out N+1 ClickHouse queries."""
+    from eveys_ocpp.api import transactions as tx_module
+
+    monkeypatch.setattr(
+        tx_module,
+        "list_transactions",
+        AsyncMock(return_value=[_tx_row_with_cp(1, "CP_X"), _tx_row_with_cp(2, "CP_Y")]),
+    )
+
+    response = await client.get("/api/v1/transactions")
+
+    body = response.json()
+    for row in body["transactions"]:
+        assert "telemetry" not in row

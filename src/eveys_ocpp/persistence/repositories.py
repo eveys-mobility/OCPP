@@ -924,14 +924,26 @@ async def get_transaction_by_id(
     """Single-transaction detail, looked up by `transaction_id` (the
     OCPP-visible id, not the surrogate PK).
 
+    Joins ``charge_points`` so the projected dict carries the
+    OCPP-visible ``cp_id`` string — the detail route needs it to scope
+    the ClickHouse telemetry lookup, and it's the same shape callers
+    already get from ``list_transactions``.
+
     Returns `None` when no row exists (route handler → 404
     `UNKNOWN_TRANSACTION_ID`)."""
-    stmt = select(Transaction).where(Transaction.transaction_id == transaction_id)
+    stmt = (
+        select(Transaction, ChargePoint.cp_id)
+        .join(ChargePoint, Transaction.charge_point_id == ChargePoint.id)
+        .where(Transaction.transaction_id == transaction_id)
+    )
     result = await session.execute(stmt)
-    tx = result.scalar_one_or_none()
-    if tx is None:
+    row = result.one_or_none()
+    if row is None:
         return None
-    return _transaction_to_dict(tx)
+    tx, cp_id_value = row
+    out = _transaction_to_dict(tx)
+    out["cp_id"] = cp_id_value
+    return out
 
 
 def _reservation_to_dict(r: Reservation) -> dict[str, Any]:
