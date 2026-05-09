@@ -2255,6 +2255,94 @@ paths:
       summary: Readiness probe (auth-exempt)
       tags:
       - health
+  /api/v1/transactions:
+    get:
+      operationId: list_transactions_global_route_api_v1_transactions_get
+      parameters:
+      - in: query
+        name: cursor
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Cursor
+      - in: query
+        name: limit
+        required: false
+        schema:
+          anyOf:
+          - maximum: 10000
+            minimum: 1
+            type: integer
+          - type: 'null'
+          title: Limit
+      - in: query
+        name: cp_id
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Cp Id
+      - in: query
+        name: id_tag
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Id Tag
+      - in: query
+        name: active
+        required: false
+        schema:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Active
+      - in: query
+        name: from
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: From
+      - in: query
+        name: to
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: To
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TransactionListResponse'
+                additionalProperties: true
+                title: Response List Transactions Global Route Api V1 Transactions
+                  Get
+                type: object
+          description: Successful Response
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+          description: Bad cursor or unparseable from/to timestamp.
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: List transactions (cursor-paginated, global)
+      tags:
+      - transactions
   /api/v1/transactions/{transaction_id}:
     get:
       operationId: get_transaction_route_api_v1_transactions__transaction_id__get

@@ -864,6 +864,60 @@ async def list_transactions_by_cp(
     return [_transaction_to_dict(tx) for tx in result.scalars().all()]
 
 
+async def list_transactions(
+    session: AsyncSession,
+    *,
+    after_id: int | None,
+    limit: int,
+    cp_id: str | None = None,
+    id_tag: str | None = None,
+    active: bool | None = None,
+    started_from: datetime | None = None,
+    started_to: datetime | None = None,
+) -> list[dict[str, Any]]:
+    """Global cursor-paginated transactions list.
+
+    Same filter shape as ``list_transactions_by_cp`` plus an optional
+    ``cp_id`` filter (exact match). Unlike the per-cp variant this
+    function does not return ``None`` for unknown chargers — an unknown
+    or omitted ``cp_id`` simply yields the unfiltered (or empty) result.
+
+    Joins ``charge_points`` so each row's projected dict includes the
+    charger's OCPP-visible ``cp_id`` string; the BaaS / operator
+    console can render rows without a second lookup. Returns up to
+    ``limit + 1`` rows for next-page detection.
+    """
+    stmt = select(Transaction, ChargePoint.cp_id).join(
+        ChargePoint, Transaction.charge_point_id == ChargePoint.id
+    )
+    conditions = []
+    if cp_id is not None:
+        conditions.append(ChargePoint.cp_id == cp_id)
+    if id_tag is not None:
+        conditions.append(Transaction.id_tag == id_tag)
+    if active is True:
+        conditions.append(Transaction.stopped_reported_at.is_(None))
+    elif active is False:
+        conditions.append(Transaction.stopped_reported_at.is_not(None))
+    if started_from is not None:
+        conditions.append(Transaction.started_reported_at >= started_from)
+    if started_to is not None:
+        conditions.append(Transaction.started_reported_at <= started_to)
+    if after_id is not None:
+        conditions.append(Transaction.id > after_id)
+    if conditions:
+        stmt = stmt.where(and_(*conditions))
+    stmt = stmt.order_by(Transaction.id).limit(limit + 1)
+
+    result = await session.execute(stmt)
+    rows: list[dict[str, Any]] = []
+    for tx, cp_id_value in result.all():
+        row = _transaction_to_dict(tx)
+        row["cp_id"] = cp_id_value
+        rows.append(row)
+    return rows
+
+
 async def get_transaction_by_id(
     session: AsyncSession, *, transaction_id: int
 ) -> dict[str, Any] | None:
