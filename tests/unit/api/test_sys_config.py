@@ -89,7 +89,7 @@ async def test_every_entry_carries_required_metadata(
         # carries one).
         assert entry["description"], f"{entry['key']} has empty description"
         # Restart impact must be one of our enum values.
-        assert entry["restart"] in {"none", "gateway", "baas", "both"}
+        assert entry["restart"] in {"none", "gateway", "console", "both"}
         assert entry["source"] in {"env", "default"}
 
 
