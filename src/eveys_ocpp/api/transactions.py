@@ -237,5 +237,23 @@ async def get_transaction_route(request: Request, transaction_id: int) -> dict[s
             message=f"unknown transaction_id: {transaction_id}",
         )
     response = _transaction_to_response(tx)
+    response["telemetry"] = await _telemetry_for(request, tx)
     response["request_id"] = request.state.request_id
     return response
+
+
+async def _telemetry_for(request: Request, tx: dict[str, Any]) -> dict[str, Any] | None:
+    """Fetch the per-transaction telemetry snapshot, or `None` when the
+    gateway has no ClickHouse read client wired in.
+
+    Compose-smoke and unit-test apps run without ClickHouse; surface
+    `telemetry: null` in those environments rather than 500ing on a
+    detail call."""
+    ch_client = getattr(request.app.state, "ch_client", None)
+    if ch_client is None:
+        return None
+    result: dict[str, Any] = await ch_client.fetch_transaction_telemetry(
+        cp_id=tx["cp_id"],
+        transaction_id=tx["transaction_id"],
+    )
+    return result

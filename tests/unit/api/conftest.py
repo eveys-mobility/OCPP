@@ -95,6 +95,12 @@ def fake_ch_client() -> MagicMock:
     client.fetch_meter_values = AsyncMock(return_value=[])
     client.fetch_status_history = AsyncMock(return_value=[])
     client.fetch_latest_connector_statuses = AsyncMock(return_value={})
+    client.fetch_transaction_telemetry = AsyncMock(
+        return_value={
+            "soc": {"start_pct": None, "last_pct": None, "last_at": None},
+            "phases": {},
+        }
+    )
     return client
 
 

@@ -240,6 +240,57 @@ class ChargePointListResponse(BaseModel):
 # --------------------------------------------------------------------------
 
 
+class SocSummary(BaseModel):
+    """State-of-charge summary for one transaction.
+
+    `start_pct` is the earliest SoC sample inside the transaction's
+    window; `last_pct` is the most recent. For a stopped transaction,
+    `last_pct` is effectively the SoC at stop. Any field is `null`
+    when the charger never reported SoC."""
+
+    start_pct: float | None = None
+    last_pct: float | None = None
+    last_at: str | None = Field(
+        default=None,
+        description="ISO 8601 timestamp of the most recent SoC sample.",
+    )
+
+
+class PhaseSnapshot(BaseModel):
+    """Most-recent per-phase electrical snapshot for one transaction.
+
+    `argMax(value, occurred_at)` per measurand on the named phase
+    (`L1`, `L2`, `L3`). Each field is `null` when the charger never
+    reported that measurand on that phase — single-phase chargers
+    populate only one phase, DC chargers may populate none."""
+
+    voltage_v: float | None = None
+    current_a: float | None = None
+    power_w: float | None = None
+    last_at: str | None = Field(
+        default=None,
+        description="ISO 8601 timestamp of the most recent sample on this phase.",
+    )
+
+
+class TransactionTelemetry(BaseModel):
+    """ClickHouse-backed telemetry summary attached to the transaction
+    detail endpoint.
+
+    Bounded shape — SoC start/last and one snapshot per phase — so the
+    response stays small regardless of session length. Callers wanting
+    the full curve should hit
+    `GET /api/v1/charge-points/{cp_id}/meter-values` with a window."""
+
+    soc: SocSummary
+    phases: dict[str, PhaseSnapshot] = Field(
+        description=(
+            "Keyed by OCPP 1.6 phase name (`L1`, `L2`, `L3`). Phases the "
+            "charger never reported are absent from the map."
+        ),
+    )
+
+
 class Transaction(BaseModel):
     transaction_id: int = Field(description="OCPP 1.6 transaction id assigned by the gateway.")
     cp_id: str
@@ -254,6 +305,14 @@ class Transaction(BaseModel):
 
 
 class TransactionDetail(Transaction):
+    telemetry: TransactionTelemetry | None = Field(
+        default=None,
+        description=(
+            "ClickHouse-backed snapshot — SoC start/last and per-phase "
+            "voltage/current/power. `null` when the gateway has no "
+            "ClickHouse read client configured."
+        ),
+    )
     request_id: str
 
     model_config = {
@@ -269,6 +328,33 @@ class TransactionDetail(Transaction):
                 "stopped_at": "2026-05-07T12:30:00+00:00",
                 "stop_reason": "Local",
                 "open": False,
+                "telemetry": {
+                    "soc": {
+                        "start_pct": 38.0,
+                        "last_pct": 81.0,
+                        "last_at": "2026-05-07T12:29:58+00:00",
+                    },
+                    "phases": {
+                        "L1": {
+                            "voltage_v": 231.4,
+                            "current_a": 14.8,
+                            "power_w": 3417.3,
+                            "last_at": "2026-05-07T12:29:58+00:00",
+                        },
+                        "L2": {
+                            "voltage_v": 230.9,
+                            "current_a": 14.6,
+                            "power_w": 3370.5,
+                            "last_at": "2026-05-07T12:29:58+00:00",
+                        },
+                        "L3": {
+                            "voltage_v": 231.1,
+                            "current_a": 14.7,
+                            "power_w": 3393.0,
+                            "last_at": "2026-05-07T12:29:58+00:00",
+                        },
+                    },
+                },
                 "request_id": "9b3c5d18-1f7c-4b6a-8e0e-5b9a3c4f2e10",
             }
         }
@@ -431,14 +517,17 @@ __all__ = [
     "HealthResponse",
     "MeterValueSample",
     "MeterValuesResponse",
+    "PhaseSnapshot",
     "RemoteStartRequest",
     "RemoteStopRequest",
     "Reservation",
     "ReservationListResponse",
     "ResetRequest",
+    "SocSummary",
     "StatusEvent",
     "StatusHistoryResponse",
     "Transaction",
     "TransactionDetail",
     "TransactionListResponse",
+    "TransactionTelemetry",
 ]
