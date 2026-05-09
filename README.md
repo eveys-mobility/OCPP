@@ -135,12 +135,8 @@ The gateway also calls the configured backend on the OCPP hot path —
                               └──────────────┘           │
                                                          │
         Hot path (Authorize / sessions/open / close) ────┘
-        via httpx, asymmetric envelope per ADR-0023
+        via httpx, asymmetric envelope
 ```
-
-Component narrative in [`docs/00-overview.md`](./docs/00-overview.md);
-decision rationale in [`docs/05-architecture-decisions.md`](./docs/05-architecture-decisions.md);
-backend contract in [`docs/integration/01-backend-rest-contract.md`](./docs/integration/01-backend-rest-contract.md).
 
 ---
 
