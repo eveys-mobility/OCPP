@@ -2255,6 +2255,21 @@ paths:
       summary: Readiness probe (auth-exempt)
       tags:
       - health
+  /api/v1/sys/config:
+    get:
+      operationId: get_sys_config_api_v1_sys_config_get
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Get Sys Config Api V1 Sys Config Get
+                type: object
+          description: Successful Response
+      summary: GET gateway configuration with per-key metadata (read-only)
+      tags:
+      - sys-config
   /api/v1/transactions:
     get:
       operationId: list_transactions_global_route_api_v1_transactions_get

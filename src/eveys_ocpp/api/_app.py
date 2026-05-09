@@ -45,6 +45,7 @@ from eveys_ocpp.api import (
     health,
     ready,
     reservations,
+    sys_config,
     timeseries,
     transactions,
 )
@@ -191,6 +192,7 @@ def make_app(
     app.include_router(commands.router, prefix="/api/v1")
     app.include_router(timeseries.router, prefix="/api/v1")
     app.include_router(admin.router, prefix="/api/v1")
+    app.include_router(sys_config.router, prefix="/api/v1")
 
     return app
 
