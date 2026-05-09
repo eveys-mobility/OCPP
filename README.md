@@ -24,37 +24,48 @@
 
 # eveys/ocpp
 
-> **The OCPP gateway for the [Eveys](https://eveys.com) EV-charging platform** — the server every Eveys-connected EV charger talks to.
+OCPP 1.6 / 2.0.1 CSMS gateway. Charger-facing WebSocket termination,
+schema-validated message dispatch, and a stable backend-facing
+contract (REST + gRPC + Kafka + webhooks). Built to plug in front of
+any backend that owns the user / session / billing domain.
 
-When you plug your EV into a public charger, the charger doesn't run
-the show by itself — it talks over the internet to a server that says
-"yes, this RFID tag is allowed", "start the session now", "log this
-much energy delivered". The protocol it speaks is called **OCPP**.
-**`eveys/ocpp` is that server.** A driver tapping their card,
-operators monitoring stations, the billing system charging a
-customer — all of it ultimately flows through this service.
+Built for horizontal scale: multi-pod from day one, sticky charger
+routing via Envoy ring-hash on `cp_id`, Redis-backed online registry,
+Redis pub/sub cross-pod command bus, idempotency cache for inbound
+replays, Kafka-tailing ClickHouse ingestor for telemetry, graceful
+drain on `SIGTERM`. Python 3.13 + asyncio + uvloop, all transports
+(WS, gRPC, REST, Kafka producer) running inside one
+`asyncio.TaskGroup`.
 
-It is built to handle thousands of chargers connected simultaneously,
-across multiple instances of itself running in parallel, with no
-single point of failure.
+The repo is developed and deployed by [Eveys](https://eveys.com) as
+the charger-facing tier of its EV-charging platform, but it depends
+on the Eveys backend only through the documented HTTP contract in
+[`docs/integration/01-backend-rest-contract.md`](./docs/integration/01-backend-rest-contract.md).
+Any backend that implements that contract — `/authorize`,
+`/sessions/open`, `/sessions/close`, `/charge-points/register` — can
+sit behind it. Apache-2.0 licensed.
 
-> **Brand-new to this repo?** You can have a working stack on your
-> laptop in **five minutes**. Skip to [Try it in 5 minutes](#try-it-in-5-minutes).
+**Status.** OCPP 1.6 Core profile complete (per-test-case matrix:
+[`docs/08-ocpp-conformance.md`](./docs/08-ocpp-conformance.md)).
+OCPP 2.0.1 in progress, isolated under `handlers/v201/`. OCTT
+certification target: see [`docs/09-certification-readiness.md`](./docs/09-certification-readiness.md).
+
+> New to this repo? [Try it in 5 minutes](#try-it-in-5-minutes).
 
 ---
 
 ## Table of contents
 
-- [Plain-English glossary](#plain-english-glossary)
-- [What this repo gives you](#what-this-repo-gives-you)
-- [How it fits into Eveys](#how-it-fits-into-eveys)
+- [Surfaces](#surfaces)
+- [Architecture](#architecture)
 - [Try it in 5 minutes](#try-it-in-5-minutes)
 - [Reading this repo by role](#reading-this-repo-by-role)
+- [Terms (OCPP-specific)](#terms-ocpp-specific)
 - [The OpenAPI / Swagger UI](#the-openapi--swagger-ui)
 - [Make targets — full reference](#make-targets--full-reference)
-- [How it scales: multi-pod, in plain words](#how-it-scales-multi-pod-in-plain-words)
-- [Other things it does](#other-things-it-does)
-- [Stack (every dep, with versions and licenses)](#stack-every-dep-with-versions-and-licenses)
+- [Multi-pod](#multi-pod)
+- [Other features](#other-features)
+- [Stack](#stack)
 - [Configuration](#configuration)
 - [Project layout](#project-layout)
 - [Tests](#tests)
@@ -67,113 +78,86 @@ single point of failure.
 
 ---
 
-## Plain-English glossary
+## Surfaces
 
-If any of these are unfamiliar, this section is your decoder ring.
-Skim it once and the rest of the README will read straight.
+The service exposes five surfaces. All five run inside a single
+event loop on one process, supervised by `asyncio.TaskGroup` (see
+`src/eveys_ocpp/__main__.py`).
 
-| Term | What it means |
-|---|---|
-| **EV** | Electric vehicle. |
-| **Charger** / **charge point** / **CP** | The physical box on a wall or on a parking-lot pole. Plugs in to your EV on one side, plugs into the internet on the other. |
-| **`cp_id`** | The unique ID of a single charger (e.g. `CP_ACME_42`). Every log line, metric, and database row carries it. |
-| **OCPP** | **O**pen **C**harge **P**oint **P**rotocol. The standard language chargers and servers use to talk. Maintained by the [Open Charge Alliance](https://www.openchargealliance.org/). This repo speaks **OCPP 1.6** (production) and **OCPP 2.0.1** (in progress). |
-| **CSMS** | **C**harging **S**tation **M**anagement **S**ystem. The OCPP spec's name for "the server side." That's what `eveys/ocpp` is. |
-| **OCPP CALL** | One message in the protocol — `BootNotification` (charger waking up), `Authorize` (is this RFID allowed?), `StartTransaction`, `MeterValues`, `StopTransaction`, etc. |
-| **WebSocket** | The kind of internet connection chargers use. Persistent (stays open 24/7) and bidirectional (server can push commands like "stop charging now"). |
-| **`wss://`** | WebSocket over TLS — the secure flavour. Chargers always use this in production. |
-| **Gateway** (`eveys/ocpp`, this repo) | The service that holds the WebSocket to every charger. **The only thing in the platform that talks to chargers directly.** |
-| **Backend** (separate Eveys service) | The rest of the platform — drivers, RFID tokens, sessions, billing, operator UI. **Doesn't talk to chargers directly**; the gateway calls it for decisions ("is this `id_tag` authorized?") and pushes events to it. |
-| **Pod** | One running instance of `eveys/ocpp`. Production runs many at once for scale and resilience. |
-| **Multi-pod** | Multiple pods, each holding a slice of the fleet's chargers. The gateway is designed for this from day one — see [How it scales](#how-it-scales-multi-pod-in-plain-words). |
+| Surface | Bind | Direction | Purpose |
+|---|---|---|---|
+| OCPP WebSocket | `:9000` (`:19000` under compose) | charger → gateway | OCPP-J 1.6 / 2.0.1 over WSS, subprotocol negotiated via `Sec-WebSocket-Protocol`. Every inbound message is validated against the [`mobilityhouse/ocpp`](https://github.com/mobilityhouse/ocpp) bundled JSON Schemas before dispatch. |
+| REST | `:8080` (`/api/v1/...`) | platform → gateway | Read state (charge-points, transactions, reservations, charging profiles, time-series) and issue CSMS-initiated commands (`RemoteStart`, `RemoteStop`, `Reset`, `ReserveNow`, `SetChargingProfile`, …). 28 routes, full OpenAPI 3.1 spec. |
+| gRPC | `:50051` | platform → gateway | Same command surface as REST, lower overhead, typed clients. Generated stubs under `src/eveys_ocpp/_generated/` from `proto/ocpp_gw/v1/gateway.proto`. |
+| Kafka producer | `EVEYS_OCPP_KAFKA_BROKERS` | gateway → bus | Versioned event envelope (`proto/events/v1/events.proto`), `cp_id` partition key. Topics: `cp.boot`, `cp.status`, `cp.meter`, `tx.started`. |
+| Webhooks | gateway-initiated HTTP POST | gateway → backend | Kafka-tailing dispatcher with HMAC-signed envelopes and exponential-backoff retry ([ADR-0027](./docs/adr/0027-webhook-delivery.md)). Push counterpart to Kafka consumer-group subscription. |
 
----
-
-## What this repo gives you
-
-If you've never touched this codebase, here's what's actually inside,
-in increasing order of how much you need to know about it:
-
-1. **A WebSocket server that speaks OCPP.** Chargers connect, the
-   server validates every message against the official OCPP JSON
-   Schemas, and dispatches it to a handler.
-
-2. **A REST API for the rest of the platform.** Backend services and
-   operator tools call `http://gateway/api/v1/...` to read state
-   ("which chargers are online?", "show me transaction X") and to
-   issue commands ("send `RemoteStart` to charger 42"). Full
-   **OpenAPI 3.1** spec, browsable Swagger UI, exportable for Postman.
-
-3. **A gRPC API doing the same job.** Same dispatch path; lower
-   overhead; for services that want a typed client instead of HTTP.
-
-4. **A Kafka event firehose.** Every interesting thing a charger
-   does (`MeterValues`, status changes, boots, transaction starts)
-   is published to Kafka, partitioned by `cp_id`. Downstream
-   consumers — billing, analytics, BFFs — subscribe.
-
-5. **Webhooks.** For backends that prefer push to subscribing to
-   Kafka, the gateway POSTs HMAC-signed envelopes to URLs configured
-   per event type, with exponential-backoff retry.
-
-6. **Production muscle.**
-   - Runs as **multiple pods at once** with sticky-by-`cp_id`
-     routing through Envoy.
-   - **Survives rolling deploys** without dropping charger
-     sessions (graceful drain).
-   - **Time-series telemetry** ends up in ClickHouse, fed by a
-     dedicated sidecar so the hot path never blocks on the analytics
-     store.
-   - **Idempotency cache** for chargers replaying messages on flaky
-     networks — same message in, same answer out, no duplicate
-     transactions.
-   - **Observability**: structured JSON logs, Prometheus metrics,
-     OpenTelemetry traces, Sentry error tracking.
-   - **Security**: per-charger Basic Auth at the WS edge (bcrypt),
-     TLS termination at Envoy, mTLS between Envoy and the gateway,
-     OCPP Security Profile (cert management, signed firmware updates,
-     security event log).
-
-You don't need to understand all of these on day one. Items 1–2 are
-plenty to get started.
+The gateway also calls the Eveys backend on the OCPP hot path —
+`POST /api/eveys/authorize`, `/sessions/open`, `/sessions/close`,
+`/charge-points/register` — over `httpx`. Asymmetric envelope
+(outbound enveloped, inbound raw); contract in
+[`docs/integration/`](./docs/integration/) and [ADR-0023](./docs/adr/0023-backend-rest-integration.md).
 
 ---
 
-## How it fits into Eveys
-
-A simple two-box mental model:
+## Architecture
 
 ```
-                                  Chargers
-                                     │
-                       OCPP over WebSocket (wss://)
-                                     │
-                                     ▼
-                          ┌──────────────────────┐
-                          │  eveys/ocpp          │   ← THIS REPO
-                          │  (the gateway)       │     "the only service
-                          └──────────────────────┘       that holds charger
-                                     │                   sockets"
-                                     │
-                  REST + gRPC + Kafka + webhooks
-                                     │
-                                     ▼
-                  ┌──────────────────────────────────────┐
-                  │  Eveys backend                       │
-                  │  (drivers · sessions · billing · UI) │
-                  └──────────────────────────────────────┘
+                            Chargers (fleet)
+                                  │ wss:// OCPP-J 1.6 / 2.0.1
+                                  ▼
+                          ┌───────────────┐
+                          │ Envoy edge    │  TLS termination,
+                          │ (RING_HASH on │  consistent-hash on URL :path
+                          │  :path)       │  → cp_id stickiness
+                          └───────┬───────┘
+                                  │ ws://  (HTTP/1.1, mTLS upstream)
+                  ┌───────────────┼───────────────┐
+                  ▼               ▼               ▼
+          ┌───────────┐   ┌───────────┐   ┌───────────┐
+          │ ocpp-gw   │   │ ocpp-gw   │   │ ocpp-gw   │   ← this service,
+          │  pod 1    │   │  pod 2    │   │  pod N    │     N replicas
+          └─────┬─────┘   └─────┬─────┘   └─────┬─────┘
+                │               │               │
+        ┌───────┴───────┬───────┴───────┬───────┴───────┐
+        ▼               ▼               ▼               ▼
+   ┌─────────┐    ┌─────────┐    ┌──────────┐   ┌─────────────┐
+   │Postgres │    │  Redis  │    │  Kafka   │   │ Backend     │
+   │         │    │ • online│    │          │   │  (Eveys     │
+   │relational│   │   reg.  │    │event     │   │   API,      │
+   │ state   │    │ • pub/  │    │firehose  │   │   separate  │
+   │         │    │   sub   │    │          │   │   service)  │
+   │         │    │   bus   │    │          │   └─────────────┘
+   │         │    │ • idem. │    │          │     ↑      ↑
+   │         │    │   cache │    │          │     │      │
+   └─────────┘    └─────────┘    └────┬─────┘     │      │
+                                      │           │      │
+                                      ▼           │      │
+                              ┌──────────────┐    │      │
+                              │ ClickHouse   │    │      │
+                              │ ingestor     │────┘      │
+                              │ (sidecar)    │  webhooks │
+                              └──────┬───────┘   (HMAC)  │
+                                     ▼                   │
+                              ┌──────────────┐           │
+                              │  ClickHouse  │           │
+                              │ (time-series)│           │
+                              └──────────────┘           │
+                                                         │
+        Hot path (Authorize / sessions/open / close) ────┘
+        via httpx, asymmetric envelope per ADR-0023
 ```
 
-Two rules to remember:
+Two boundary rules:
 
-- **Chargers only ever talk to `eveys/ocpp`.** Nothing else in the
-  platform talks to a charger.
-- **`eveys/ocpp` does not own user accounts, RFID tokens, or
-  billing.** When it needs a decision ("is this `id_tag`
-  authorized?"), it asks the backend over REST. When something
-  happens ("session started"), it tells the backend.
+- Chargers connect only to `eveys/ocpp`. No other service holds an
+  OCPP socket.
+- `eveys/ocpp` owns no user, billing, or session state. All of those
+  decisions are deferred to the Eveys backend over REST per
+  [`docs/integration/01-backend-rest-contract.md`](./docs/integration/01-backend-rest-contract.md).
 
-Diagram-and-narrative version: [`docs/00-overview.md`](./docs/00-overview.md).
+Component-level narrative: [`docs/00-overview.md`](./docs/00-overview.md).
+Decision rationale: [`docs/05-architecture-decisions.md`](./docs/05-architecture-decisions.md).
 
 ---
 
@@ -411,101 +395,116 @@ grouped by concern:
 
 ---
 
-## How it scales: multi-pod, in plain words
+## Multi-pod
 
-Production runs **many copies of `eveys/ocpp` at once**. Each copy
-is called a *pod* (Kubernetes term) and holds a slice of the fleet's
-chargers. Five pieces make this work — the short version:
+The gateway is designed for horizontal scale-out. N replicas run
+simultaneously, each holding a slice of the fleet's chargers. Five
+mechanisms make that work:
 
-### 1. Each charger sticks to one pod
+**Sticky charger routing — Envoy `RING_HASH` on `:path`.** The
+`cp_id` is encoded in the WS URL path. Envoy's consistent-hash LB
+policy hashes the path and routes the connection to the same upstream
+pod across reconnects. This keeps the per-pod idempotency cache and
+in-process `ChargePoint` state warm. Rationale and rejected
+alternatives (Nginx OSS, ALB, NLB, HAProxy, K8s `sessionAffinity`):
+[ADR-0007](./docs/adr/0007-envoy-as-the-load-balancer.md).
 
-When a charger reconnects, you want it to land on the same pod it
-used last time. That keeps caches warm and avoids unnecessary
-cross-pod chatter. **Envoy** (the L7 load balancer in front of the
-gateway) does this with a *consistent hash* on the URL path —
-because the `cp_id` is in the URL path, the same charger keeps
-hashing to the same pod.
-Why Envoy and not Nginx / NLB / ALB: [ADR-0007](./docs/adr/0007-envoy-as-the-load-balancer.md).
+**Online registry — Redis.** On WS accept, each pod writes
+`cp:online:{cp_id} → pod_id` with a TTL refresh; tombstoned on
+disconnect. O(1) lookup answers "which pod owns `CP_ACME_42`
+right now?" without scanning. `src/eveys_ocpp/registry.py`.
 
-### 2. Any pod can find any charger
+**Cross-pod command bus — Redis pub/sub.** Off-pod RPCs publish on
+`cp:cmd:{cp_id}`; every pod pattern-subscribes to `cp:cmd:*` and the
+owning pod dispatches to its in-process `ChargePoint`. The OCPP
+response is published on `cp:reply:{request_id}`; the originating
+pod resolves its in-flight future. Sub-second overhead under the
+30 s gRPC ceiling. JSON envelope with `v` field for forward-version
+skew. `src/eveys_ocpp/bus.py`; full design with rejected alternatives
+(NATS, Kafka request/reply, pod-to-pod gRPC, per-charger
+subscriptions): [ADR-0016](./docs/adr/0016-cross-pod-command-bus.md).
 
-Each pod, when it accepts a charger connection, writes
-`cp:online:{cp_id} → pod_id` into Redis with a TTL. So if pod 7
-needs to know "where is `CP_ACME_42` connected right now?", a single
-Redis lookup answers in O(1). This is the *online registry*.
+**Idempotency cache — Redis.** Inbound `BootNotification` and
+`StopTransaction` are keyed by `MessageId`; replays return the cached
+response. Prevents duplicate transactions / duplicate boot acks
+under flaky links. [ADR-0017](./docs/adr/0017-idempotency-cache.md).
 
-### 3. Any pod can send a command to any charger
+**Graceful drain.** `GET /api/v1/ready` is auth-exempt. On `SIGTERM`
+it flips to 503; Envoy's health check pulls the pod from rotation
+before the process exits. Reconnecting chargers land on a healthy
+sibling pod within the drain window. End-to-end test:
+`tests/e2e/test_two_pod_dispatch.py`.
 
-If the platform asks pod 3 to "send `RemoteStart` to `CP_ACME_42`",
-but `CP_ACME_42` is connected to pod 7, pod 3 publishes the command
-on a Redis pub/sub channel; pod 7 picks it up, dispatches it to its
-in-process `ChargePoint`, and publishes the response back; pod 3
-hands the response to the original caller. Sub-second overhead. This
-is the *cross-pod command bus*.
-Full design: [ADR-0016](./docs/adr/0016-cross-pod-command-bus.md).
-
-### 4. Replays don't break things
-
-Chargers on flaky networks replay messages. The gateway caches the
-response to certain message IDs (`BootNotification`,
-`StopTransaction`) so a replay returns the same answer it returned
-the first time — never a duplicated transaction or a duplicated boot
-ack. This is the *idempotency cache* (also Redis).
-ADR-0017.
-
-### 5. Rolling deploys don't drop chargers
-
-When a pod is about to shut down (deploy, scale-down, node drain),
-the OS sends it `SIGTERM`. The gateway's readiness endpoint
-(`GET /api/v1/ready`) flips to **503**. Envoy's health check
-notices, pulls the pod out of rotation, and chargers reconnecting in
-that window land on a healthy sibling pod. Only **then** does the
-old pod actually exit. This is *graceful drain*.
-
-That's the entire multi-pod story in five paragraphs. The deeper
-"why we built it like this and what we considered instead" lives in
-the ADRs — start with [`docs/05-architecture-decisions.md`](./docs/05-architecture-decisions.md)
-for the index.
+ADR index for the full set of decisions:
+[`docs/05-architecture-decisions.md`](./docs/05-architecture-decisions.md).
 
 ---
 
-## Other things it does
+## Other features
 
-Beyond the OCPP <-> REST/gRPC plumbing, the gateway also runs:
+**ClickHouse ingestion sidecar.** Telemetry goes to Kafka with a
+versioned envelope, partitioned by `cp_id`. A dedicated sidecar
+(`src/eveys_ocpp/clickhouse/ingestor.py`) tails `cp.boot`,
+`cp.status`, `cp.meter`, `tx.started` and inserts into ClickHouse
+tables. The gateway's hot path never blocks on the time-series
+store. Heartbeats are absorbed by the Redis registry — no
+time-series row written. [ADR-0020](./docs/adr/0020-clickhouse-ingestion-sidecar.md).
 
-- **A ClickHouse ingestion sidecar** ([ADR-0020](./docs/adr/0020-clickhouse-ingestion-sidecar.md)).
-  Telemetry goes to Kafka first, then a dedicated process tails the
-  topics and writes into ClickHouse. The gateway's hot path never
-  blocks on the time-series store. Per-charger queries on
-  `MeterValues`, status history, and boots run in milliseconds.
-- **A webhook dispatcher** ([ADR-0027](./docs/adr/0027-webhook-delivery.md)).
-  Tails Kafka and POSTs HMAC-signed envelopes to operator-configured
-  URLs with exponential-backoff retry. The push counterpart to Kafka
-  consumer groups.
-- **Smart Charging.** Charger-side resolver with a gateway-side
-  profile mirror (ADR-0022). The gateway never recomputes schedules
-  but it remembers what was sent.
-- **Reservations.** Charger-side authority with a gateway-side
-  mirror (ADR-0021).
-- **Observability.** structured JSON logs (every line carries
-  `cp_id` + `request_id`), Prometheus metrics on `/metrics:9100`,
-  OpenTelemetry traces (OTLP/gRPC exporter — Tempo, Jaeger,
-  Honeycomb), Sentry error tracking (off when DSN is empty — pure
-  no-op).
-- **Security.**
-  - REST inbound tokens default to **empty** — the gateway rejects
-    every request unless tokens are configured (production-safe
-    default).
-  - WS edge Basic Auth uses bcrypt-hashed per-charger passwords.
-  - mTLS between Envoy and the gateway upstream (ADR-0011).
-  - OCPP Security Profile: cert management (TC_073/074/075/076),
-    `SignedUpdateFirmware` signature verification (TC_080/081),
-    `SecurityEventNotification` log.
-  - `pip-audit` runs in CI and locally via `make audit`.
+**Webhook dispatcher.** `src/eveys_ocpp/webhooks/dispatcher.py`
+tails Kafka and POSTs HMAC-SHA256-signed envelopes to per-event-type
+URLs configured per operator, with exponential-backoff retry and a
+DLQ for poison messages. [ADR-0027](./docs/adr/0027-webhook-delivery.md).
+
+**Smart Charging.** Charger-side resolver, gateway-side profile
+mirror — the gateway records `SetChargingProfile` payloads but
+never recomputes schedules. [ADR-0022](./docs/adr/0022-smart-charging-charger-side-resolver.md).
+
+**Reservations.** Charger-side authority with a gateway-side mirror
+of `ReserveNow` / `CancelReservation` outcomes. [ADR-0021](./docs/adr/0021-reservations-charger-authority.md).
+
+**Observability.**
+- Logs: `structlog` → JSON; every line carries `cp_id` and
+  `request_id`. CI gate against reserved-`LogRecord`-key collisions.
+- Metrics: Prometheus on `/metrics:9100`. SLO rules in
+  `deploy/prometheus/rules.yml` validated by a unit test.
+- Traces: OpenTelemetry SDK, OTLP/gRPC exporter. Tracer is no-op
+  until `configure_tracing()` runs at boot.
+- Errors: Sentry. Inactive when `EVEYS_OCPP_SENTRY_DSN` is empty
+  (no transport, no breadcrumbs, no monkey-patches).
+
+**Security.**
+- `EVEYS_OCPP_REST_INBOUND_TOKENS` defaults to empty — REST rejects
+  every request until tokens are configured (production-safe default).
+- WS edge Basic Auth: per-charger bcrypt-hashed passwords;
+  fail-closed on DB error (#121).
+- TLS termination at Envoy; mTLS between Envoy and the gateway
+  upstream. [ADR-0011](./docs/adr/0011-internal-mtls.md).
+- OCPP 1.6 Security Whitepaper coverage: §4.5 cert management
+  (TC_073/074/075/076), §4.4 `SignedUpdateFirmware` signature
+  verification (TC_080/081), `SecurityEventNotification` log.
+- `pip-audit` runs in CI (`security.yml` workflow) and locally via
+  `make audit`.
 
 ---
 
-## Stack (every dep, with versions and licenses)
+## Terms (OCPP-specific)
+
+Quick reference for OCPP vocabulary used throughout the codebase:
+
+| Term | Definition |
+|---|---|
+| OCPP | Open Charge Point Protocol; charger ↔ CSMS messaging spec by the [Open Charge Alliance](https://www.openchargealliance.org/). This service implements **OCPP-J 1.6** and **OCPP 2.0.1**. |
+| CSMS | Charging Station Management System — the OCPP server role. `eveys/ocpp` is a CSMS. |
+| CP / charge point | A single physical charger. |
+| `cp_id` | Charge-point identifier; carried on every log line, metric, and DB row. The WS URL path (`/<cp_id>`) is the consistent-hash key for Envoy. |
+| OCPP CALL | One protocol message — `BootNotification`, `Authorize`, `StartTransaction`, `MeterValues`, `StopTransaction`, `StatusNotification`, etc. |
+| Subprotocol | `Sec-WebSocket-Protocol` value: `ocpp1.6` or `ocpp2.0.1`. Negotiated at WS handshake. |
+| `id_tag` | RFID / app token presented by a driver. The gateway calls the backend's `/authorize` to get an `Accepted` / `Blocked` / `Expired` decision. |
+| OCTT | OCPP Compliance Testing Tool, by the OCA. Certification target — see [`docs/09-certification-readiness.md`](./docs/09-certification-readiness.md). |
+
+---
+
+## Stack
 
 The pinned floors live in [`pyproject.toml`](./pyproject.toml). All
 licenses are OSI-approved permissive or weak-copyleft; nothing
@@ -799,6 +798,6 @@ community. Special thanks to:
   builds on.
 - **The Open Charge Alliance (OCA)** for authoring and stewarding the
   OCPP specifications.
-- The maintainers of every project listed in the [Stack](#stack-every-dep-with-versions-and-licenses)
+- The maintainers of every project listed in the [Stack](#stack)
   section above. Their licenses and copyrights are preserved in
   [`NOTICE`](./NOTICE).
