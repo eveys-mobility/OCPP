@@ -138,16 +138,9 @@ The gateway also calls the configured backend on the OCPP hot path —
         via httpx, asymmetric envelope per ADR-0023
 ```
 
-Two boundary rules:
-
-- Chargers connect only to the gateway. No other service holds an
-  OCPP socket.
-- The gateway owns no user, billing, or session state. All of those
-  decisions are deferred to the configured backend over REST per
-  [`docs/integration/01-backend-rest-contract.md`](./docs/integration/01-backend-rest-contract.md).
-
-Component-level narrative: [`docs/00-overview.md`](./docs/00-overview.md).
-Decision rationale: [`docs/05-architecture-decisions.md`](./docs/05-architecture-decisions.md).
+Component narrative in [`docs/00-overview.md`](./docs/00-overview.md);
+decision rationale in [`docs/05-architecture-decisions.md`](./docs/05-architecture-decisions.md);
+backend contract in [`docs/integration/01-backend-rest-contract.md`](./docs/integration/01-backend-rest-contract.md).
 
 ---
 
