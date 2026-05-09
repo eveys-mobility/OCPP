@@ -34,6 +34,7 @@ from eveys_ocpp.api._schemas import (
 from eveys_ocpp.persistence.db import session_scope
 from eveys_ocpp.persistence.repositories import (
     get_transaction_by_id,
+    list_transactions,
     list_transactions_by_cp,
 )
 
@@ -145,6 +146,74 @@ async def list_transactions_route(
 
     return {
         "transactions": [{**_transaction_to_response(tx), "cp_id": cp_id} for tx in page],
+        "next_cursor": next_cursor,
+        "request_id": request.state.request_id,
+    }
+
+
+@router.get(
+    "/transactions",
+    summary="List transactions (cursor-paginated, global)",
+    responses={
+        200: {"model": TransactionListResponse},
+        400: {
+            "model": ErrorEnvelope,
+            "description": "Bad cursor or unparseable from/to timestamp.",
+        },
+    },
+)
+async def list_transactions_global_route(
+    request: Request,
+    cursor: str | None = Query(default=None),
+    limit: int | None = Query(default=None, ge=1, le=10_000),
+    cp_id: str | None = Query(default=None),
+    id_tag: str | None = Query(default=None),
+    active: bool | None = Query(default=None),
+    from_: str | None = Query(default=None, alias="from"),
+    to: str | None = Query(default=None),
+) -> dict[str, Any]:
+    settings = request.app.state.settings
+    page_size = clamp_limit(
+        limit,
+        default=settings.rest_default_page_size,
+        maximum=settings.rest_max_page_size,
+    )
+
+    cursor_payload = decode_cursor(cursor)
+    after_id: int | None = None
+    if cursor_payload is not None:
+        raw_id = cursor_payload.get("id")
+        if not isinstance(raw_id, int):
+            raise ApiError(
+                status_code=400,
+                error_code=ERR_BAD_REQUEST,
+                message="malformed cursor: missing 'id'",
+            )
+        after_id = raw_id
+
+    started_from = _parse_iso8601(from_, field_name="from")
+    started_to = _parse_iso8601(to, field_name="to")
+
+    async with session_scope(request.app.state.session_factory) as session:
+        rows = await list_transactions(
+            session,
+            after_id=after_id,
+            limit=page_size,
+            cp_id=cp_id,
+            id_tag=id_tag,
+            active=active,
+            started_from=started_from,
+            started_to=started_to,
+        )
+
+    has_more = len(rows) > page_size
+    page = rows[:page_size]
+    next_cursor: str | None = None
+    if has_more and page:
+        next_cursor = encode_cursor({"id": page[-1]["id"]})
+
+    return {
+        "transactions": [_transaction_to_response(tx) for tx in page],
         "next_cursor": next_cursor,
         "request_id": request.state.request_id,
     }

@@ -278,6 +278,32 @@ Transactions for a charger. **Postgres-backed**.
 
 ---
 
+### `GET /api/v1/transactions`
+
+Global cursor-paginated list of transactions across all chargers. Same row
+shape as the per-cp variant; each row already includes `cp_id` so the
+caller doesn't need a second lookup.
+
+**Query parameters**:
+
+| Param | Type | Notes |
+|---|---|---|
+| `cursor` | string | Opaque cursor from a prior response. Omit on first page. |
+| `limit` | int | 1–10000. Default from `Settings.rest_default_page_size`. |
+| `cp_id` | string | Exact match. Omit for "all chargers". |
+| `id_tag` | string | Exact match. |
+| `active` | bool | `true` keeps txns with no stop event yet; `false` keeps only stopped txns; omitted returns both. |
+| `from` | ISO 8601 | Lower bound on `started_reported_at`. |
+| `to` | ISO 8601 | Upper bound on `started_reported_at`. |
+
+Use this endpoint for "what's charging across the fleet right now?"
+(`active=true`) without N+1 fan-out across the per-cp endpoint.
+
+`400` with `error_code: BAD_REQUEST` for malformed cursor or
+unparseable `from`/`to`.
+
+---
+
 ### `GET /api/v1/transactions/{transaction_id}`
 
 Single transaction. Same shape as the array element above.
