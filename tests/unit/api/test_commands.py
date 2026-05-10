@@ -1060,3 +1060,58 @@ async def test_signed_update_firmware_missing_required_field_returns_400(
         },
     )
     assert response.status_code == 400
+
+
+# ---- ExtendedTriggerMessage (#182) ----------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_extended_trigger_message_log_status(
+    client: httpx.AsyncClient, fake_command_service: MagicMock
+) -> None:
+    """Headline use case: trigger LogStatusNotification (the Whitepaper
+    §4.7 addition that distinguishes this RPC from plain TriggerMessage)."""
+    _set_response(fake_command_service, _stub_response(status="Accepted"))
+    response = await client.post(
+        "/api/v1/charge-points/CP_001/commands/extended-trigger-message",
+        json={"requested_message": "LogStatusNotification"},
+    )
+    assert response.status_code == 200
+    assert response.json()["status"] == "Accepted"
+
+
+@pytest.mark.asyncio
+async def test_extended_trigger_message_sign_charge_point_certificate(
+    client: httpx.AsyncClient, fake_command_service: MagicMock
+) -> None:
+    _set_response(fake_command_service, _stub_response(status="Accepted"))
+    response = await client.post(
+        "/api/v1/charge-points/CP_001/commands/extended-trigger-message",
+        json={"requested_message": "SignChargePointCertificate", "connector_id": 1},
+    )
+    assert response.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_extended_trigger_message_rejects_unknown(
+    client: httpx.AsyncClient,
+) -> None:
+    response = await client.post(
+        "/api/v1/charge-points/CP_001/commands/extended-trigger-message",
+        json={"requested_message": "NotARealTrigger"},
+    )
+    assert response.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_extended_trigger_message_accepts_core_type(
+    client: httpx.AsyncClient, fake_command_service: MagicMock
+) -> None:
+    """The Extended variant accepts the Core types too — Whitepaper
+    §4.7 says it's a superset, not a sibling."""
+    _set_response(fake_command_service, _stub_response(status="Accepted"))
+    response = await client.post(
+        "/api/v1/charge-points/CP_001/commands/extended-trigger-message",
+        json={"requested_message": "BootNotification"},
+    )
+    assert response.status_code == 200
