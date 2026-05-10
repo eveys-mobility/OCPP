@@ -380,6 +380,21 @@ class Settings(BaseSettings):
             "stability": "structural",
         },
     )
+    kafka_topic_tx_stopped: str = Field(
+        default="tx.stopped",
+        description=(
+            "`StopTransaction` events emitted after a successful DB "
+            "commit. Belt-and-braces signal alongside the synchronous "
+            "`/sessions/close` REST call — see "
+            "`docs/integration/03-webhooks.md`."
+        ),
+        json_schema_extra={
+            "category": "kafka_topics",
+            "impact": "Renaming detaches every existing consumer.",
+            "secret": False,
+            "stability": "structural",
+        },
+    )
     kafka_topic_cp_security_event: str = Field(
         default="cp.security_event",
         description=(
@@ -1098,6 +1113,20 @@ class Settings(BaseSettings):
         },
     )
 
+    webhook_url_tx_stopped: str = Field(
+        default="",
+        description=(
+            "Override the URL for `tx.stopped` events. Empty falls "
+            "back to `<webhook_base_url>/tx-stopped`."
+        ),
+        json_schema_extra={
+            "category": "webhooks",
+            "impact": "Per-event routing override.",
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+
     webhook_enable_cp_boot: bool = Field(
         default=True,
         description="Enable webhook delivery for `cp.boot` events.",
@@ -1159,6 +1188,25 @@ class Settings(BaseSettings):
         json_schema_extra={
             "category": "webhooks",
             "impact": "Disable to silence transaction-start pushes.",
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+
+    webhook_enable_tx_stopped: bool = Field(
+        default=True,
+        description=(
+            "Enable webhook delivery for `tx.stopped` events. Belt-and-"
+            "braces signal alongside the synchronous `/sessions/close` "
+            "REST call — see `docs/integration/03-webhooks.md`."
+        ),
+        json_schema_extra={
+            "category": "webhooks",
+            "impact": (
+                "Disable to silence transaction-stop pushes; the "
+                "synchronous `/sessions/close` is still made by the "
+                "handler regardless."
+            ),
             "secret": False,
             "stability": "tunable",
         },

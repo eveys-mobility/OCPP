@@ -48,13 +48,15 @@ Deviations from the OCA spec to verify before W2 / OCTT
 
 from __future__ import annotations
 
-from datetime import datetime
+import uuid
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from ocpp.v16 import call_result
 from ocpp.v16.datatypes import IdTagInfo
 from ocpp.v16.enums import AuthorizationStatus
 
+from eveys_ocpp._generated.events.v1 import events_pb2
 from eveys_ocpp.metrics import record_handler_error, time_handler
 from eveys_ocpp.metrics import registry as metrics_registry
 from eveys_ocpp.observability import bind_contextvars, get_logger
@@ -79,6 +81,22 @@ _AUTH_STATUS_MAP: dict[str, AuthorizationStatus] = {
     "Invalid": AuthorizationStatus.invalid,
     "ConcurrentTx": AuthorizationStatus.concurrent_tx,
 }
+
+
+def _build_envelope(
+    *,
+    cp_id: str,
+    payload: events_pb2.TxStopped,
+    occurred_at: datetime,
+) -> bytes:
+    envelope = events_pb2.EventEnvelope(
+        event_id=str(uuid.uuid4()),
+        occurred_at=occurred_at.isoformat(),
+        cp_id=cp_id,
+        schema_version="v1",
+        tx_stopped=payload,
+    )
+    return envelope.SerializeToString()
 
 
 def _response(status: AuthorizationStatus) -> call_result.StopTransaction:
@@ -173,7 +191,7 @@ async def _stop_inner(
     idem_key = f"{cp.id}:{transaction_id}:{meter_stop}"
 
     async with session_scope(cp.session_factory) as session:
-        applied = await stop_transaction(
+        meter_start_wh = await stop_transaction(
             session,
             transaction_id=transaction_id,
             meter_stop_wh=meter_stop,
@@ -182,7 +200,7 @@ async def _stop_inner(
             idempotency_key=idem_key,
         )
 
-    if not applied:
+    if meter_start_wh is None:
         # DB-layer dedup said "we've already stopped this transaction."
         # Don't double-bill the backend.
         log.info("stop_transaction.replay_ignored_db")
@@ -195,6 +213,37 @@ async def _stop_inner(
     # the denominator; the difference is what SLO 4 alerts on.)
     metrics_registry.STOP_TRANSACTIONS_TOTAL.labels(reason=reason or "unknown").inc()
     log.info("stop_transaction.applied", reason=reason, meter_stop=meter_stop)
+
+    # tx.stopped envelope — at-least-once belt-and-braces signal alongside
+    # the synchronous /sessions/close call below. Best-effort: a broker
+    # drop must not crash the OCPP handler; the synchronous backend call
+    # below is the primary path. Only emitted on real applies — replay
+    # branches above return before this point so the same envelope is
+    # never published twice.
+    if cp.event_producer is not None:
+        payload = events_pb2.TxStopped(
+            transaction_id=transaction_id,
+            id_tag=id_tag or "",
+            meter_stop_wh=meter_stop,
+            consumed_wh=meter_stop - meter_start_wh,
+            stop_reason=reason or "",
+            charger_reported_at=timestamp,
+        )
+        envelope_bytes = _build_envelope(
+            cp_id=cp.id, payload=payload, occurred_at=datetime.now(UTC)
+        )
+        try:
+            await cp.event_producer.publish(
+                topic=cp.settings.kafka_topic_tx_stopped,
+                key=cp.id,
+                value=envelope_bytes,
+            )
+        except Exception as exc:
+            log.warning(
+                "stop_transaction.publish_failed",
+                transaction_id=transaction_id,
+                error=str(exc),
+            )
 
     # Backend round-trip (E3-6). The DB row is now durably marked
     # stopped; whatever the backend says, we keep that state. On

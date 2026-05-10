@@ -340,10 +340,11 @@ class WebhookDispatcher:
         None when the event type isn't enabled (or is unknown).
 
         Events delivered today: cp.boot, cp.online, cp.status_changed,
-        tx.started. Other spec'd events (cp.offline,
-        cp.firmware_status_changed, cp.diagnostics_status_changed,
-        tx.stopped) need new proto messages and producers first; they
-        return None here until a future PR adds them.
+        tx.started, tx.stopped. The remaining spec'd events
+        (cp.offline, cp.firmware_status_changed,
+        cp.diagnostics_status_changed) need new proto messages and
+        producers first; they return None here until a future PR adds
+        them.
         """
         kind = envelope.WhichOneof("payload")
         if kind == "cp_connected" and self._settings.webhook_enable_cp_online:
@@ -404,6 +405,22 @@ class WebhookDispatcher:
             }
             return _envelope(data)
 
+        if kind == "tx_stopped" and self._settings.webhook_enable_tx_stopped:
+            p = envelope.tx_stopped
+            data = {
+                "event_id": envelope.event_id,
+                "event_type": "tx.stopped",
+                "occurred_at": envelope.occurred_at,
+                "charger_reported_at": p.charger_reported_at,
+                "cp_id": envelope.cp_id,
+                "transaction_id": p.transaction_id,
+                "id_tag": p.id_tag,
+                "meter_stop_wh": p.meter_stop_wh,
+                "consumed_wh": p.consumed_wh,
+                "stop_reason": p.stop_reason,
+            }
+            return _envelope(data)
+
         # cp.meter, cp.connected, and unknown payloads: not delivered
         # in this slice. Returning None silently skips them.
         return None
@@ -422,6 +439,8 @@ class WebhookDispatcher:
             return s.webhook_url_cp_meter or f"{s.webhook_base_url}/cp-meter"
         if kind == "tx_started" and s.webhook_enable_tx_started:
             return s.webhook_url_tx_started or f"{s.webhook_base_url}/tx-started"
+        if kind == "tx_stopped" and s.webhook_enable_tx_stopped:
+            return s.webhook_url_tx_stopped or f"{s.webhook_base_url}/tx-stopped"
         return None
 
     def _enabled_topics(self) -> tuple[str, ...]:
@@ -443,6 +462,8 @@ class WebhookDispatcher:
             topics.append(s.kafka_topic_cp_meter)
         if s.webhook_enable_tx_started:
             topics.append(s.kafka_topic_tx_started)
+        if s.webhook_enable_tx_stopped:
+            topics.append(s.kafka_topic_tx_stopped)
         return tuple(topics)
 
 
