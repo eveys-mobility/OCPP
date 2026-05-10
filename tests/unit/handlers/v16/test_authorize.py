@@ -296,10 +296,19 @@ async def test_business_error_is_not_cached(fake_cp: Any) -> None:
 
 
 @pytest.mark.asyncio
-async def test_unavailable_fallback_is_not_cached(fake_cp: Any) -> None:
+async def test_unavailable_fallback_is_not_cached(fake_cp: Any, settings_factory: Any) -> None:
     """Fallback policy depends on current settings, not a stale call.
     The cache must not store a Backend*Error outcome — let the next
-    tap re-roundtrip and re-evaluate."""
+    tap re-roundtrip and re-evaluate.
+
+    Pin `backend_authorize_fallback="reject"` explicitly: the local
+    dev `.env` typically sets it to `accept_offline` (working config
+    when the toger.test backend is down), which would flip the
+    expected status from Invalid to Accepted and turn this test into
+    a `.env`-presence flake. Sibling tests in this file already set
+    the policy explicitly; this one was missed (#155). See #156 for
+    the broader unit-suite hermeticity fix."""
+    fake_cp.settings = settings_factory(backend_authorize_fallback="reject")
     fake_cp.backend_client = AsyncMock()
     fake_cp.backend_client.authorize = AsyncMock(
         side_effect=BackendTimeoutError("timed out"),
