@@ -116,6 +116,13 @@ The integration shape is documented in [`docs/integration/`](./integration/READM
 
 ## Phase 5 — Hardening (weeks 7–8)
 
+**Status**: ✅ engineering complete. Two remaining items are out-of-engineering gate events:
+
+- **E5-9 — external pen test**: procurement + report-receipt, not gateway code.
+- **E5-10 — formal staging-soak DR drill**: explicitly gated on staging hardware (the engineering kit ships under `tools/load/scenarios/`; the gate is a production-shaped multi-pod cluster + postmortem document).
+
+Detail in [`02-tasks.md`](./02-tasks.md#phase-5--hardening).
+
 **Goal**: production-ready security and resilience.
 
 | Deliverable | Done when |
@@ -136,6 +143,8 @@ The integration shape is documented in [`docs/integration/`](./integration/READM
 ---
 
 ## Phase 6 — Staging soak (week 9)
+
+**Status**: ✅ engineering complete. All three deliverables have code in main; the remaining work is live validation against staging hardware + a 7-day fleet soak (gate event, not engineering).
 
 **Goal**: prove it works for *real* chargers, in a controlled scope.
 
