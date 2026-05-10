@@ -66,22 +66,21 @@ groups:
       # SLI: fraction of StopTransactions that landed in Postgres.
       # Target: 100% (any miss is a billing incident).
       #
-      # Caveat: we don't currently emit a separate "received but not
-      # persisted" counter — `eveys_ocpp_stop_transactions_total` is
-      # incremented after the handler's DB commit, so a stop that
-      # fails to persist gets counted in `eveys_ocpp_handler_errors_total
-      # {action="StopTransaction"}` instead. The SLI sums both as the
-      # denominator and only the persisted total as the numerator. If a
-      # future task adds a dedicated `received` counter, switch the
-      # denominator to that — see docs/14-slos.md.
+      # Numerator:   `_total`             — incremented after a successful
+      #                                     DB commit in the handler
+      #                                     (StopTransaction.applied path).
+      # Denominator: `_received_total`    — incremented at handler entry,
+      #                                     before any DB work. So a stop
+      #                                     that fails to persist still
+      #                                     counts in the denominator —
+      #                                     which is the bug SLO 4 is
+      #                                     designed to flag.
       - record: slo:transaction_durability:ratio_30d
         expr: |
           sum(rate(eveys_ocpp_stop_transactions_total[30d]))
           /
           clamp_min(
-            sum(rate(eveys_ocpp_stop_transactions_total[30d]))
-            +
-            sum(rate(eveys_ocpp_handler_errors_total{action="StopTransaction"}[30d])),
+            sum(rate(eveys_ocpp_stop_transactions_received_total[30d])),
             1
           )
 

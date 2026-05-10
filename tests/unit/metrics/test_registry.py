@@ -27,7 +27,8 @@ from eveys_ocpp.metrics import registry as m
 # grows in a future PR.
 # 56: +1 SECURITY_EVENTS_TOTAL for SecurityEventNotification (TC_077/078)
 # 57: +1 LOG_STATUS_TOTAL for LogStatusNotification (TC_079)
-EXPECTED_METRIC_COUNT = 57
+# 58: +1 STOP_TRANSACTIONS_RECEIVED_TOTAL for SLO 4 denominator (#163)
+EXPECTED_METRIC_COUNT = 58
 
 
 def _gateway_metric_attrs() -> list[tuple[str, object]]:

@@ -179,10 +179,20 @@ START_TRANSACTIONS_TOTAL: Counter = Counter(
     labelnames=("decision",),
 )
 
+STOP_TRANSACTIONS_RECEIVED_TOTAL: Counter = Counter(
+    "eveys_ocpp_stop_transactions_received_total",
+    "StopTransaction OCPP CALLs received by the handler — incremented at "
+    "handler entry, *before* any DB work. SLO 4's denominator uses this so "
+    "a stop that fails to persist still counts toward the durability ratio "
+    "(a stop we received but didn't persist is the billing incident the SLO "
+    "is designed to flag).",
+)
 STOP_TRANSACTIONS_TOTAL: Counter = Counter(
     "eveys_ocpp_stop_transactions_total",
-    "StopTransaction events, grouped by reported reason. Bounded — "
-    "OCPP 1.6 § 6.10 fixes the `Reason` enum.",
+    "StopTransaction events that successfully landed in Postgres, grouped by "
+    "reported reason. Bounded — OCPP 1.6 § 6.10 fixes the `Reason` enum. SLO "
+    "4 numerator. For the count of *received* StopTransactions (incl. ones "
+    "that failed to persist) see `eveys_ocpp_stop_transactions_received_total`.",
     labelnames=("reason",),
 )
 STOP_TRANSACTION_REPLAYS_TOTAL: Counter = Counter(
@@ -551,6 +561,7 @@ __all__ = [
     "REST_REQUEST_LATENCY_SECONDS",
     "START_TRANSACTIONS_TOTAL",
     "STATUS_NOTIFICATIONS_TOTAL",
+    "STOP_TRANSACTIONS_RECEIVED_TOTAL",
     "STOP_TRANSACTIONS_TOTAL",
     "STOP_TRANSACTION_REPLAYS_TOTAL",
     "WEBHOOK_ATTEMPTS_TOTAL",
