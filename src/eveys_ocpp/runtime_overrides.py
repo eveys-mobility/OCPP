@@ -79,6 +79,41 @@ def _coerce_bool(value: Any) -> bool:
     raise ValueError(f"expected boolean, got {value!r}")
 
 
+def _coerce_url_or_empty(value: Any) -> str:
+    """A URL field that may be empty (the empty string means "fall
+    back to the global default" in the dispatcher). Validates the
+    HTTP/HTTPS scheme but tolerates the empty value."""
+    if not isinstance(value, str):
+        raise ValueError(f"expected string URL, got {value!r}")
+    stripped = value.strip()
+    if stripped == "":
+        return ""
+    if not (stripped.startswith("http://") or stripped.startswith("https://")):
+        raise ValueError(
+            f"expected http(s):// URL, got {value!r}; "
+            "use the empty string to fall back to the global default"
+        )
+    return stripped
+
+
+def _coerce_url(value: Any) -> str:
+    """Like `_coerce_url_or_empty` but rejects the empty value. Used
+    for the global `webhook_base_url` since clearing it disables the
+    entire dispatcher and that's better done by setting an empty
+    env var at restart, not by an inline edit."""
+    if not isinstance(value, str):
+        raise ValueError(f"expected string URL, got {value!r}")
+    stripped = value.strip()
+    if stripped == "":
+        raise ValueError(
+            "webhook_base_url cannot be cleared via runtime override "
+            "(would disable the dispatcher); set the env var to '' and restart"
+        )
+    if not (stripped.startswith("http://") or stripped.startswith("https://")):
+        raise ValueError(f"expected http(s):// URL, got {value!r}")
+    return stripped
+
+
 # The allowlist itself. See the module docstring for the criteria.
 _ALLOWLIST: dict[str, _AllowlistEntry] = {
     "log_level": _AllowlistEntry(

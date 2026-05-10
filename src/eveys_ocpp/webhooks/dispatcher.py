@@ -339,9 +339,9 @@ class WebhookDispatcher:
         `docs/integration/03-webhooks.md` § Event catalog. Returns
         None when the event type isn't enabled (or is unknown).
 
-        Events delivered today: cp.boot, cp.online, cp.status_changed,
-        tx.started, tx.stopped. The remaining spec'd events
-        (cp.offline, cp.firmware_status_changed,
+        Events delivered today: cp.boot, cp.online, cp.offline,
+        cp.status_changed, tx.started, tx.stopped. The remaining
+        spec'd events (cp.firmware_status_changed,
         cp.diagnostics_status_changed) need new proto messages and
         producers first; they return None here until a future PR adds
         them.
@@ -356,6 +356,18 @@ class WebhookDispatcher:
                 "cp_id": envelope.cp_id,
                 "subprotocol": p.subprotocol,
                 "pod_id": p.pod_id,
+            }
+            return _envelope(data)
+
+        if kind == "cp_disconnected" and self._settings.webhook_enable_cp_offline:
+            p_off = envelope.cp_disconnected
+            data = {
+                "event_id": envelope.event_id,
+                "event_type": "cp.offline",
+                "occurred_at": envelope.occurred_at,
+                "cp_id": envelope.cp_id,
+                "pod_id": p_off.pod_id,
+                "reason": p_off.reason,
             }
             return _envelope(data)
 
@@ -431,6 +443,8 @@ class WebhookDispatcher:
         s = self._settings
         if kind == "cp_connected" and s.webhook_enable_cp_online:
             return s.webhook_url_cp_online or f"{s.webhook_base_url}/cp-online"
+        if kind == "cp_disconnected" and s.webhook_enable_cp_offline:
+            return s.webhook_url_cp_offline or f"{s.webhook_base_url}/cp-offline"
         if kind == "cp_boot" and s.webhook_enable_cp_boot:
             return s.webhook_url_cp_boot or f"{s.webhook_base_url}/cp-boot"
         if kind == "cp_status" and s.webhook_enable_cp_status:
@@ -444,18 +458,17 @@ class WebhookDispatcher:
         return None
 
     def _enabled_topics(self) -> tuple[str, ...]:
-        """Subset of the four event topics whose webhook delivery is
+        """Subset of the event topics whose webhook delivery is
         currently enabled. Lets us avoid subscribing the consumer to
-        topics nobody listens for.
-
-        Note: `cp.online` (the `cp_connected` proto variant) doesn't
-        have a Kafka topic yet — no producer emits it. The dispatcher
-        knows how to translate one when it shows up; subscribing to a
-        topic for it is the WS-server work that adds the producer."""
+        topics nobody listens for."""
         s = self._settings
         topics: list[str] = []
         if s.webhook_enable_cp_boot:
             topics.append(s.kafka_topic_cp_boot)
+        if s.webhook_enable_cp_online:
+            topics.append(s.kafka_topic_cp_connected)
+        if s.webhook_enable_cp_offline:
+            topics.append(s.kafka_topic_cp_disconnected)
         if s.webhook_enable_cp_status:
             topics.append(s.kafka_topic_cp_status)
         if s.webhook_enable_cp_meter:
