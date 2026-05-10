@@ -233,6 +233,74 @@ async def test_unlock_connector_happy_path(
     assert response.json()["status"] == "Unlocked"
 
 
+# ---- ChangeAvailability (#180) --------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_change_availability_happy_path(
+    client: httpx.AsyncClient, fake_command_service: MagicMock
+) -> None:
+    _set_response(fake_command_service, _stub_response(status="Accepted"))
+
+    response = await client.post(
+        "/api/v1/charge-points/CP_001/commands/change-availability",
+        json={"connector_id": 1, "type": "Inoperative"},
+    )
+    assert response.status_code == 200
+    assert response.json()["status"] == "Accepted"
+
+
+@pytest.mark.asyncio
+async def test_change_availability_scheduled_status_passes_through(
+    client: httpx.AsyncClient, fake_command_service: MagicMock
+) -> None:
+    """Charger may reply Scheduled when a session is in flight; the
+    REST surface must surface this verbatim, not collapse to Accepted."""
+    _set_response(fake_command_service, _stub_response(status="Scheduled"))
+
+    response = await client.post(
+        "/api/v1/charge-points/CP_001/commands/change-availability",
+        json={"connector_id": 0, "type": "Operative"},
+    )
+    assert response.status_code == 200
+    assert response.json()["status"] == "Scheduled"
+
+
+@pytest.mark.asyncio
+async def test_change_availability_rejects_negative_connector(
+    client: httpx.AsyncClient,
+) -> None:
+    """`connector_id = 0` is valid (whole charger). Negative is not."""
+    response = await client.post(
+        "/api/v1/charge-points/CP_001/commands/change-availability",
+        json={"connector_id": -1, "type": "Operative"},
+    )
+    assert response.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_change_availability_rejects_unknown_type(
+    client: httpx.AsyncClient,
+) -> None:
+    """OCPP 1.6 § 5.2 closed enum: only Operative / Inoperative."""
+    response = await client.post(
+        "/api/v1/charge-points/CP_001/commands/change-availability",
+        json={"connector_id": 1, "type": "Maintenance"},
+    )
+    assert response.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_change_availability_requires_type(
+    client: httpx.AsyncClient,
+) -> None:
+    response = await client.post(
+        "/api/v1/charge-points/CP_001/commands/change-availability",
+        json={"connector_id": 1},
+    )
+    assert response.status_code == 400
+
+
 # ---- vendor extension ------------------------------------------------------
 
 

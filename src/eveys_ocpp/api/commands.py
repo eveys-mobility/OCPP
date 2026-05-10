@@ -337,6 +337,50 @@ async def unlock_connector(request: Request, cp_id: str) -> dict[str, Any]:
     return _ok(request, ocpp_response.status)
 
 
+_AVAILABILITY_TYPES = {"Operative", "Inoperative"}
+
+
+@router.post(_BASE + "/change-availability")
+async def change_availability(request: Request, cp_id: str) -> dict[str, Any]:
+    """Take a connector (or whole charger) Operative / Inoperative.
+
+    OCPP 1.6 § 5.2: `connector_id = 0` targets the whole charger;
+    > 0 targets a specific connector. Charger may reply `Scheduled`
+    if a session is in flight."""
+    body = await _body(request)
+    connector_id = _as_int(_require(body, "connector_id"), field="connector_id")
+    if connector_id < 0:
+        raise ApiError(
+            status_code=400,
+            error_code=ERR_BAD_REQUEST,
+            message=(
+                "connector_id must be >= 0 (0 targets the whole charger; > 0 a specific connector)"
+            ),
+        )
+    availability_type = str(_require(body, "type"))
+    if availability_type not in _AVAILABILITY_TYPES:
+        raise ApiError(
+            status_code=400,
+            error_code=ERR_BAD_REQUEST,
+            message=f"type must be one of {sorted(_AVAILABILITY_TYPES)}",
+        )
+    ocpp_type = (
+        ocpp_enums.AvailabilityType.operative
+        if availability_type == "Operative"
+        else ocpp_enums.AvailabilityType.inoperative
+    )
+    ocpp_response = await dispatch_ocpp_call(
+        request,
+        rpc="ChangeAvailability",
+        cp_id=cp_id,
+        ocpp_request=ocpp_call.ChangeAvailability(
+            connector_id=connector_id,
+            type=ocpp_type,
+        ),
+    )
+    return _ok(request, ocpp_response.status)
+
+
 # ---- Vendor extension -------------------------------------------------------
 
 

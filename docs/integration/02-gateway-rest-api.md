@@ -493,6 +493,7 @@ The full set:
 | `POST .../commands/clear-cache` | `{}` | `status` |
 | `POST .../commands/trigger-message` | `{ "requested_message": "BootNotification", "connector_id": 0 }` | `status` |
 | `POST .../commands/unlock-connector` | `{ "connector_id": 1 }` | `status` ∈ `Unlocked`/`UnlockFailed`/`NotSupported` |
+| `POST .../commands/change-availability` | `{ "connector_id": 1, "type": "Operative" \| "Inoperative" }` (`connector_id: 0` targets the whole charger) | `status` ∈ `Accepted`/`Rejected`/`Scheduled` |
 | `POST .../commands/data-transfer` | `{ "vendor_id": "...", "message_id": "...", "data": "..." }` | `{ "status": "...", "data": "..." }` |
 | `POST .../commands/get-local-list-version` | `{}` | `{ "list_version": 11 }` (`-1` if charger has no list) |
 | `POST .../commands/send-local-list` | `{ "list_version": 12, "update_type": "Full" \| "Differential", "local_authorization_list": [...] }` | `status` ∈ `Accepted`/`Failed`/`NotSupported`/`VersionMismatch` |
