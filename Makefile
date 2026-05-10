@@ -94,10 +94,24 @@ install: $(VENV)/bin/python
 	@$(MAKE) protoc
 	@# Activate pre-commit hooks if the config exists. Idempotent — safe
 	@# to re-run; pre-commit detects an already-installed hook script.
+	@#
+	@# `pre-commit install` returns non-zero ("cowardly refusing") when
+	@# `core.hooksPath` is set, even to the default `.git/hooks`. That's
+	@# a tooling-side opt-out, not an installation failure — treat it
+	@# as benign and print the same hint pre-commit prints. Without
+	@# this guard, every `make install` on a laptop with that config
+	@# returns 1, which cascades through every dependent target
+	@# (`lint`, `types`, `openapi-export-check`, …).
 	@if [ -f .pre-commit-config.yaml ] && [ -d .git ]; then \
-		$(VENV)/bin/pre-commit install --install-hooks >/dev/null 2>&1 && \
-		$(VENV)/bin/pre-commit install --hook-type commit-msg >/dev/null 2>&1 && \
-		echo "pre-commit hooks installed" >&2; \
+		out=$$($(VENV)/bin/pre-commit install --install-hooks 2>&1); rc=$$?; \
+		if [ $$rc -eq 0 ]; then \
+			$(VENV)/bin/pre-commit install --hook-type commit-msg >/dev/null 2>&1 && \
+				echo "pre-commit hooks installed" >&2; \
+		elif echo "$$out" | grep -q "core.hooksPath"; then \
+			echo "pre-commit skipped: core.hooksPath is set (run \`git config --unset core.hooksPath\` to enable hook install)" >&2; \
+		else \
+			echo "$$out" >&2; exit $$rc; \
+		fi; \
 	fi
 
 # Regenerate Python stubs from proto/ into src/eveys_ocpp/_generated/.
