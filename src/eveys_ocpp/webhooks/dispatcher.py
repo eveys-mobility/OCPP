@@ -351,11 +351,10 @@ class WebhookDispatcher:
         None when the event type isn't enabled (or is unknown).
 
         Events delivered today: cp.boot, cp.online, cp.offline,
-        cp.status_changed, tx.started, tx.stopped. The remaining
-        spec'd events (cp.firmware_status_changed,
-        cp.diagnostics_status_changed) need new proto messages and
-        producers first; they return None here until a future PR adds
-        them.
+        cp.status_changed, cp.firmware_status_changed,
+        cp.diagnostics_status_changed, tx.started, tx.stopped.
+        cp.meter is implemented but off-by-default (high volume —
+        Kafka subscription is the right channel; see ADR-0027).
         """
         kind = envelope.WhichOneof("payload")
         if kind == "cp_connected" and self._enabled(
@@ -456,8 +455,36 @@ class WebhookDispatcher:
             }
             return _envelope(data)
 
-        # cp.meter, cp.connected, and unknown payloads: not delivered
-        # in this slice. Returning None silently skips them.
+        if (
+            kind == "cp_firmware_status_changed"
+            and self._settings.webhook_enable_cp_firmware_status
+        ):
+            p_fw = envelope.cp_firmware_status_changed
+            data = {
+                "event_id": envelope.event_id,
+                "event_type": "cp.firmware_status_changed",
+                "occurred_at": envelope.occurred_at,
+                "cp_id": envelope.cp_id,
+                "status": p_fw.status,
+            }
+            return _envelope(data)
+
+        if (
+            kind == "cp_diagnostics_status_changed"
+            and self._settings.webhook_enable_cp_diagnostics_status
+        ):
+            p_dg = envelope.cp_diagnostics_status_changed
+            data = {
+                "event_id": envelope.event_id,
+                "event_type": "cp.diagnostics_status_changed",
+                "occurred_at": envelope.occurred_at,
+                "cp_id": envelope.cp_id,
+                "status": p_dg.status,
+            }
+            return _envelope(data)
+
+        # cp.meter and unknown payloads: not delivered in this slice.
+        # Returning None silently skips them.
         return None
 
     def _url_for(self, envelope: events_pb2.EventEnvelope) -> str | None:
@@ -504,6 +531,18 @@ class WebhookDispatcher:
             return self._url("webhook_url_tx_stopped", s.webhook_url_tx_stopped) or (
                 f"{self._base_url()}/tx-stopped"
             )
+        if kind == "cp_firmware_status_changed" and self._enabled(
+            "webhook_enable_cp_firmware_status", s.webhook_enable_cp_firmware_status
+        ):
+            return self._url(
+                "webhook_url_cp_firmware_status", s.webhook_url_cp_firmware_status
+            ) or (f"{self._base_url()}/cp-firmware-status-changed")
+        if kind == "cp_diagnostics_status_changed" and self._enabled(
+            "webhook_enable_cp_diagnostics_status", s.webhook_enable_cp_diagnostics_status
+        ):
+            return self._url(
+                "webhook_url_cp_diagnostics_status", s.webhook_url_cp_diagnostics_status
+            ) or (f"{self._base_url()}/cp-diagnostics-status-changed")
         return None
 
     def _enabled_topics(self) -> tuple[str, ...]:
@@ -526,6 +565,10 @@ class WebhookDispatcher:
             topics.append(s.kafka_topic_tx_started)
         if s.webhook_enable_tx_stopped:
             topics.append(s.kafka_topic_tx_stopped)
+        if s.webhook_enable_cp_firmware_status:
+            topics.append(s.kafka_topic_cp_firmware_status)
+        if s.webhook_enable_cp_diagnostics_status:
+            topics.append(s.kafka_topic_cp_diagnostics_status)
         return tuple(topics)
 
 
