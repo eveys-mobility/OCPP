@@ -106,6 +106,7 @@ _OCPP_CALL_DISPATCH: dict[str, type[Any]] = {
     "GetLog": ocpp_call.GetLog,
     "InstallCertificate": ocpp_call.InstallCertificate,
     "DeleteCertificate": ocpp_call.DeleteCertificate,
+    "GetInstalledCertificateIds": ocpp_call.GetInstalledCertificateIds,
     "CertificateSigned": ocpp_call.CertificateSigned,
     "UpdateFirmware": ocpp_call.UpdateFirmware,
     "SignedUpdateFirmware": ocpp_call.SignedUpdateFirmware,
@@ -898,6 +899,57 @@ class OcppGatewayService(gateway_grpc.OcppGatewayBase):
                 )
         await stream.send_message(gateway_pb2.DeleteCertificateResponse(status=status_proto))
 
+    async def GetInstalledCertificateIds(
+        self,
+        stream: Stream[
+            gateway_pb2.GetInstalledCertificateIdsRequest,
+            gateway_pb2.GetInstalledCertificateIdsResponse,
+        ],
+    ) -> None:
+        """List the CA certificates currently installed on the charger
+        (Whitepaper §4.8). Read-only; no DB mirror touched. Charger is
+        the source of truth — the gateway's `charge_point_certificates`
+        rows are convenience metadata for hash lookup, not authoritative
+        on what's actually installed."""
+        request = await self._recv(stream)
+        ocpp_certificate_type = (
+            ocpp_enums.CertificateUse.central_system_root_certificate
+            if request.certificate_type == gateway_pb2.CERTIFICATE_USE_CENTRAL_SYSTEM_ROOT
+            else ocpp_enums.CertificateUse.manufacturer_root_certificate
+            if request.certificate_type == gateway_pb2.CERTIFICATE_USE_MANUFACTURER_ROOT
+            else None
+        )
+        if ocpp_certificate_type is None:
+            raise GRPCError(
+                Status.INVALID_ARGUMENT,
+                "certificate_type must be CERTIFICATE_USE_CENTRAL_SYSTEM_ROOT or "
+                "CERTIFICATE_USE_MANUFACTURER_ROOT",
+            )
+        ocpp_response = await self._dispatch_ocpp_call(
+            rpc="GetInstalledCertificateIds",
+            cp_id=request.cp_id,
+            ocpp_request=ocpp_call.GetInstalledCertificateIds(
+                certificate_type=ocpp_certificate_type,
+            ),
+        )
+        status_str = str(getattr(ocpp_response, "status", ""))
+        status_proto = (
+            gateway_pb2.GET_INSTALLED_CERTIFICATE_IDS_STATUS_ACCEPTED
+            if status_str == "Accepted"
+            else gateway_pb2.GET_INSTALLED_CERTIFICATE_IDS_STATUS_NOT_FOUND
+        )
+        # `certificate_hash_data` is None when status=NotFound; the
+        # OCPP lib parses it as a list of camelCase dicts on Accepted.
+        raw_items = getattr(ocpp_response, "certificate_hash_data", None) or []
+        await stream.send_message(
+            gateway_pb2.GetInstalledCertificateIdsResponse(
+                status=status_proto,
+                certificate_hash_data=[
+                    _translate_certificate_hash_data(item) for item in raw_items
+                ],
+            )
+        )
+
     async def CertificateSigned(
         self,
         stream: Stream[
@@ -1663,6 +1715,30 @@ def _translate_change_availability_status(ocpp_status: str) -> int:
         return gateway_pb2.CHANGE_AVAILABILITY_STATUS_SCHEDULED
     log.warning("grpc.unknown_ocpp_status", rpc="ChangeAvailability", ocpp_status=ocpp_status)
     return gateway_pb2.CHANGE_AVAILABILITY_STATUS_UNSPECIFIED
+
+
+_HASH_ALGORITHM_OCPP_TO_PROTO: dict[str, int] = {
+    "SHA256": gateway_pb2.HASH_ALGORITHM_SHA256,
+    "SHA384": gateway_pb2.HASH_ALGORITHM_SHA384,
+    "SHA512": gateway_pb2.HASH_ALGORITHM_SHA512,
+}
+
+
+def _translate_certificate_hash_data(item: dict[str, Any]) -> gateway_pb2.CertificateHashData:
+    """OCPP `certificateHashData` Dict (camelCase wire keys per
+    `_cert_hash.build_hash_data`) → typed proto message. Unknown
+    `hashAlgorithm` falls through to UNSPECIFIED — operators
+    grepping the audit log for HashAlgorithm.UNSPECIFIED will
+    notice an OCPP-spec extension we don't model yet, rather
+    than silently get a SHA256 default."""
+    return gateway_pb2.CertificateHashData(
+        hash_algorithm=_HASH_ALGORITHM_OCPP_TO_PROTO.get(
+            str(item.get("hashAlgorithm", "")), gateway_pb2.HASH_ALGORITHM_UNSPECIFIED
+        ),
+        issuer_name_hash=str(item.get("issuerNameHash", "")),
+        issuer_key_hash=str(item.get("issuerKeyHash", "")),
+        serial_number=str(item.get("serialNumber", "")),
+    )
 
 
 def _translate_configuration_key(item: dict[str, Any]) -> gateway_pb2.ConfigurationKey:

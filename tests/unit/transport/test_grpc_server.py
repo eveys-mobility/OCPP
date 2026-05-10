@@ -92,6 +92,7 @@ def test_service_class_implements_every_rpc(fake_session_factory: Any, settings:
         "GetCompositeSchedule",
         "ChangeAvailability",
         "ExtendedTriggerMessage",
+        "GetInstalledCertificateIds",
     }
     for rpc in expected:
         method = getattr(service, rpc, None)
@@ -3323,6 +3324,167 @@ async def test_extended_trigger_message_unspecified_invalid(
                     gateway_pb2.ExtendedTriggerMessageRequest(
                         cp_id="CP_001",
                         # requested_message left at UNSPECIFIED (proto default)
+                    )
+                )
+        assert exc.value.status == Status.INVALID_ARGUMENT
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+# ---- GetInstalledCertificateIds (#184) -------------------------------------
+
+
+def _connected_cp_with_installed_certs(
+    cp_id: str,
+    *,
+    status: str,
+    hash_data: list[dict[str, Any]] | None,
+) -> tuple[Any, ConnectionMap]:
+    """GetInstalledCertificateIds replies with status + a list of
+    hash_data dicts. Mirror `_connected_cp_with_config` for the same
+    reason — list-shaped responses don't fit the scalar-status helper."""
+    cp = MagicMock()
+    cp.id = cp_id
+    response = MagicMock()
+    response.status = status
+    response.certificate_hash_data = hash_data
+    cp.call = AsyncMock(return_value=response)
+    cm = ConnectionMap()
+    cm.add(cp)
+    return cp, cm
+
+
+@pytest.mark.asyncio
+async def test_get_installed_certificate_ids_accepted_with_two_certs(
+    fake_session_factory: Any, settings: Settings
+) -> None:
+    """Charger reports two installed CSMS-root certs. Both must round-
+    trip through the dict→proto translator with the OCPP camelCase
+    wire keys (`hashAlgorithm` etc.) mapping to proto snake_case."""
+    items = [
+        {
+            "hashAlgorithm": "SHA256",
+            "issuerNameHash": "aaaa",
+            "issuerKeyHash": "bbbb",
+            "serialNumber": "01",
+        },
+        {
+            "hashAlgorithm": "SHA512",
+            "issuerNameHash": "cccc",
+            "issuerKeyHash": "dddd",
+            "serialNumber": "02",
+        },
+    ]
+    _, cm = _connected_cp_with_installed_certs("CP_001", status="Accepted", hash_data=items)
+    service = OcppGatewayService(
+        session_factory=fake_session_factory, settings=settings, connections=cm
+    )
+    server, port = await _spawn_server(service)
+    try:
+        async with Channel("127.0.0.1", port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            response = await stub.GetInstalledCertificateIds(
+                gateway_pb2.GetInstalledCertificateIdsRequest(
+                    cp_id="CP_001",
+                    certificate_type=gateway_pb2.CERTIFICATE_USE_CENTRAL_SYSTEM_ROOT,
+                )
+            )
+        assert response.status == gateway_pb2.GET_INSTALLED_CERTIFICATE_IDS_STATUS_ACCEPTED
+        assert len(response.certificate_hash_data) == 2
+        assert response.certificate_hash_data[0].hash_algorithm == gateway_pb2.HASH_ALGORITHM_SHA256
+        assert response.certificate_hash_data[0].serial_number == "01"
+        assert response.certificate_hash_data[1].hash_algorithm == gateway_pb2.HASH_ALGORITHM_SHA512
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_get_installed_certificate_ids_not_found_yields_empty_list(
+    fake_session_factory: Any, settings: Settings
+) -> None:
+    """Empty install set → status NotFound + empty hash_data list. NOT
+    an error — operator may probe a manufacturer-root cert that the
+    charger genuinely doesn't have."""
+    _, cm = _connected_cp_with_installed_certs("CP_001", status="NotFound", hash_data=None)
+    service = OcppGatewayService(
+        session_factory=fake_session_factory, settings=settings, connections=cm
+    )
+    server, port = await _spawn_server(service)
+    try:
+        async with Channel("127.0.0.1", port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            response = await stub.GetInstalledCertificateIds(
+                gateway_pb2.GetInstalledCertificateIdsRequest(
+                    cp_id="CP_001",
+                    certificate_type=gateway_pb2.CERTIFICATE_USE_MANUFACTURER_ROOT,
+                )
+            )
+        assert response.status == gateway_pb2.GET_INSTALLED_CERTIFICATE_IDS_STATUS_NOT_FOUND
+        assert list(response.certificate_hash_data) == []
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_get_installed_certificate_ids_unknown_hash_algorithm_falls_through(
+    fake_session_factory: Any, settings: Settings
+) -> None:
+    """Vendor extension or future spec value → UNSPECIFIED on the
+    proto side. Operators grepping for HASH_ALGORITHM_UNSPECIFIED can
+    spot what the charger reported; silently mapping to SHA256 would
+    hide the deviation."""
+    items = [
+        {
+            "hashAlgorithm": "SHA999",
+            "issuerNameHash": "x",
+            "issuerKeyHash": "y",
+            "serialNumber": "ff",
+        },
+    ]
+    _, cm = _connected_cp_with_installed_certs("CP_001", status="Accepted", hash_data=items)
+    service = OcppGatewayService(
+        session_factory=fake_session_factory, settings=settings, connections=cm
+    )
+    server, port = await _spawn_server(service)
+    try:
+        async with Channel("127.0.0.1", port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            response = await stub.GetInstalledCertificateIds(
+                gateway_pb2.GetInstalledCertificateIdsRequest(
+                    cp_id="CP_001",
+                    certificate_type=gateway_pb2.CERTIFICATE_USE_CENTRAL_SYSTEM_ROOT,
+                )
+            )
+        assert response.certificate_hash_data[0].hash_algorithm == (
+            gateway_pb2.HASH_ALGORITHM_UNSPECIFIED
+        )
+        # Other fields still round-trip verbatim.
+        assert response.certificate_hash_data[0].serial_number == "ff"
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_get_installed_certificate_ids_unspecified_type_invalid(
+    fake_session_factory: Any, settings: Settings
+) -> None:
+    _, cm = _connected_cp_with_installed_certs("CP_001", status="Accepted", hash_data=[])
+    service = OcppGatewayService(
+        session_factory=fake_session_factory, settings=settings, connections=cm
+    )
+    server, port = await _spawn_server(service)
+    try:
+        async with Channel("127.0.0.1", port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            with pytest.raises(GRPCError) as exc:
+                await stub.GetInstalledCertificateIds(
+                    gateway_pb2.GetInstalledCertificateIdsRequest(
+                        cp_id="CP_001",
+                        # certificate_type left at UNSPECIFIED (proto3 default).
                     )
                 )
         assert exc.value.status == Status.INVALID_ARGUMENT

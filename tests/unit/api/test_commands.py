@@ -1115,3 +1115,116 @@ async def test_extended_trigger_message_accepts_core_type(
         json={"requested_message": "BootNotification"},
     )
     assert response.status_code == 200
+
+
+# ---- GetInstalledCertificateIds (#184) ------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_installed_certificate_ids_accepted_with_certs(
+    client: httpx.AsyncClient, fake_command_service: MagicMock
+) -> None:
+    """Charger reports two installed certs; REST surface translates
+    the OCPP camelCase wire keys to API snake_case."""
+    _set_response(
+        fake_command_service,
+        _stub_response(
+            status="Accepted",
+            certificate_hash_data=[
+                {
+                    "hashAlgorithm": "SHA256",
+                    "issuerNameHash": "aa",
+                    "issuerKeyHash": "bb",
+                    "serialNumber": "01",
+                },
+                {
+                    "hashAlgorithm": "SHA384",
+                    "issuerNameHash": "cc",
+                    "issuerKeyHash": "dd",
+                    "serialNumber": "02",
+                },
+            ],
+        ),
+    )
+    response = await client.post(
+        "/api/v1/charge-points/CP_001/commands/get-installed-certificate-ids",
+        json={"certificate_type": "CentralSystemRootCertificate"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "Accepted"
+    assert len(body["certificate_hash_data"]) == 2
+    first = body["certificate_hash_data"][0]
+    assert first["hash_algorithm"] == "SHA256"
+    assert first["issuer_name_hash"] == "aa"
+    assert first["serial_number"] == "01"
+
+
+@pytest.mark.asyncio
+async def test_get_installed_certificate_ids_not_found(
+    client: httpx.AsyncClient, fake_command_service: MagicMock
+) -> None:
+    _set_response(
+        fake_command_service,
+        _stub_response(status="NotFound", certificate_hash_data=None),
+    )
+    response = await client.post(
+        "/api/v1/charge-points/CP_001/commands/get-installed-certificate-ids",
+        json={"certificate_type": "ManufacturerRootCertificate"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "NotFound"
+    assert body["certificate_hash_data"] == []
+
+
+@pytest.mark.asyncio
+async def test_get_installed_certificate_ids_unknown_hash_algorithm_surfaces_as_null(
+    client: httpx.AsyncClient, fake_command_service: MagicMock
+) -> None:
+    """Vendor extension / future spec → `hash_algorithm: null` on the
+    REST surface (proto layer surfaces UNSPECIFIED). Operators see the
+    deviation; silently dropping / coercing to SHA256 would hide it."""
+    _set_response(
+        fake_command_service,
+        _stub_response(
+            status="Accepted",
+            certificate_hash_data=[
+                {
+                    "hashAlgorithm": "SHA999",
+                    "issuerNameHash": "x",
+                    "issuerKeyHash": "y",
+                    "serialNumber": "ff",
+                },
+            ],
+        ),
+    )
+    response = await client.post(
+        "/api/v1/charge-points/CP_001/commands/get-installed-certificate-ids",
+        json={"certificate_type": "CentralSystemRootCertificate"},
+    )
+    body = response.json()
+    assert body["certificate_hash_data"][0]["hash_algorithm"] is None
+    assert body["certificate_hash_data"][0]["serial_number"] == "ff"
+
+
+@pytest.mark.asyncio
+async def test_get_installed_certificate_ids_rejects_unknown_type(
+    client: httpx.AsyncClient,
+) -> None:
+    response = await client.post(
+        "/api/v1/charge-points/CP_001/commands/get-installed-certificate-ids",
+        json={"certificate_type": "NotARealType"},
+    )
+    assert response.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_get_installed_certificate_ids_requires_type(
+    client: httpx.AsyncClient,
+) -> None:
+    response = await client.post(
+        "/api/v1/charge-points/CP_001/commands/get-installed-certificate-ids",
+        json={},
+    )
+    assert response.status_code == 400

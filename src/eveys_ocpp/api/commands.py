@@ -918,6 +918,76 @@ async def delete_certificate(request: Request, cp_id: str) -> dict[str, Any]:
     return {"status": status_str, "request_id": request.state.request_id}
 
 
+_HASH_ALGORITHM_OCPP_VALUES: frozenset[str] = frozenset({"SHA256", "SHA384", "SHA512"})
+
+
+@router.post(_BASE + "/get-installed-certificate-ids")
+async def get_installed_certificate_ids(request: Request, cp_id: str) -> dict[str, Any]:
+    """OCPP 1.6 Security Whitepaper §4.8. List the CA certificates
+    currently installed on the charger.
+
+    Body shape:
+    ```json
+    { "certificate_type": "CentralSystemRootCertificate" }
+    ```
+
+    Response carries the §5.1 hash_data Dict per installed cert. The
+    operator can feed any returned `serial_number` + `issuer_*_hash`
+    into a future `DeleteCertificate` call without touching the PEM.
+    """
+    body = await _body(request)
+    raw_type = str(_require(body, "certificate_type"))
+    if raw_type not in (
+        "CentralSystemRootCertificate",
+        "ManufacturerRootCertificate",
+    ):
+        raise ApiError(
+            status_code=400,
+            error_code=ERR_BAD_REQUEST,
+            message=(
+                "certificate_type must be 'CentralSystemRootCertificate' "
+                "or 'ManufacturerRootCertificate'"
+            ),
+        )
+    cert_type_value = (
+        ocpp_enums.CertificateUse.central_system_root_certificate
+        if raw_type == "CentralSystemRootCertificate"
+        else ocpp_enums.CertificateUse.manufacturer_root_certificate
+    )
+    ocpp_response = await dispatch_ocpp_call(
+        request,
+        rpc="GetInstalledCertificateIds",
+        cp_id=cp_id,
+        ocpp_request=ocpp_call.GetInstalledCertificateIds(
+            certificate_type=cert_type_value,
+        ),
+    )
+    status_str = str(getattr(ocpp_response, "status", ""))
+    raw_items = getattr(ocpp_response, "certificate_hash_data", None) or []
+    certs = [
+        {
+            # Keep wire-form key names in the API surface; consumers
+            # already speak the OCPP §5.1 vocabulary. UNKNOWN
+            # `hashAlgorithm` is surfaced verbatim so an operator
+            # spotting a vendor extension can tell.
+            "hash_algorithm": (
+                str(item.get("hashAlgorithm", ""))
+                if str(item.get("hashAlgorithm", "")) in _HASH_ALGORITHM_OCPP_VALUES
+                else None
+            ),
+            "issuer_name_hash": str(item.get("issuerNameHash", "")),
+            "issuer_key_hash": str(item.get("issuerKeyHash", "")),
+            "serial_number": str(item.get("serialNumber", "")),
+        }
+        for item in raw_items
+    ]
+    return {
+        "status": status_str,
+        "certificate_hash_data": certs,
+        "request_id": request.state.request_id,
+    }
+
+
 @router.post(_BASE + "/certificate-signed")
 async def certificate_signed(request: Request, cp_id: str) -> dict[str, Any]:
     """OCPP 1.6 Security Whitepaper §4.5 / TC_074. Push a signed

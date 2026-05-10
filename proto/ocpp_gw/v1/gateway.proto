@@ -163,6 +163,16 @@ service OcppGateway {
   // reconstructs the spec's `hash_data` Dict.
   rpc DeleteCertificate(DeleteCertificateRequest) returns (DeleteCertificateResponse);
 
+  // List the CA certificates currently installed on the charger.
+  // OCPP 1.6 Security Whitepaper §4.8. Read-only — the charger is
+  // the source of truth. Useful for an operator audit step before
+  // issuing InstallCertificate ("would I be duplicating?") or
+  // DeleteCertificate ("which hashes are present?"). Returns the
+  // §5.1 hash_data Dict per installed cert (the operator can feed
+  // a hash directly back into DeleteCertificate's input).
+  rpc GetInstalledCertificateIds(GetInstalledCertificateIdsRequest)
+    returns (GetInstalledCertificateIdsResponse);
+
   // Push a signed certificate chain to the charger. OCPP 1.6 Security
   // Whitepaper §4.5; TC_074. The matching charger-initiated
   // SignCertificate flow (charger sends CSR → CSMS signs → CSMS pushes
@@ -768,6 +778,48 @@ message DeleteCertificateRequest {
 
 message DeleteCertificateResponse {
   CertificateDeleteStatus status = 1;
+}
+
+// OCPP `GetInstalledCertificateStatus` enum.
+enum GetInstalledCertificateIdsStatus {
+  GET_INSTALLED_CERTIFICATE_IDS_STATUS_UNSPECIFIED = 0;
+  GET_INSTALLED_CERTIFICATE_IDS_STATUS_ACCEPTED = 1;
+  // No installed certificate matches the requested type. NOT an
+  // error — this is the empty-list reply (the charger is healthy
+  // and certain there's nothing to list).
+  GET_INSTALLED_CERTIFICATE_IDS_STATUS_NOT_FOUND = 2;
+}
+
+// OCPP §5.1 `hash_data` Dict — identifies one installed certificate
+// without forcing the CSMS to round-trip the full PEM. Same shape
+// the charger expects on `DeleteCertificate.req.certificateHashData`.
+message CertificateHashData {
+  // Bounded enum: SHA256 / SHA384 / SHA512.
+  HashAlgorithm hash_algorithm = 1;
+  // SHA-* of the cert's issuer DN, hex-encoded.
+  string issuer_name_hash = 2;
+  // SHA-* of the cert's issuer public key, hex-encoded.
+  string issuer_key_hash = 3;
+  // Cert serial number, hex-encoded (per OCPP spec — *not* decimal).
+  string serial_number = 4;
+}
+
+enum HashAlgorithm {
+  HASH_ALGORITHM_UNSPECIFIED = 0;
+  HASH_ALGORITHM_SHA256 = 1;
+  HASH_ALGORITHM_SHA384 = 2;
+  HASH_ALGORITHM_SHA512 = 3;
+}
+
+message GetInstalledCertificateIdsRequest {
+  string cp_id = 1;
+  CertificateUse certificate_type = 2;
+}
+
+message GetInstalledCertificateIdsResponse {
+  GetInstalledCertificateIdsStatus status = 1;
+  // Empty when status=NOT_FOUND. Populated when status=ACCEPTED.
+  repeated CertificateHashData certificate_hash_data = 2;
 }
 
 message CertificateSignedRequest {
