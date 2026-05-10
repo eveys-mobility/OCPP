@@ -29,6 +29,7 @@ from aiokafka import AIOKafkaConsumer
 from eveys_ocpp._generated.events.v1 import events_pb2
 from eveys_ocpp.metrics import registry as metrics_registry
 from eveys_ocpp.observability import get_logger
+from eveys_ocpp.runtime_overrides import get_override
 from eveys_ocpp.webhooks.signer import compute_signature
 
 if TYPE_CHECKING:
@@ -334,6 +335,16 @@ class WebhookDispatcher:
 
     # ---- envelope → wire body ---------------------------------------------
 
+    def _enabled(self, name: str, default: bool) -> bool:
+        return bool(get_override(name, default))
+
+    def _url(self, name: str, default: str) -> str:
+        value = get_override(name, default)
+        return value if isinstance(value, str) else default
+
+    def _base_url(self) -> str:
+        return self._url("webhook_base_url", self._settings.webhook_base_url)
+
     def _build_body(self, envelope: events_pb2.EventEnvelope) -> dict[str, Any] | None:
         """Translate one EventEnvelope to the webhook JSON body, per
         `docs/integration/03-webhooks.md` § Event catalog. Returns
@@ -347,7 +358,9 @@ class WebhookDispatcher:
         them.
         """
         kind = envelope.WhichOneof("payload")
-        if kind == "cp_connected" and self._settings.webhook_enable_cp_online:
+        if kind == "cp_connected" and self._enabled(
+            "webhook_enable_cp_online", self._settings.webhook_enable_cp_online
+        ):
             p = envelope.cp_connected
             data = {
                 "event_id": envelope.event_id,
@@ -359,7 +372,9 @@ class WebhookDispatcher:
             }
             return _envelope(data)
 
-        if kind == "cp_disconnected" and self._settings.webhook_enable_cp_offline:
+        if kind == "cp_disconnected" and self._enabled(
+            "webhook_enable_cp_offline", self._settings.webhook_enable_cp_offline
+        ):
             p_off = envelope.cp_disconnected
             data = {
                 "event_id": envelope.event_id,
@@ -371,7 +386,9 @@ class WebhookDispatcher:
             }
             return _envelope(data)
 
-        if kind == "cp_boot" and self._settings.webhook_enable_cp_boot:
+        if kind == "cp_boot" and self._enabled(
+            "webhook_enable_cp_boot", self._settings.webhook_enable_cp_boot
+        ):
             p = envelope.cp_boot
             data = {
                 "event_id": envelope.event_id,
@@ -386,7 +403,9 @@ class WebhookDispatcher:
             }
             return _envelope(data)
 
-        if kind == "cp_status" and self._settings.webhook_enable_cp_status:
+        if kind == "cp_status" and self._enabled(
+            "webhook_enable_cp_status", self._settings.webhook_enable_cp_status
+        ):
             p = envelope.cp_status
             data = {
                 "event_id": envelope.event_id,
@@ -403,7 +422,9 @@ class WebhookDispatcher:
             }
             return _envelope(data)
 
-        if kind == "tx_started" and self._settings.webhook_enable_tx_started:
+        if kind == "tx_started" and self._enabled(
+            "webhook_enable_tx_started", self._settings.webhook_enable_tx_started
+        ):
             p = envelope.tx_started
             data = {
                 "event_id": envelope.event_id,
@@ -417,7 +438,9 @@ class WebhookDispatcher:
             }
             return _envelope(data)
 
-        if kind == "tx_stopped" and self._settings.webhook_enable_tx_stopped:
+        if kind == "tx_stopped" and self._enabled(
+            "webhook_enable_tx_stopped", self._settings.webhook_enable_tx_stopped
+        ):
             p = envelope.tx_stopped
             data = {
                 "event_id": envelope.event_id,
@@ -441,20 +464,46 @@ class WebhookDispatcher:
         """URL for this envelope's event type, or None if disabled."""
         kind = envelope.WhichOneof("payload")
         s = self._settings
-        if kind == "cp_connected" and s.webhook_enable_cp_online:
-            return s.webhook_url_cp_online or f"{s.webhook_base_url}/cp-online"
-        if kind == "cp_disconnected" and s.webhook_enable_cp_offline:
-            return s.webhook_url_cp_offline or f"{s.webhook_base_url}/cp-offline"
-        if kind == "cp_boot" and s.webhook_enable_cp_boot:
-            return s.webhook_url_cp_boot or f"{s.webhook_base_url}/cp-boot"
-        if kind == "cp_status" and s.webhook_enable_cp_status:
-            return s.webhook_url_cp_status or f"{s.webhook_base_url}/cp-status-changed"
-        if kind == "cp_meter" and s.webhook_enable_cp_meter:
-            return s.webhook_url_cp_meter or f"{s.webhook_base_url}/cp-meter"
-        if kind == "tx_started" and s.webhook_enable_tx_started:
-            return s.webhook_url_tx_started or f"{s.webhook_base_url}/tx-started"
-        if kind == "tx_stopped" and s.webhook_enable_tx_stopped:
-            return s.webhook_url_tx_stopped or f"{s.webhook_base_url}/tx-stopped"
+        if kind == "cp_connected" and self._enabled(
+            "webhook_enable_cp_online", s.webhook_enable_cp_online
+        ):
+            return self._url("webhook_url_cp_online", s.webhook_url_cp_online) or (
+                f"{self._base_url()}/cp-online"
+            )
+        if kind == "cp_disconnected" and self._enabled(
+            "webhook_enable_cp_offline", s.webhook_enable_cp_offline
+        ):
+            return self._url("webhook_url_cp_offline", s.webhook_url_cp_offline) or (
+                f"{self._base_url()}/cp-offline"
+            )
+        if kind == "cp_boot" and self._enabled("webhook_enable_cp_boot", s.webhook_enable_cp_boot):
+            return self._url("webhook_url_cp_boot", s.webhook_url_cp_boot) or (
+                f"{self._base_url()}/cp-boot"
+            )
+        if kind == "cp_status" and self._enabled(
+            "webhook_enable_cp_status", s.webhook_enable_cp_status
+        ):
+            return self._url("webhook_url_cp_status", s.webhook_url_cp_status) or (
+                f"{self._base_url()}/cp-status-changed"
+            )
+        if kind == "cp_meter" and self._enabled(
+            "webhook_enable_cp_meter", s.webhook_enable_cp_meter
+        ):
+            return self._url("webhook_url_cp_meter", s.webhook_url_cp_meter) or (
+                f"{self._base_url()}/cp-meter"
+            )
+        if kind == "tx_started" and self._enabled(
+            "webhook_enable_tx_started", s.webhook_enable_tx_started
+        ):
+            return self._url("webhook_url_tx_started", s.webhook_url_tx_started) or (
+                f"{self._base_url()}/tx-started"
+            )
+        if kind == "tx_stopped" and self._enabled(
+            "webhook_enable_tx_stopped", s.webhook_enable_tx_stopped
+        ):
+            return self._url("webhook_url_tx_stopped", s.webhook_url_tx_stopped) or (
+                f"{self._base_url()}/tx-stopped"
+            )
         return None
 
     def _enabled_topics(self) -> tuple[str, ...]:
