@@ -87,7 +87,7 @@ class HealthResponse(BaseModel):
         "json_schema_extra": {
             "example": {
                 "status": "ok",
-                "version": "0.0.0",
+                "version": "0.1.0",
                 "components": {"postgres": "ok", "redis": "ok"},
                 "request_id": "9b3c5d18-1f7c-4b6a-8e0e-5b9a3c4f2e10",
             }

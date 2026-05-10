@@ -6,6 +6,10 @@ This file starts at the merge that introduced it; for anything earlier, the git 
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-05-10
+
+First tagged release. Carries everything previously merged on `main` since repo init; the highlights below are what shipped during this cut's window.
+
 ### Added
 
 - **Per-transaction telemetry** on `GET /api/v1/transactions/{transaction_id}`. Response now carries a bounded `telemetry` block with SoC start/last percent and a per-phase voltage/current/power snapshot for `L1`/`L2`/`L3`. ClickHouse-backed; absent phases / `null` SoC fields when the charger never reported that dimension. List endpoints intentionally omit `telemetry` (would be N+1 fan-out per cursor row); use the detail endpoint per id, or `/meter-values?transaction_id=…` for the full curve. Contract: `docs/integration/02-gateway-rest-api.md`. (#134)

@@ -10,7 +10,7 @@
 gateway:
   image:
     repository: ""              # operator-set; e.g. ghcr.io/eveys-mobility/ocpp
-    tag: "0.0.0"
+    tag: "0.1.0"
     pullPolicy: IfNotPresent
 
   # Two replicas is the minimum that makes the graceful-drain
