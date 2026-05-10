@@ -90,6 +90,7 @@ def test_service_class_implements_every_rpc(fake_session_factory: Any, settings:
         "SetChargingProfile",
         "ClearChargingProfile",
         "GetCompositeSchedule",
+        "ChangeAvailability",
     }
     for rpc in expected:
         method = getattr(service, rpc, None)
@@ -3076,6 +3077,141 @@ async def test_signed_update_firmware_empty_signature_returns_invalid_argument(
                 )
         assert exc.value.status == Status.INVALID_ARGUMENT
         cp.call.assert_not_awaited()
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+# ---- ChangeAvailability (#180) ----------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_change_availability_accepted(fake_session_factory: Any, settings: Settings) -> None:
+    _, cm = _connected_cp("CP_001", "Accepted")
+    service = OcppGatewayService(
+        session_factory=fake_session_factory, settings=settings, connections=cm
+    )
+    server, port = await _spawn_server(service)
+    try:
+        async with Channel("127.0.0.1", port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            response = await stub.ChangeAvailability(
+                gateway_pb2.ChangeAvailabilityRequest(
+                    cp_id="CP_001",
+                    connector_id=1,
+                    type=gateway_pb2.AVAILABILITY_TYPE_INOPERATIVE,
+                )
+            )
+        assert response.status == gateway_pb2.CHANGE_AVAILABILITY_STATUS_ACCEPTED
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_change_availability_scheduled(fake_session_factory: Any, settings: Settings) -> None:
+    """Charger has a session in flight → replies Scheduled. Status
+    must round-trip verbatim, not be re-mapped to Accepted (operators
+    need to know the request will land later, not now)."""
+    _, cm = _connected_cp("CP_001", "Scheduled")
+    service = OcppGatewayService(
+        session_factory=fake_session_factory, settings=settings, connections=cm
+    )
+    server, port = await _spawn_server(service)
+    try:
+        async with Channel("127.0.0.1", port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            response = await stub.ChangeAvailability(
+                gateway_pb2.ChangeAvailabilityRequest(
+                    cp_id="CP_001",
+                    connector_id=2,
+                    type=gateway_pb2.AVAILABILITY_TYPE_OPERATIVE,
+                )
+            )
+        assert response.status == gateway_pb2.CHANGE_AVAILABILITY_STATUS_SCHEDULED
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_change_availability_connector_zero_targets_whole_charger(
+    fake_session_factory: Any, settings: Settings
+) -> None:
+    """`connector_id = 0` is the OCPP-specified way to target the whole
+    charger; must NOT be rejected at the boundary the way UnlockConnector
+    is. The two RPCs differ on this — the test pins the difference."""
+    _, cm = _connected_cp("CP_001", "Accepted")
+    service = OcppGatewayService(
+        session_factory=fake_session_factory, settings=settings, connections=cm
+    )
+    server, port = await _spawn_server(service)
+    try:
+        async with Channel("127.0.0.1", port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            response = await stub.ChangeAvailability(
+                gateway_pb2.ChangeAvailabilityRequest(
+                    cp_id="CP_001",
+                    connector_id=0,
+                    type=gateway_pb2.AVAILABILITY_TYPE_INOPERATIVE,
+                )
+            )
+        assert response.status == gateway_pb2.CHANGE_AVAILABILITY_STATUS_ACCEPTED
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_change_availability_negative_connector_invalid(
+    fake_session_factory: Any, settings: Settings
+) -> None:
+    _, cm = _connected_cp("CP_001", "Accepted")
+    service = OcppGatewayService(
+        session_factory=fake_session_factory, settings=settings, connections=cm
+    )
+    server, port = await _spawn_server(service)
+    try:
+        async with Channel("127.0.0.1", port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            with pytest.raises(GRPCError) as exc:
+                await stub.ChangeAvailability(
+                    gateway_pb2.ChangeAvailabilityRequest(
+                        cp_id="CP_001",
+                        connector_id=-1,
+                        type=gateway_pb2.AVAILABILITY_TYPE_INOPERATIVE,
+                    )
+                )
+        assert exc.value.status == Status.INVALID_ARGUMENT
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_change_availability_unspecified_type_invalid(
+    fake_session_factory: Any, settings: Settings
+) -> None:
+    """`AVAILABILITY_TYPE_UNSPECIFIED` (the proto3 default for an unset
+    enum field) is a client typo — must reject at the boundary so the
+    charger doesn't see a no-op."""
+    _, cm = _connected_cp("CP_001", "Accepted")
+    service = OcppGatewayService(
+        session_factory=fake_session_factory, settings=settings, connections=cm
+    )
+    server, port = await _spawn_server(service)
+    try:
+        async with Channel("127.0.0.1", port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            with pytest.raises(GRPCError) as exc:
+                await stub.ChangeAvailability(
+                    gateway_pb2.ChangeAvailabilityRequest(
+                        cp_id="CP_001",
+                        connector_id=1,
+                        # type left at AVAILABILITY_TYPE_UNSPECIFIED (proto default)
+                    )
+                )
+        assert exc.value.status == Status.INVALID_ARGUMENT
     finally:
         server.close()
         await server.wait_closed()

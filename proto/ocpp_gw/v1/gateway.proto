@@ -57,6 +57,14 @@ service OcppGateway {
   // OCPP 1.6: UnlockConnector.req → UnlockConnector.conf.
   rpc UnlockConnector(UnlockConnectorRequest) returns (UnlockConnectorResponse);
 
+  // Take a connector (or the whole charger) Operative or Inoperative
+  // — the standard maintenance hook that doesn't drop the WS.
+  // OCPP 1.6: ChangeAvailability.req → ChangeAvailability.conf.
+  // `connector_id = 0` targets the whole charger; > 0 targets a
+  // specific connector. Charger may reply `Scheduled` if a session
+  // is in flight; the request is honoured at next idle.
+  rpc ChangeAvailability(ChangeAvailabilityRequest) returns (ChangeAvailabilityResponse);
+
   // Read the latest cached state for a charger. Synchronous, no OCPP
   // round-trip — answered from the gateway's local registry.
   rpc GetChargerStatus(GetChargerStatusRequest) returns (GetChargerStatusResponse);
@@ -315,6 +323,35 @@ enum UnlockConnectorStatus {
   UNLOCK_CONNECTOR_STATUS_UNLOCKED = 1;
   UNLOCK_CONNECTOR_STATUS_UNLOCK_FAILED = 2;
   UNLOCK_CONNECTOR_STATUS_NOT_SUPPORTED = 3;
+}
+
+// -----------------------------------------------------------------------------
+// ChangeAvailability
+// -----------------------------------------------------------------------------
+
+message ChangeAvailabilityRequest {
+  string cp_id = 1;
+  // 0 targets the whole charger; > 0 targets a specific connector.
+  int32 connector_id = 2;
+  AvailabilityType type = 3;
+}
+
+message ChangeAvailabilityResponse {
+  ChangeAvailabilityStatus status = 1;
+}
+
+enum AvailabilityType {
+  AVAILABILITY_TYPE_UNSPECIFIED = 0;
+  AVAILABILITY_TYPE_INOPERATIVE = 1;
+  AVAILABILITY_TYPE_OPERATIVE = 2;
+}
+
+enum ChangeAvailabilityStatus {
+  CHANGE_AVAILABILITY_STATUS_UNSPECIFIED = 0;
+  CHANGE_AVAILABILITY_STATUS_ACCEPTED = 1;
+  CHANGE_AVAILABILITY_STATUS_REJECTED = 2;
+  // Charger will honour the request when the current session ends.
+  CHANGE_AVAILABILITY_STATUS_SCHEDULED = 3;
 }
 
 // -----------------------------------------------------------------------------

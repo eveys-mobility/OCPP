@@ -1268,6 +1268,43 @@ paths:
       summary: Certificate Signed
       tags:
       - commands
+  /api/v1/charge-points/{cp_id}/commands/change-availability:
+    post:
+      description: 'Take a connector (or whole charger) Operative / Inoperative.
+
+
+        OCPP 1.6 § 5.2: `connector_id = 0` targets the whole charger;
+
+        > 0 targets a specific connector. Charger may reply `Scheduled`
+
+        if a session is in flight.'
+      operationId: change_availability_api_v1_charge_points__cp_id__commands_change_availability_post
+      parameters:
+      - in: path
+        name: cp_id
+        required: true
+        schema:
+          title: Cp Id
+          type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Change Availability Api V1 Charge Points  Cp Id  Commands
+                  Change Availability Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Change Availability
+      tags:
+      - commands
   /api/v1/charge-points/{cp_id}/commands/change-configuration:
     post:
       operationId: change_configuration_api_v1_charge_points__cp_id__commands_change_configuration_post

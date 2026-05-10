@@ -93,6 +93,7 @@ _OCPP_CALL_DISPATCH: dict[str, type[Any]] = {
     "ChangeConfiguration": ocpp_call.ChangeConfiguration,
     "TriggerMessage": ocpp_call.TriggerMessage,
     "UnlockConnector": ocpp_call.UnlockConnector,
+    "ChangeAvailability": ocpp_call.ChangeAvailability,
     "GetConfiguration": ocpp_call.GetConfiguration,
     "ClearCache": ocpp_call.ClearCache,
     "DataTransfer": ocpp_call.DataTransfer,
@@ -252,6 +253,47 @@ class OcppGatewayService(gateway_grpc.OcppGatewayBase):
         await stream.send_message(
             gateway_pb2.UnlockConnectorResponse(
                 status=_translate_unlock_connector_status(ocpp_response.status)
+            )
+        )
+
+    async def ChangeAvailability(
+        self,
+        stream: Stream[
+            gateway_pb2.ChangeAvailabilityRequest, gateway_pb2.ChangeAvailabilityResponse
+        ],
+    ) -> None:
+        """Take a connector (or the whole charger) Operative / Inoperative.
+
+        OCPP 1.6 § 5.2: `connector_id = 0` targets the whole charger;
+        > 0 targets a specific connector. The charger may reply
+        `Scheduled` if a session is in flight — the request is
+        honoured at next idle. Boundary validation: negative
+        connector_ids and `AVAILABILITY_TYPE_UNSPECIFIED` rejected
+        with `INVALID_ARGUMENT` so a client typo doesn't reach the
+        charger as a no-op."""
+        request = await self._recv(stream)
+        if request.connector_id < 0:
+            raise GRPCError(
+                Status.INVALID_ARGUMENT,
+                "connector_id must be >= 0 (0 targets whole charger; > 0 a specific connector)",
+            )
+        ocpp_type = _AVAILABILITY_TYPE_PROTO_TO_OCPP.get(request.type)
+        if ocpp_type is None:
+            raise GRPCError(
+                Status.INVALID_ARGUMENT,
+                "type must be AVAILABILITY_TYPE_OPERATIVE or AVAILABILITY_TYPE_INOPERATIVE",
+            )
+        ocpp_response = await self._dispatch_ocpp_call(
+            rpc="ChangeAvailability",
+            cp_id=request.cp_id,
+            ocpp_request=ocpp_call.ChangeAvailability(
+                connector_id=request.connector_id,
+                type=ocpp_type,
+            ),
+        )
+        await stream.send_message(
+            gateway_pb2.ChangeAvailabilityResponse(
+                status=_translate_change_availability_status(ocpp_response.status)
             )
         )
 
@@ -1535,6 +1577,23 @@ def _translate_unlock_connector_status(ocpp_status: str) -> int:
         return gateway_pb2.UNLOCK_CONNECTOR_STATUS_NOT_SUPPORTED
     log.warning("grpc.unknown_ocpp_status", rpc="UnlockConnector", ocpp_status=ocpp_status)
     return gateway_pb2.UNLOCK_CONNECTOR_STATUS_UNSPECIFIED
+
+
+_AVAILABILITY_TYPE_PROTO_TO_OCPP: dict[int, ocpp_enums.AvailabilityType] = {
+    gateway_pb2.AVAILABILITY_TYPE_INOPERATIVE: ocpp_enums.AvailabilityType.inoperative,
+    gateway_pb2.AVAILABILITY_TYPE_OPERATIVE: ocpp_enums.AvailabilityType.operative,
+}
+
+
+def _translate_change_availability_status(ocpp_status: str) -> int:
+    if ocpp_status == "Accepted":
+        return gateway_pb2.CHANGE_AVAILABILITY_STATUS_ACCEPTED
+    if ocpp_status == "Rejected":
+        return gateway_pb2.CHANGE_AVAILABILITY_STATUS_REJECTED
+    if ocpp_status == "Scheduled":
+        return gateway_pb2.CHANGE_AVAILABILITY_STATUS_SCHEDULED
+    log.warning("grpc.unknown_ocpp_status", rpc="ChangeAvailability", ocpp_status=ocpp_status)
+    return gateway_pb2.CHANGE_AVAILABILITY_STATUS_UNSPECIFIED
 
 
 def _translate_configuration_key(item: dict[str, Any]) -> gateway_pb2.ConfigurationKey:
