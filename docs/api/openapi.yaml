@@ -402,7 +402,7 @@ components:
           redis: ok
         request_id: 9b3c5d18-1f7c-4b6a-8e0e-5b9a3c4f2e10
         status: ok
-        version: 0.0.0
+        version: 0.1.0
       properties:
         components:
           $ref: '#/components/schemas/HealthComponents'
@@ -968,7 +968,7 @@ info:
     is exempt. Errors carry the closed-enum envelope `{error, error_code, request_id}`
     documented in [`docs/integration/02-gateway-rest-api.md`](https://github.com/eveys-mobility/OCPP/blob/main/docs/integration/02-gateway-rest-api.md).
   title: eveys/ocpp gateway
-  version: 0.0.0
+  version: 0.1.0
 openapi: 3.1.0
 paths:
   /api/v1/admin/config:

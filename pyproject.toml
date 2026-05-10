@@ -1,6 +1,6 @@
 [project]
 name = "eveys-ocpp"
-version = "0.0.0"
+version = "0.1.0"
 description = "OCPP gateway service for the Eveys EV-charging platform"
 readme = "README.md"
 requires-python = ">=3.13"
