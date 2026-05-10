@@ -8,6 +8,10 @@ This file starts at the merge that introduced it; for anything earlier, the git 
 
 ## [Unreleased]
 
+### Changed
+
+- CHANGELOG header now carries a one-line "Latest release" callout above the version sections, linking to both the GitHub Release and the in-file section. Each tag updates the same line. (#146)
+
 ## [0.1.0] - 2026-05-10
 
 First tagged release. Carries everything previously merged on `main` since repo init; the highlights below are what shipped during this cut's window.
