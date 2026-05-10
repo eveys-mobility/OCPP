@@ -28,6 +28,7 @@ from ocpp.v16 import call
 from websockets.asyncio.client import connect
 
 from tests.compose_smoke.conftest import (
+    HOST_CH_HTTP_PORT,
     HOST_ENVOY_ADMIN_PORT,
     HOST_ENVOY_TLS_PORT,
     HOST_WS_PORT,
@@ -202,9 +203,13 @@ async def test_full_charger_flow_against_running_container() -> None:
             tx_id = int(start.transaction_id)
 
             # MeterValues — exercises the Kafka publish path so the
-            # ingestor materialises a row downstream. We don't assert
-            # the ClickHouse row here (separate test below); we just
-            # need the publish to succeed without a Kafka error.
+            # ingestor materialises a row downstream. The
+            # multi-measurand mix (energy + per-phase voltage + SoC)
+            # is also what the next test (#135 enum-mapping
+            # assertion) reads back from ClickHouse: anything with a
+            # `measurand` other than `Energy.Active.Import.Register`
+            # would have crashed the original handler-bug-passing
+            # path, where everything stored as `MEASURAND_UNSPECIFIED`.
             await asyncio.wait_for(
                 sim.call(
                     call.MeterValues(
@@ -218,7 +223,18 @@ async def test_full_charger_flow_against_running_container() -> None:
                                         "value": "1234",
                                         "measurand": "Energy.Active.Import.Register",
                                         "unit": "Wh",
-                                    }
+                                    },
+                                    {
+                                        "value": "230.4",
+                                        "measurand": "Voltage",
+                                        "unit": "V",
+                                        "phase": "L1",
+                                    },
+                                    {
+                                        "value": "81.0",
+                                        "measurand": "SoC",
+                                        "unit": "Percent",
+                                    },
                                 ],
                             }
                         ],
@@ -242,6 +258,69 @@ async def test_full_charger_flow_against_running_container() -> None:
             assert stop.id_tag_info["status"] == "Accepted"
         finally:
             loop.cancel()
+
+
+def test_meter_value_enums_land_in_clickhouse_as_proto_enum_names() -> None:
+    """The Voltage+L1 and SoC samples published by the previous test
+    must reach ClickHouse with their enum dimensions intact — i.e.
+    `MEASURAND_VOLTAGE` / `PHASE_L1` / `MEASURAND_SOC`, not the
+    `*_UNSPECIFIED` strings the original handler bug stored (#135).
+
+    This is the assertion that would have caught the original bug. The
+    handler unit tests passed because they only checked `value`; only
+    a ClickHouse round-trip exposes the dropped enum fields.
+
+    Test ordering is implicit (pytest runs tests in file order) and
+    intentional: this test reads what the previous test wrote.
+    """
+    import time
+    import urllib.parse
+    import urllib.request
+
+    # Filter on `cp_id` only — `event_id` would force a Postgres lookup
+    # and isn't needed; the unique cp_id pins us to this test session
+    # because no other test in the file emits MeterValues.
+    sql = (
+        "SELECT sv.measurand AS m, sv.phase AS p "
+        "FROM eveys_ocpp.cp_meter ARRAY JOIN sampled_values AS sv "
+        "WHERE cp_id = 'COMPOSE_SMOKE_CP' "
+        "ORDER BY occurred_at, m"
+    )
+    qs = urllib.parse.urlencode({"query": sql + " FORMAT JSONCompact"})
+    url = f"http://{PUBLISHED_HOST}:{HOST_CH_HTTP_PORT}/?{qs}"
+
+    # Ingestor batch flush is sub-second in the compose stack but Kafka
+    # delivery + materialization isn't instant; poll briefly so a slow
+    # CI runner doesn't false-fail.
+    deadline = time.monotonic() + 15
+    rows: list[list[str]] = []
+    while time.monotonic() < deadline:
+        with urllib.request.urlopen(url, timeout=5) as resp:
+            body = json.loads(resp.read())
+        rows = body.get("data", [])
+        if rows:
+            break
+        time.sleep(1)
+
+    assert rows, (
+        "no cp_meter rows visible in ClickHouse after 15s — ingestor or "
+        "Kafka path is broken (separate from the enum bug under test)"
+    )
+    measurands = {r[0] for r in rows}
+    phases = {r[1] for r in rows}
+
+    # The original bug shipped these as `MEASURAND_UNSPECIFIED` /
+    # `PHASE_UNSPECIFIED` for *every* sample, regardless of input.
+    assert "MEASURAND_VOLTAGE" in measurands, (
+        f"Voltage sample lost its measurand enum on ingest. Stored: {measurands}"
+    )
+    assert "MEASURAND_SOC" in measurands, (
+        f"SoC sample lost its measurand enum on ingest. Stored: {measurands}"
+    )
+    assert "MEASURAND_ENERGY_ACTIVE_IMPORT_REGISTER" in measurands, (
+        f"Energy register sample lost its measurand enum on ingest. Stored: {measurands}"
+    )
+    assert "PHASE_L1" in phases, f"L1 sample lost its phase enum on ingest. Stored: {phases}"
 
 
 # ---- Envoy edge --------------------------------------------------------
