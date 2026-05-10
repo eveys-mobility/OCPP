@@ -145,7 +145,7 @@ The exact command depends on your edge setup. For Envoy-fronted production, an `
 
 ## Step 4 (last resort) — Pod-kill
 
-The charger is on one specific gateway pod (per the consistent-hash routing in [ADR-0007](./adr/0007-edge-tls-and-sticky-hash.md)). Kill that pod:
+The charger is on one specific gateway pod (per the consistent-hash routing in [ADR-0007](./adr/0007-envoy-as-the-load-balancer.md)). Kill that pod:
 
 ```bash
 # Find the pod hosting the charger:
