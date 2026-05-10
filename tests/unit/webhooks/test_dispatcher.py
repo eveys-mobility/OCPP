@@ -60,6 +60,14 @@ def _envelope(payload_kind: str, **fields: Any) -> events_pb2.EventEnvelope:
         t.transaction_id = fields.pop("transaction_id", 12345)
         t.id_tag = fields.pop("id_tag", "RFID_X")
         t.meter_start_wh = fields.pop("meter_start_wh", 1_000_000)
+    elif payload_kind == "cp_connected":
+        c = env.cp_connected
+        c.subprotocol = fields.pop("subprotocol", "ocpp1.6")
+        c.pod_id = fields.pop("pod_id", "ocpp-gw-7b3fc9d-x4z8q")
+    elif payload_kind == "cp_disconnected":
+        d = env.cp_disconnected
+        d.pod_id = fields.pop("pod_id", "ocpp-gw-7b3fc9d-x4z8q")
+        d.reason = fields.pop("reason", "clean")
     elif payload_kind == "tx_stopped":
         ts = env.tx_stopped
         ts.transaction_id = fields.pop("transaction_id", 12345)
@@ -125,6 +133,24 @@ def test_build_body_tx_stopped_returns_none_when_disabled() -> None:
     assert d._build_body(_envelope("tx_stopped")) is None
 
 
+def test_build_body_cp_offline_shape() -> None:
+    """cp.offline envelope mirrors the documented contract shape per
+    `docs/integration/03-webhooks.md` § cp.online / cp.offline."""
+    d = WebhookDispatcher(_settings())
+    body = d._build_body(_envelope("cp_disconnected", reason="error"))
+    assert body is not None
+    data = body["data"]
+    assert data["event_type"] == "cp.offline"
+    assert data["cp_id"] == "CP_TEST"
+    assert data["pod_id"] == "ocpp-gw-7b3fc9d-x4z8q"
+    assert data["reason"] == "error"
+
+
+def test_build_body_cp_offline_returns_none_when_disabled() -> None:
+    d = WebhookDispatcher(_settings(webhook_enable_cp_offline=False))
+    assert d._build_body(_envelope("cp_disconnected")) is None
+
+
 def test_build_body_returns_none_for_disabled_event() -> None:
     """`webhook_enable_cp_boot=False` → cp.boot skipped silently."""
     d = WebhookDispatcher(_settings(webhook_enable_cp_boot=False))
@@ -172,14 +198,29 @@ def test_url_for_tx_stopped_uses_override() -> None:
     assert d._url_for(_envelope("tx_stopped")) == "https://override.example/closure"
 
 
+def test_url_for_cp_offline_falls_back_to_base() -> None:
+    d = WebhookDispatcher(_settings())
+    assert d._url_for(_envelope("cp_disconnected")) == "https://backend.example/webhooks/cp-offline"
+
+
+def test_url_for_cp_offline_uses_override() -> None:
+    d = WebhookDispatcher(
+        _settings(webhook_url_cp_offline="https://override.example/presence/down")
+    )
+    assert d._url_for(_envelope("cp_disconnected")) == "https://override.example/presence/down"
+
+
 # ---- _enabled_topics -------------------------------------------------------
 
 
 def test_enabled_topics_default() -> None:
     d = WebhookDispatcher(_settings())
     topics = d._enabled_topics()
-    # Default: boot, status, tx-started, tx-stopped enabled; meter off.
+    # Default: boot, connected, disconnected, status, tx-started, tx-stopped
+    # enabled; meter off (high volume — Kafka subscribers, not webhooks).
     assert "cp.boot" in topics
+    assert "cp.connected" in topics
+    assert "cp.disconnected" in topics
     assert "cp.status" in topics
     assert "tx.started" in topics
     assert "tx.stopped" in topics
@@ -190,6 +231,8 @@ def test_enabled_topics_all_off() -> None:
     d = WebhookDispatcher(
         _settings(
             webhook_enable_cp_boot=False,
+            webhook_enable_cp_online=False,
+            webhook_enable_cp_offline=False,
             webhook_enable_cp_status=False,
             webhook_enable_tx_started=False,
             webhook_enable_tx_stopped=False,

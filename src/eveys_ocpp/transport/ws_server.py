@@ -9,11 +9,14 @@ in production. Locally we accept everything.
 
 from __future__ import annotations
 
+import uuid
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from websockets import Subprotocol
 from websockets.asyncio.server import ServerConnection, serve
 
+from eveys_ocpp._generated.events.v1 import events_pb2
 from eveys_ocpp.connection import EveysChargePoint
 from eveys_ocpp.metrics import registry as metrics_registry
 from eveys_ocpp.observability import bind_contextvars, clear_contextvars, get_logger
@@ -32,6 +35,49 @@ if TYPE_CHECKING:
 log = get_logger(__name__)
 
 OCPP_SUBPROTOCOL = Subprotocol("ocpp1.6")
+
+
+async def _publish_lifecycle_event(
+    *,
+    event_producer: EventProducer | None,
+    cp_id: str,
+    topic: str,
+    payload_field: str,
+    payload: object,
+) -> None:
+    """Publish one lifecycle envelope on the WS connect / disconnect path.
+
+    Best-effort: a Kafka outage MUST NOT break the connection lifecycle
+    (otherwise a flaky broker would make every disconnect raise out of
+    the finally-block, masking the real disconnect reason). Same shape
+    of guard the OCPP handlers (BootNotification, MeterValues, etc.)
+    use around their own publishes.
+
+    `payload_field` is the EventEnvelope oneof field name to set; pass
+    the proto message in `payload`.
+    """
+    if event_producer is None:
+        return
+    try:
+        envelope = events_pb2.EventEnvelope(
+            event_id=str(uuid.uuid4()),
+            occurred_at=datetime.now(UTC).isoformat(),
+            cp_id=cp_id,
+            schema_version="v1",
+        )
+        getattr(envelope, payload_field).CopyFrom(payload)
+        await event_producer.publish(
+            topic=topic,
+            key=cp_id,
+            value=envelope.SerializeToString(),
+        )
+    except Exception as exc:
+        log.warning(
+            "ws.lifecycle_publish_failed",
+            cp_id=cp_id,
+            topic=topic,
+            error=str(exc),
+        )
 
 
 async def _on_connect(
@@ -72,6 +118,21 @@ async def _on_connect(
     if registry is not None:
         await registry.mark_online(cp_id)
 
+    # cp.online lifecycle event. Published only after the registry
+    # mark succeeds so a downstream consumer never sees online events
+    # for chargers that never reached the registry. Best-effort —
+    # broker drop logs a warning, doesn't break the WS path.
+    await _publish_lifecycle_event(
+        event_producer=event_producer,
+        cp_id=cp_id,
+        topic=settings.kafka_topic_cp_connected,
+        payload_field="cp_connected",
+        payload=events_pb2.CpConnected(
+            subprotocol=str(connection.subprotocol or ""),
+            pod_id=settings.pod_id,
+        ),
+    )
+
     cp = EveysChargePoint(
         cp_id,
         connection,
@@ -99,13 +160,33 @@ async def _on_connect(
     finally:
         if connections is not None:
             connections.remove(cp)
+        was_ours = False
         if registry is not None:
             # Compare-and-delete: only clear if we still own the key.
             # A reconnect to a different pod between disconnect and
             # this call must not clobber the new owner.
-            await registry.mark_offline(cp_id)
+            was_ours = await registry.mark_offline(cp_id)
         metrics_registry.WS_CONNECTIONS_ACTIVE.dec()
         metrics_registry.WS_DISCONNECTS_TOTAL.labels(reason=disconnect_reason).inc()
+        # cp.offline lifecycle event. Only published when *we* still
+        # held the registry key — a reconnect-to-different-pod race
+        # already handed ownership over, so emitting offline would
+        # confuse presence consumers (offline immediately followed by
+        # online from the other pod, with no real outage). The
+        # `was_ours` gate is also why we don't publish in the
+        # registry-is-None branch — without a registry there's no way
+        # to distinguish a real departure from a race.
+        if was_ours:
+            await _publish_lifecycle_event(
+                event_producer=event_producer,
+                cp_id=cp_id,
+                topic=settings.kafka_topic_cp_disconnected,
+                payload_field="cp_disconnected",
+                payload=events_pb2.CpDisconnected(
+                    pod_id=settings.pod_id,
+                    reason=disconnect_reason,
+                ),
+            )
         log.info("ws.disconnected")
         clear_contextvars()
 

@@ -336,6 +336,36 @@ class Settings(BaseSettings):
     # The four topic names are part of the frozen v1 contract with downstream
     # consumers (proto/events/v1/events.proto). Renaming is an externally
     # visible breaking change — treat as structural.
+    kafka_topic_cp_connected: str = Field(
+        default="cp.connected",
+        description=(
+            "WS-connect events. Source for the `cp.online` webhook. "
+            "Published by the WS server immediately after the registry "
+            "marks the charger online."
+        ),
+        json_schema_extra={
+            "category": "kafka_topics",
+            "impact": "Renaming detaches every existing consumer.",
+            "secret": False,
+            "stability": "structural",
+        },
+    )
+    kafka_topic_cp_disconnected: str = Field(
+        default="cp.disconnected",
+        description=(
+            "WS-disconnect events. Source for the `cp.offline` webhook. "
+            "Published by the WS server only when the registry's "
+            "compare-and-delete confirms we still owned the key (so a "
+            "reconnect-to-different-pod race never produces a spurious "
+            "offline event)."
+        ),
+        json_schema_extra={
+            "category": "kafka_topics",
+            "impact": "Renaming detaches every existing consumer.",
+            "secret": False,
+            "stability": "structural",
+        },
+    )
     kafka_topic_cp_meter: str = Field(
         default="cp.meter",
         description=(
@@ -1053,6 +1083,20 @@ class Settings(BaseSettings):
         },
     )
 
+    webhook_url_cp_offline: str = Field(
+        default="",
+        description=(
+            "Override the URL for `cp.offline` events. Empty falls "
+            "back to `<webhook_base_url>/cp-offline`."
+        ),
+        json_schema_extra={
+            "category": "webhooks",
+            "impact": "Per-event routing override.",
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+
     webhook_url_cp_online: str = Field(
         default="",
         description=(
@@ -1143,12 +1187,23 @@ class Settings(BaseSettings):
         description=("Enable webhook delivery for `cp.online` events (charger WebSocket connect)."),
         json_schema_extra={
             "category": "webhooks",
-            "impact": (
-                "Pairs with `cp.offline` for backend-side online-state "
-                "tracking. No producer emits this yet — the WS server "
-                "needs to be wired to publish `CpConnected` envelopes "
-                "before this setting has an effect."
-            ),
+            "impact": ("Pairs with `cp.offline` for backend-side online-state tracking."),
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+
+    webhook_enable_cp_offline: bool = Field(
+        default=True,
+        description=(
+            "Enable webhook delivery for `cp.offline` events (charger "
+            "WebSocket disconnect — only fired when this pod still "
+            "owned the registry key, so a reconnect-to-different-pod "
+            "race never produces a spurious offline event)."
+        ),
+        json_schema_extra={
+            "category": "webhooks",
+            "impact": ("Pairs with `cp.online` for backend-side online-state tracking."),
             "secret": False,
             "stability": "tunable",
         },

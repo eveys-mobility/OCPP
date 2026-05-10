@@ -9,12 +9,13 @@
 // - The `oneof payload` discriminator is what consumers switch on.
 //
 // Topic mapping:
-//   cp.connected → CpConnected   (charger opened a WS to us)
-//   cp.boot      → CpBoot        (BootNotification arrived)
-//   cp.status    → CpStatus      (StatusNotification arrived)
-//   cp.meter     → CpMeter       (MeterValues arrived)
-//   tx.started   → TxStarted     (StartTransaction arrived)
-//   tx.stopped   → TxStopped     (StopTransaction arrived + persisted)
+//   cp.connected    → CpConnected    (charger opened a WS to us)
+//   cp.disconnected → CpDisconnected (charger's WS went away)
+//   cp.boot         → CpBoot         (BootNotification arrived)
+//   cp.status       → CpStatus       (StatusNotification arrived)
+//   cp.meter        → CpMeter        (MeterValues arrived)
+//   tx.started      → TxStarted      (StartTransaction arrived)
+//   tx.stopped      → TxStopped      (StopTransaction arrived + persisted)
 //
 // `tx.stopped` ships as a belt-and-braces signal alongside the
 // synchronous `/api/eveys/sessions/close` REST call (per the
@@ -63,6 +64,7 @@ message EventEnvelope {
     TxStarted tx_started = 104;
     CpSecurityEvent cp_security_event = 105;
     TxStopped tx_stopped = 106;
+    CpDisconnected cp_disconnected = 107;
   }
 }
 
@@ -76,6 +78,28 @@ message CpConnected {
   string subprotocol = 1;
   // ID of the gateway pod that accepted the connection.
   string pod_id = 2;
+}
+
+// -----------------------------------------------------------------------------
+// cp.disconnected — charger's WS went away (gateway-side observation)
+// -----------------------------------------------------------------------------
+//
+// Emitted from the WS server's connection lifecycle finally-block,
+// only when the registry's compare-and-delete confirms *we still
+// owned the key* — i.e. this is a genuine departure, not the
+// reconnect-to-different-pod race. Without that gate a reconnecting
+// charger would generate a spurious cp.offline followed immediately
+// by cp.online, confusing presence consumers.
+
+message CpDisconnected {
+  // ID of the gateway pod that observed the disconnect — the same
+  // pod that owned the WS up until this moment.
+  string pod_id = 1;
+  // Why the connection ended. Bounded enum: "clean" (the OCPP spec's
+  // 1000 Normal-Closure code) or "error" (any unhandled exception
+  // out of the connection task). Same dimension `eveys_ocpp_ws_
+  // disconnects_total` already labels by.
+  string reason = 2;
 }
 
 // -----------------------------------------------------------------------------
