@@ -720,7 +720,7 @@ See [`CONTRIBUTING.md`](./CONTRIBUTING.md):
 - Code of Conduct in [`CODE_OF_CONDUCT.md`](./CODE_OF_CONDUCT.md).
 
 Issues and feature requests go to GitHub Issues. Search before
-filing.
+filing. Notable changes land in [`CHANGELOG.md`](./CHANGELOG.md).
 
 ---
 
