@@ -318,6 +318,53 @@ async def trigger_message(request: Request, cp_id: str) -> dict[str, Any]:
     return _ok(request, ocpp_response.status)
 
 
+# OCPP 1.6 Security Whitepaper §4.7 — wider message-type set than the
+# plain TriggerMessage. Accepts the Core 6 + the two Whitepaper additions
+# (LogStatusNotification, SignChargePointCertificate). Closed enum stays
+# explicit for the same reason it's explicit on the plain endpoint:
+# operators get a clean 400 with the legal values rather than passing
+# a typo through to the charger.
+_EXTENDED_TRIGGER_MESSAGES: frozenset[str] = frozenset(
+    {
+        "BootNotification",
+        "DiagnosticsStatusNotification",
+        "FirmwareStatusNotification",
+        "Heartbeat",
+        "MeterValues",
+        "StatusNotification",
+        "LogStatusNotification",
+        "SignChargePointCertificate",
+    }
+)
+
+
+@router.post(_BASE + "/extended-trigger-message")
+async def extended_trigger_message(request: Request, cp_id: str) -> dict[str, Any]:
+    """OCPP 1.6 Security Whitepaper §4.7. Wider message-type enum than
+    the plain TriggerMessage — adds `LogStatusNotification` and
+    `SignChargePointCertificate`."""
+    body = await _body(request)
+    raw_msg = str(_require(body, "requested_message"))
+    if raw_msg not in _EXTENDED_TRIGGER_MESSAGES:
+        raise ApiError(
+            status_code=400,
+            error_code=ERR_BAD_REQUEST,
+            message=f"requested_message must be one of {sorted(_EXTENDED_TRIGGER_MESSAGES)}",
+        )
+    requested = ocpp_enums.MessageTrigger(raw_msg)
+    connector_id = body.get("connector_id")
+    ocpp_response = await dispatch_ocpp_call(
+        request,
+        rpc="ExtendedTriggerMessage",
+        cp_id=cp_id,
+        ocpp_request=ocpp_call.ExtendedTriggerMessage(
+            requested_message=requested,
+            connector_id=int(connector_id) if connector_id else None,
+        ),
+    )
+    return _ok(request, ocpp_response.status)
+
+
 @router.post(_BASE + "/unlock-connector")
 async def unlock_connector(request: Request, cp_id: str) -> dict[str, Any]:
     body = await _body(request)

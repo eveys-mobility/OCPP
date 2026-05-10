@@ -91,6 +91,7 @@ def test_service_class_implements_every_rpc(fake_session_factory: Any, settings:
         "ClearChargingProfile",
         "GetCompositeSchedule",
         "ChangeAvailability",
+        "ExtendedTriggerMessage",
     }
     for rpc in expected:
         method = getattr(service, rpc, None)
@@ -3209,6 +3210,119 @@ async def test_change_availability_unspecified_type_invalid(
                         cp_id="CP_001",
                         connector_id=1,
                         # type left at AVAILABILITY_TYPE_UNSPECIFIED (proto default)
+                    )
+                )
+        assert exc.value.status == Status.INVALID_ARGUMENT
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+# ---- ExtendedTriggerMessage (#182) -----------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_extended_trigger_message_log_status_notification(
+    fake_session_factory: Any, settings: Settings
+) -> None:
+    """Headline use case for ExtendedTriggerMessage: prompt the charger
+    to send a LogStatusNotification (the Whitepaper §4.7 addition that
+    makes this RPC distinct from plain TriggerMessage)."""
+    _, cm = _connected_cp("CP_001", "Accepted")
+    service = OcppGatewayService(
+        session_factory=fake_session_factory, settings=settings, connections=cm
+    )
+    server, port = await _spawn_server(service)
+    try:
+        async with Channel("127.0.0.1", port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            response = await stub.ExtendedTriggerMessage(
+                gateway_pb2.ExtendedTriggerMessageRequest(
+                    cp_id="CP_001",
+                    requested_message=(
+                        gateway_pb2.EXTENDED_TRIGGER_MESSAGE_TYPE_LOG_STATUS_NOTIFICATION
+                    ),
+                )
+            )
+        assert response.status == gateway_pb2.TRIGGER_MESSAGE_STATUS_ACCEPTED
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_extended_trigger_message_sign_charge_point_certificate(
+    fake_session_factory: Any, settings: Settings
+) -> None:
+    """The other Whitepaper-§4.7 addition. Pinned so a future refactor
+    that drops it from the translator's mapping fails loud — operators
+    on the cert-rotation path need both Whitepaper triggers."""
+    _, cm = _connected_cp("CP_001", "Accepted")
+    service = OcppGatewayService(
+        session_factory=fake_session_factory, settings=settings, connections=cm
+    )
+    server, port = await _spawn_server(service)
+    try:
+        async with Channel("127.0.0.1", port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            response = await stub.ExtendedTriggerMessage(
+                gateway_pb2.ExtendedTriggerMessageRequest(
+                    cp_id="CP_001",
+                    requested_message=(
+                        gateway_pb2.EXTENDED_TRIGGER_MESSAGE_TYPE_SIGN_CHARGE_POINT_CERTIFICATE
+                    ),
+                )
+            )
+        assert response.status == gateway_pb2.TRIGGER_MESSAGE_STATUS_ACCEPTED
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_extended_trigger_message_core_type_passes_through(
+    fake_session_factory: Any, settings: Settings
+) -> None:
+    """The Extended variant accepts both old + new types (Whitepaper
+    §4.7); a Core-profile BootNotification trigger sent through the
+    Extended RPC must work the same as via plain TriggerMessage."""
+    _, cm = _connected_cp("CP_001", "Accepted")
+    service = OcppGatewayService(
+        session_factory=fake_session_factory, settings=settings, connections=cm
+    )
+    server, port = await _spawn_server(service)
+    try:
+        async with Channel("127.0.0.1", port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            response = await stub.ExtendedTriggerMessage(
+                gateway_pb2.ExtendedTriggerMessageRequest(
+                    cp_id="CP_001",
+                    requested_message=gateway_pb2.EXTENDED_TRIGGER_MESSAGE_TYPE_BOOT_NOTIFICATION,
+                )
+            )
+        assert response.status == gateway_pb2.TRIGGER_MESSAGE_STATUS_ACCEPTED
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_extended_trigger_message_unspecified_invalid(
+    fake_session_factory: Any, settings: Settings
+) -> None:
+    _, cm = _connected_cp("CP_001", "Accepted")
+    service = OcppGatewayService(
+        session_factory=fake_session_factory, settings=settings, connections=cm
+    )
+    server, port = await _spawn_server(service)
+    try:
+        async with Channel("127.0.0.1", port) as ch:
+            stub = gateway_grpc.OcppGatewayStub(ch)
+            with pytest.raises(GRPCError) as exc:
+                await stub.ExtendedTriggerMessage(
+                    gateway_pb2.ExtendedTriggerMessageRequest(
+                        cp_id="CP_001",
+                        # requested_message left at UNSPECIFIED (proto default)
                     )
                 )
         assert exc.value.status == Status.INVALID_ARGUMENT

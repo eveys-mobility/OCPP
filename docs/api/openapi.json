@@ -2163,6 +2163,51 @@
         ]
       }
     },
+    "/api/v1/charge-points/{cp_id}/commands/extended-trigger-message": {
+      "post": {
+        "description": "OCPP 1.6 Security Whitepaper \u00a74.7. Wider message-type enum than\nthe plain TriggerMessage \u2014 adds `LogStatusNotification` and\n`SignChargePointCertificate`.",
+        "operationId": "extended_trigger_message_api_v1_charge_points__cp_id__commands_extended_trigger_message_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cp_id",
+            "required": true,
+            "schema": {
+              "title": "Cp Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Extended Trigger Message Api V1 Charge Points  Cp Id  Commands Extended Trigger Message Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Extended Trigger Message",
+        "tags": [
+          "commands"
+        ]
+      }
+    },
     "/api/v1/charge-points/{cp_id}/commands/get-charger-status": {
       "get": {
         "description": "Cached charger status from the registry + Postgres. Doesn't dial\nthe WebSocket; safe to call from operator dashboards without\nback-pressuring chargers.",

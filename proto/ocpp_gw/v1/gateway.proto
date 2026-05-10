@@ -65,6 +65,15 @@ service OcppGateway {
   // is in flight; the request is honoured at next idle.
   rpc ChangeAvailability(ChangeAvailabilityRequest) returns (ChangeAvailabilityResponse);
 
+  // Trigger one of the wider Security-Whitepaper message types
+  // (LogStatusNotification, SignChargePointCertificate) on top of
+  // the plain TriggerMessage's Core types. OCPP 1.6 Security
+  // Whitepaper §4.7. Sibling of TriggerMessage — kept distinct so
+  // operators on the security-log path can target the right message
+  // without ambiguity.
+  rpc ExtendedTriggerMessage(ExtendedTriggerMessageRequest)
+    returns (ExtendedTriggerMessageResponse);
+
   // Read the latest cached state for a charger. Synchronous, no OCPP
   // round-trip — answered from the gateway's local registry.
   rpc GetChargerStatus(GetChargerStatusRequest) returns (GetChargerStatusResponse);
@@ -303,6 +312,40 @@ enum TriggerMessageStatus {
   TRIGGER_MESSAGE_STATUS_ACCEPTED = 1;
   TRIGGER_MESSAGE_STATUS_REJECTED = 2;
   TRIGGER_MESSAGE_STATUS_NOT_IMPLEMENTED = 3;
+}
+
+// -----------------------------------------------------------------------------
+// ExtendedTriggerMessage (Security Whitepaper §4.7)
+// -----------------------------------------------------------------------------
+//
+// Wider message-type enum than the plain TriggerMessage. Reuses
+// `TriggerMessageStatus` for the response (same closed enum).
+
+message ExtendedTriggerMessageRequest {
+  string cp_id = 1;
+  ExtendedTriggerMessageType requested_message = 2;
+  // Optional. Some message types (StatusNotification / MeterValues)
+  // benefit from a connector hint; ignored for the others.
+  int32 connector_id = 3;
+}
+
+message ExtendedTriggerMessageResponse {
+  TriggerMessageStatus status = 1;
+}
+
+enum ExtendedTriggerMessageType {
+  EXTENDED_TRIGGER_MESSAGE_TYPE_UNSPECIFIED = 0;
+  // Core 1.6 types — same set the plain TriggerMessage covers; the
+  // Whitepaper says the Extended variant accepts both old + new.
+  EXTENDED_TRIGGER_MESSAGE_TYPE_BOOT_NOTIFICATION = 1;
+  EXTENDED_TRIGGER_MESSAGE_TYPE_FIRMWARE_STATUS_NOTIFICATION = 2;
+  EXTENDED_TRIGGER_MESSAGE_TYPE_HEARTBEAT = 3;
+  EXTENDED_TRIGGER_MESSAGE_TYPE_METER_VALUES = 4;
+  EXTENDED_TRIGGER_MESSAGE_TYPE_STATUS_NOTIFICATION = 5;
+  EXTENDED_TRIGGER_MESSAGE_TYPE_DIAGNOSTICS_STATUS_NOTIFICATION = 6;
+  // Whitepaper §4.7 additions — the actual reason this RPC exists.
+  EXTENDED_TRIGGER_MESSAGE_TYPE_LOG_STATUS_NOTIFICATION = 7;
+  EXTENDED_TRIGGER_MESSAGE_TYPE_SIGN_CHARGE_POINT_CERTIFICATE = 8;
 }
 
 // -----------------------------------------------------------------------------

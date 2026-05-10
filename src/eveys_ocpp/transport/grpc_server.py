@@ -92,6 +92,7 @@ _OCPP_CALL_DISPATCH: dict[str, type[Any]] = {
     "Reset": ocpp_call.Reset,
     "ChangeConfiguration": ocpp_call.ChangeConfiguration,
     "TriggerMessage": ocpp_call.TriggerMessage,
+    "ExtendedTriggerMessage": ocpp_call.ExtendedTriggerMessage,
     "UnlockConnector": ocpp_call.UnlockConnector,
     "ChangeAvailability": ocpp_call.ChangeAvailability,
     "GetConfiguration": ocpp_call.GetConfiguration,
@@ -231,6 +232,33 @@ class OcppGatewayService(gateway_grpc.OcppGatewayBase):
         )
         await stream.send_message(
             gateway_pb2.TriggerMessageResponse(
+                status=_translate_trigger_message_status(ocpp_response.status)
+            )
+        )
+
+    async def ExtendedTriggerMessage(
+        self,
+        stream: Stream[
+            gateway_pb2.ExtendedTriggerMessageRequest,
+            gateway_pb2.ExtendedTriggerMessageResponse,
+        ],
+    ) -> None:
+        """OCPP 1.6 Security Whitepaper §4.7. Same shape as
+        TriggerMessage but the wider message-type enum that includes
+        `LogStatusNotification` and `SignChargePointCertificate`. Status
+        translator reused (the response status enum is the same)."""
+        request = await self._recv(stream)
+        requested = _translate_extended_trigger_message_to_ocpp(request.requested_message)
+        ocpp_response = await self._dispatch_ocpp_call(
+            rpc="ExtendedTriggerMessage",
+            cp_id=request.cp_id,
+            ocpp_request=ocpp_call.ExtendedTriggerMessage(
+                requested_message=requested,
+                connector_id=request.connector_id or None,
+            ),
+        )
+        await stream.send_message(
+            gateway_pb2.ExtendedTriggerMessageResponse(
                 status=_translate_trigger_message_status(ocpp_response.status)
             )
         )
@@ -1553,6 +1581,47 @@ def _translate_trigger_message_to_ocpp(proto_kind: int) -> ocpp_enums.MessageTri
         raise GRPCError(
             Status.INVALID_ARGUMENT,
             "requested_message must be a defined TriggerMessageType (not UNSPECIFIED)",
+        )
+    return mapping[proto_kind]
+
+
+def _translate_extended_trigger_message_to_ocpp(proto_kind: int) -> ocpp_enums.MessageTrigger:
+    """Proto ExtendedTriggerMessageType → OCPP `MessageTrigger` enum.
+
+    Wider than the plain TriggerMessage translator (Security
+    Whitepaper §4.7 adds `LogStatusNotification` and
+    `SignChargePointCertificate`). The OCPP library re-uses one
+    `MessageTrigger` enum for both — the Whitepaper additions are
+    valid values on it; only the wire-format message that carries
+    the trigger differs."""
+    mapping: dict[int, ocpp_enums.MessageTrigger] = {
+        gateway_pb2.EXTENDED_TRIGGER_MESSAGE_TYPE_BOOT_NOTIFICATION: (
+            ocpp_enums.MessageTrigger.boot_notification
+        ),
+        gateway_pb2.EXTENDED_TRIGGER_MESSAGE_TYPE_FIRMWARE_STATUS_NOTIFICATION: (
+            ocpp_enums.MessageTrigger.firmware_status_notification
+        ),
+        gateway_pb2.EXTENDED_TRIGGER_MESSAGE_TYPE_HEARTBEAT: ocpp_enums.MessageTrigger.heartbeat,
+        gateway_pb2.EXTENDED_TRIGGER_MESSAGE_TYPE_METER_VALUES: (
+            ocpp_enums.MessageTrigger.meter_values
+        ),
+        gateway_pb2.EXTENDED_TRIGGER_MESSAGE_TYPE_STATUS_NOTIFICATION: (
+            ocpp_enums.MessageTrigger.status_notification
+        ),
+        gateway_pb2.EXTENDED_TRIGGER_MESSAGE_TYPE_DIAGNOSTICS_STATUS_NOTIFICATION: (
+            ocpp_enums.MessageTrigger.diagnostics_status_notification
+        ),
+        gateway_pb2.EXTENDED_TRIGGER_MESSAGE_TYPE_LOG_STATUS_NOTIFICATION: (
+            ocpp_enums.MessageTrigger.log_status_notification
+        ),
+        gateway_pb2.EXTENDED_TRIGGER_MESSAGE_TYPE_SIGN_CHARGE_POINT_CERTIFICATE: (
+            ocpp_enums.MessageTrigger.sign_charge_point_certificate
+        ),
+    }
+    if proto_kind not in mapping:
+        raise GRPCError(
+            Status.INVALID_ARGUMENT,
+            ("requested_message must be a defined ExtendedTriggerMessageType (not UNSPECIFIED)"),
         )
     return mapping[proto_kind]
 
