@@ -281,6 +281,13 @@ DIAGNOSTICS_STATUS_TOTAL: Counter = Counter(
     "(Idle / Uploading / Uploaded / UploadFailed).",
     labelnames=("status",),
 )
+SIGN_CERTIFICATE_RECEIVED_TOTAL: Counter = Counter(
+    "eveys_ocpp_sign_certificate_received_total",
+    "SignCertificate CALLs received from chargers (OCPP 1.6 Security "
+    "Whitepaper §4.13). Outcome is `accepted` (CSR persisted, event "
+    "emitted) or `rejected` (empty / blatantly malformed CSR).",
+    labelnames=("outcome",),
+)
 SECURITY_EVENTS_TOTAL: Counter = Counter(
     "eveys_ocpp_security_events_total",
     "SecurityEventNotification CALLs grouped by event type "
@@ -559,6 +566,7 @@ __all__ = [
     "REGISTRY_ONLINE_CHARGERS",
     "REST_REQUESTS_TOTAL",
     "REST_REQUEST_LATENCY_SECONDS",
+    "SIGN_CERTIFICATE_RECEIVED_TOTAL",
     "START_TRANSACTIONS_TOTAL",
     "STATUS_NOTIFICATIONS_TOTAL",
     "STOP_TRANSACTIONS_RECEIVED_TOTAL",

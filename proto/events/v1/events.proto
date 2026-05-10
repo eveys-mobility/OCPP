@@ -16,6 +16,7 @@
 //   cp.meter              → CpMeter                   (MeterValues arrived)
 //   cp.firmware_status    → CpFirmwareStatusChanged   (FirmwareStatusNotification arrived)
 //   cp.diagnostics_status → CpDiagnosticsStatusChanged (DiagnosticsStatusNotification arrived)
+//   cp.csr_submitted      → CpCsrSubmitted            (SignCertificate arrived — Security Whitepaper §4.13)
 //   tx.started            → TxStarted                 (StartTransaction arrived)
 //   tx.stopped            → TxStopped                 (StopTransaction arrived + persisted)
 //
@@ -69,6 +70,7 @@ message EventEnvelope {
     CpDisconnected cp_disconnected = 107;
     CpFirmwareStatusChanged cp_firmware_status_changed = 108;
     CpDiagnosticsStatusChanged cp_diagnostics_status_changed = 109;
+    CpCsrSubmitted cp_csr_submitted = 110;
   }
 }
 
@@ -375,4 +377,27 @@ message CpFirmwareStatusChanged {
 message CpDiagnosticsStatusChanged {
   // Charger-reported state-machine status. Free-form string.
   string status = 1;
+}
+
+// -----------------------------------------------------------------------------
+// cp.csr_submitted — SignCertificate arrived (Security Whitepaper §4.13)
+// -----------------------------------------------------------------------------
+//
+// Charger asked us to sign a certificate-signing request. The gateway
+// has persisted the CSR into `pending_certificate_signings` and replied
+// `Accepted`; the actual signing pipeline (which CA, who approves) is
+// deferred — this event lets external systems observe pending work
+// before that follow-up lands.
+//
+// `pending_id` is the surrogate row id from `pending_certificate_signings`
+// — operator UI can deep-link to it. The full CSR PEM is included so
+// downstream consumers don't have to round-trip back to the gateway DB
+// to inspect it.
+
+message CpCsrSubmitted {
+  // PEM-encoded CSR as supplied by the charger.
+  string csr = 1;
+  // Surrogate id of the row we just inserted. Operator UI uses this
+  // to address the pending request.
+  int64 pending_id = 2;
 }

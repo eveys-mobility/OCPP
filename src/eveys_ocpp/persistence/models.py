@@ -495,3 +495,32 @@ class ChargePointCertificate(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+
+class PendingCertificateSigning(Base):
+    """Inbound CSRs from chargers (OCPP 1.6 Security Whitepaper §4.13
+    SignCertificate). Each row is one CSR awaiting operator review and
+    eventual signing — the actual signing pipeline is deferred (#187),
+    so the table accumulates `pending` rows until that follow-up lands.
+
+    Charger-side retry behaviour: if no `CertificateSigned` reply comes
+    back, the charger re-sends. The `(charge_point_id, status)` index
+    is the natural lookup for both the operator UI and the follow-up
+    queue worker.
+    """
+
+    __tablename__ = "pending_certificate_signings"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    charge_point_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("charge_points.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    csr: Mapped[str] = mapped_column(Text, nullable=False)
+    received_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    status: Mapped[str] = mapped_column(String(16), server_default="pending", nullable=False)
+    signed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    signed_chain: Mapped[str | None] = mapped_column(Text, nullable=True)

@@ -93,6 +93,7 @@ sensitivity.
 | `EVEYS_OCPP_KAFKA_TOPIC_TX_STARTED` | `tx.started` | string | structural | no | `StartTransaction` events (financial path). | Renaming detaches every existing consumer. |
 | `EVEYS_OCPP_KAFKA_TOPIC_TX_STOPPED` | `tx.stopped` | string | structural | no | `StopTransaction` events emitted after a successful DB commit. Belt-and-braces signal alongside the synchronous `/sessions/close` REST call — see `docs/integration/03-webhooks.md`. | Renaming detaches every existing consumer. |
 | `EVEYS_OCPP_KAFKA_TOPIC_CP_SECURITY_EVENT` | `cp.security_event` | string | structural | no | `SecurityEventNotification` events from chargers (OCPP 1.6 Security Whitepaper §4). Audit-grade; downstream SIEM consumers tail this for alerting on invalid signatures, cert tampering, etc. | Renaming detaches every existing consumer. |
+| `EVEYS_OCPP_KAFKA_TOPIC_CP_CSR_SUBMITTED` | `cp.csr_submitted` | string | structural | no | `SignCertificate` CSRs from chargers (OCPP 1.6 Security Whitepaper §4.13). Operator review hook — the gateway persists each CSR to `pending_certificate_signings` and publishes here so external systems can observe pending work. The actual signing pipeline is a separate concern. | Renaming detaches every existing consumer. |
 
 ## Redis (online registry + pub/sub bus, ADR-0016)
 
