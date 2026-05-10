@@ -113,7 +113,12 @@ async def handle(
         transaction_id=transaction_id,
     )
 
-    metrics_registry.STOP_TRANSACTIONS_TOTAL.labels(reason=reason or "unknown").inc()
+    # Counted regardless of what happens next — SLO 4 (transaction
+    # durability) needs the denominator to include stops that fail
+    # to persist (those are precisely what the SLO flags). The
+    # `_total` (persisted) counter is bumped after the DB commit
+    # below so the SLO ratio is meaningful.
+    metrics_registry.STOP_TRANSACTIONS_RECEIVED_TOTAL.inc()
     with time_handler("StopTransaction") as set_outcome:
         try:
             return await _stop_inner(
@@ -186,6 +191,9 @@ async def _stop_inner(
             set_outcome("replay")
         return _response(_local_status(id_tag))
 
+    # Persisted — SLO 4 numerator. (Received counter at the top is
+    # the denominator; the difference is what SLO 4 alerts on.)
+    metrics_registry.STOP_TRANSACTIONS_TOTAL.labels(reason=reason or "unknown").inc()
     log.info("stop_transaction.applied", reason=reason, meter_stop=meter_stop)
 
     # Backend round-trip (E3-6). The DB row is now durably marked

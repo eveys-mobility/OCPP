@@ -359,3 +359,83 @@ async def test_forwards_backend_status_through_status_map(
     )
 
     assert result.id_tag_info.status == AuthorizationStatus.blocked
+
+
+# ----- SLO 4 counter discipline (#163) --------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_received_counter_bumps_before_persist(
+    fake_cp: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SLO 4 needs the denominator (`received`) to fire even when the
+    DB write fails — that's exactly the case the SLO is designed to
+    flag (received but not persisted == billing incident). Simulate a
+    DB-layer exception and assert: `received` ticks up; `_total`
+    (persisted) does not."""
+    from eveys_ocpp.metrics import registry
+
+    received_before = registry.STOP_TRANSACTIONS_RECEIVED_TOTAL._value.get()
+    persisted_before = registry.STOP_TRANSACTIONS_TOTAL.labels(reason="Local")._value.get()
+
+    monkeypatch.setattr(
+        stop_transaction,
+        "stop_transaction",
+        AsyncMock(side_effect=RuntimeError("DB went away")),
+    )
+
+    with pytest.raises(RuntimeError):
+        await stop_transaction.handle(
+            fake_cp,
+            transaction_id=999,
+            meter_stop=12345,
+            timestamp="2026-04-29T01:00:00+00:00",
+            reason="Local",
+            id_tag="VALID_RFID_001",
+        )
+
+    assert registry.STOP_TRANSACTIONS_RECEIVED_TOTAL._value.get() == received_before + 1
+    assert registry.STOP_TRANSACTIONS_TOTAL.labels(reason="Local")._value.get() == persisted_before
+
+
+@pytest.mark.asyncio
+async def test_persisted_counter_bumps_only_on_successful_apply(
+    fake_cp: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Happy path: both counters tick up. Replay path: only `received`
+    bumps — the row was already in Postgres, so the persisted counter
+    must NOT inflate (would skew SLO 4 numerator above 1.0 over time)."""
+    from eveys_ocpp.metrics import registry
+
+    received_before = registry.STOP_TRANSACTIONS_RECEIVED_TOTAL._value.get()
+    persisted_before = registry.STOP_TRANSACTIONS_TOTAL.labels(reason="Other")._value.get()
+
+    monkeypatch.setattr(stop_transaction, "stop_transaction", AsyncMock(return_value=True))
+    await stop_transaction.handle(
+        fake_cp,
+        transaction_id=1,
+        meter_stop=100,
+        timestamp="2026-04-29T01:00:00+00:00",
+        reason="Other",
+    )
+
+    assert registry.STOP_TRANSACTIONS_RECEIVED_TOTAL._value.get() == received_before + 1
+    assert (
+        registry.STOP_TRANSACTIONS_TOTAL.labels(reason="Other")._value.get() == persisted_before + 1
+    )
+
+    # Replay: same triple → applied=False, neither persisted nor received
+    # double-counted (received bumps once per CALL; persisted not at all).
+    monkeypatch.setattr(stop_transaction, "stop_transaction", AsyncMock(return_value=False))
+    await stop_transaction.handle(
+        fake_cp,
+        transaction_id=1,
+        meter_stop=100,
+        timestamp="2026-04-29T01:00:00+00:00",
+        reason="Other",
+    )
+    assert registry.STOP_TRANSACTIONS_RECEIVED_TOTAL._value.get() == received_before + 2
+    assert (
+        registry.STOP_TRANSACTIONS_TOTAL.labels(reason="Other")._value.get()
+        == persisted_before + 1  # unchanged
+    )

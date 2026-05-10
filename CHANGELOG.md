@@ -11,6 +11,7 @@ This file starts at the merge that introduced it; for anything earlier, the git 
 ### Changed
 
 - CHANGELOG header now carries a one-line "Latest release" callout above the version sections, linking to both the GitHub Release and the in-file section. Each tag updates the same line. (#146)
+- **SLO 4 (transaction durability)** now uses a dedicated `eveys_ocpp_stop_transactions_received_total` counter as its denominator. Previously the SLI summed `stop_transactions_total + handler_errors_total` to approximate "received," which both double-counted failures (the entry-time `_total` inc *and* the error inc) and was misdescribed in the docs. New shape: numerator = persisted (`_total`, now incremented after a successful DB commit only), denominator = received (`_received_total`, incremented at handler entry). Recording rule + SLO doc updated. Dashboards using `eveys_ocpp_stop_transactions_total` won't notice in normal operation (transactions almost always persist); during an incident, the metric will lag the received count, which is exactly the signal SLO 4 is built to surface. (#163)
 
 ## [0.1.0] - 2026-05-10
 

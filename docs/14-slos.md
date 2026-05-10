@@ -98,21 +98,18 @@ Money flows on this. Any StopTransaction we received but didn't persist is a bil
 ```promql
 sum(rate(eveys_ocpp_stop_transactions_total[30d]))
 /
-(
-  sum(rate(eveys_ocpp_stop_transactions_total[30d]))
-  +
-  sum(rate(eveys_ocpp_handler_errors_total{action="StopTransaction"}[30d]))
-)
+sum(rate(eveys_ocpp_stop_transactions_received_total[30d]))
 ```
 Recorded as `slo:transaction_durability:ratio_30d`.
+
+- **Numerator** — `eveys_ocpp_stop_transactions_total`: incremented after a successful DB commit in the StopTransaction handler. "Persisted."
+- **Denominator** — `eveys_ocpp_stop_transactions_received_total`: incremented at handler entry, before any DB work. A stop that fails to persist still counts here — which is the case the SLO is designed to flag.
 
 **Target** — `= 100%`. Zero-tolerance.
 
 **Window** — rolling 30 days.
 
 **Error budget** — `0%`. Every drop in this number is a postmortem.
-
-**Caveat (current implementation)** — we don't currently emit a separate "received but not persisted" counter. `eveys_ocpp_stop_transactions_total` is incremented after the handler's DB commit, so a stop that fails to persist gets counted in `eveys_ocpp_handler_errors_total{action="StopTransaction"}` instead. The SLI sums both as the denominator and only the persisted total as the numerator. **If a future task adds a dedicated `_received_total` counter, switch the denominator to that** — the recording rule has a comment pointing here.
 
 **Consequence on breach (Phase 7)** — wake the on-call engineer regardless of hour. Investigate via Sentry (E4-4) for the StopTransaction handler exception; cross-reference the `transaction_id` in OCPP charger replays via `eveys_ocpp_stop_transaction_replays_total` (a healthy idempotency cache absorbs most retries).
 
