@@ -1626,6 +1626,54 @@ paths:
       summary: Get Diagnostics
       tags:
       - commands
+  /api/v1/charge-points/{cp_id}/commands/get-installed-certificate-ids:
+    post:
+      description: 'OCPP 1.6 Security Whitepaper §4.8. List the CA certificates
+
+        currently installed on the charger.
+
+
+        Body shape:
+
+        ```json
+
+        { "certificate_type": "CentralSystemRootCertificate" }
+
+        ```
+
+
+        Response carries the §5.1 hash_data Dict per installed cert. The
+
+        operator can feed any returned `serial_number` + `issuer_*_hash`
+
+        into a future `DeleteCertificate` call without touching the PEM.'
+      operationId: get_installed_certificate_ids_api_v1_charge_points__cp_id__commands_get_installed_certificate_ids_post
+      parameters:
+      - in: path
+        name: cp_id
+        required: true
+        schema:
+          title: Cp Id
+          type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Get Installed Certificate Ids Api V1 Charge Points  Cp
+                  Id  Commands Get Installed Certificate Ids Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Get Installed Certificate Ids
+      tags:
+      - commands
   /api/v1/charge-points/{cp_id}/commands/get-local-list-version:
     post:
       operationId: get_local_list_version_api_v1_charge_points__cp_id__commands_get_local_list_version_post

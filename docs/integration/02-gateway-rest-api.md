@@ -493,6 +493,7 @@ The full set:
 | `POST .../commands/clear-cache` | `{}` | `status` |
 | `POST .../commands/trigger-message` | `{ "requested_message": "BootNotification", "connector_id": 0 }` | `status` |
 | `POST .../commands/extended-trigger-message` | `{ "requested_message": "LogStatusNotification" \| "SignChargePointCertificate" \| ...Core 6 }` (`connector_id` optional) | `status` ∈ `Accepted`/`Rejected`/`NotImplemented` |
+| `POST .../commands/get-installed-certificate-ids` | `{ "certificate_type": "CentralSystemRootCertificate" \| "ManufacturerRootCertificate" }` | `{ "status": "Accepted" \| "NotFound", "certificate_hash_data": [{ "hash_algorithm": "SHA256", "issuer_name_hash": "...", "issuer_key_hash": "...", "serial_number": "..." }] }` (empty list on `NotFound`; `hash_algorithm` is `null` for vendor extensions outside SHA-2 family) |
 | `POST .../commands/unlock-connector` | `{ "connector_id": 1 }` | `status` ∈ `Unlocked`/`UnlockFailed`/`NotSupported` |
 | `POST .../commands/change-availability` | `{ "connector_id": 1, "type": "Operative" \| "Inoperative" }` (`connector_id: 0` targets the whole charger) | `status` ∈ `Accepted`/`Rejected`/`Scheduled` |
 | `POST .../commands/data-transfer` | `{ "vendor_id": "...", "message_id": "...", "data": "..." }` | `{ "status": "...", "data": "..." }` |
