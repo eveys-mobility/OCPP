@@ -306,7 +306,60 @@ unparseable `from`/`to`.
 
 ### `GET /api/v1/transactions/{transaction_id}`
 
-Single transaction. Same shape as the array element above.
+Single transaction. Same shape as the list-row above plus a `telemetry`
+block carrying a bounded snapshot derived from the time-series store.
+
+```json
+{
+  "transaction_id": 12345,
+  "cp_id": "CP_ACME_42",
+  "connector_id": 1,
+  "id_tag": "RFID_ABCDEF12",
+  "meter_start_wh": 4500000,
+  "meter_stop_wh": 4523500,
+  "consumed_wh": 23500,
+  "started_reported_at": "2026-05-05T14:32:11.000+00:00",
+  "started_received_at": "2026-05-05T14:32:11.847+00:00",
+  "stopped_reported_at": "2026-05-05T15:14:30.000+00:00",
+  "stopped_received_at": "2026-05-05T15:14:30.012+00:00",
+  "stop_reason": "Local",
+  "telemetry": {
+    "soc": {
+      "start_pct": 38.0,
+      "last_pct": 81.0,
+      "last_at": "2026-05-05T15:14:29.500+00:00"
+    },
+    "phases": {
+      "L1": { "voltage_v": 231.4, "current_a": 14.8, "power_w": 3424.7, "last_at": "..." },
+      "L2": { "voltage_v": 231.8, "current_a": 14.9, "power_w": 3454.7, "last_at": "..." },
+      "L3": { "voltage_v": 232.2, "current_a": 15.0, "power_w": 3484.7, "last_at": "..." }
+    }
+  },
+  "request_id": "<uuid>"
+}
+```
+
+`telemetry.soc.start_pct` is the earliest SoC sample inside the
+transaction's window; `last_pct` is the most recent. For a stopped
+transaction `last_pct` is effectively the SoC at stop. Any SoC field
+is `null` when the charger never reported SoC.
+
+`telemetry.phases` is keyed by OCPP 1.6 phase name (`L1`, `L2`, `L3`).
+Each value is `argMax(value, occurred_at)` per measurand on that phase
+— for a stopped transaction that's the value at stop; for an open
+transaction it's the most recent sample. Phases the charger never
+reported are absent from the map. Single-phase AC populates one key.
+DC chargers without per-phase metering populate none.
+
+The list endpoints (`GET /api/v1/transactions` and
+`GET /api/v1/charge-points/{cp_id}/transactions`) deliberately **do
+not** include `telemetry` — surfacing it on every cursor row would
+fan out one ClickHouse query per row. Callers wanting telemetry on a
+specific transaction hit this detail endpoint per id, or use
+`/meter-values?transaction_id=…` for the full curve.
+
+`telemetry: null` (whole block) when the gateway has no ClickHouse
+read client wired in (compose-smoke / some test envs).
 
 `404` with `error_code: UNKNOWN_TRANSACTION_ID` if not found.
 
