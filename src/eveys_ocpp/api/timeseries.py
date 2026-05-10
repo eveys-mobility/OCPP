@@ -23,6 +23,10 @@ from typing import Any
 
 from fastapi import APIRouter, Query, Request
 
+from eveys_ocpp._ocpp_enums import (
+    ocpp_string_for,
+    proto_enum_name_for_measurand,
+)
 from eveys_ocpp.api._errors import (
     ERR_BAD_REQUEST,
     ERR_INTERNAL_ERROR,
@@ -133,12 +137,26 @@ async def list_meter_values(
 
     await _ensure_cp_exists(request, cp_id)
 
+    # Storage-form translation: API takes the OCPP wire form
+    # (`?measurand=Voltage`); ClickHouse rows store the proto enum name
+    # (`MEASURAND_VOLTAGE`). Translate before the SQL goes out so an
+    # unknown wire string returns an empty page rather than silently
+    # matching every UNSPECIFIED row.
+    storage_measurand = measurand
+    if measurand is not None:
+        storage_measurand = proto_enum_name_for_measurand(measurand)
+        if storage_measurand is None:
+            return {
+                "meter_values": [],
+                "request_id": request.state.request_id,
+            }
+
     rows = await _ch_client(request).fetch_meter_values(
         cp_id=cp_id,
         started_from=started_from,
         started_to=started_to,
         connector_id=connector_id,
-        measurand=measurand,
+        measurand=storage_measurand,
         limit=page_size,
     )
 
@@ -193,6 +211,13 @@ async def list_status_history(
 
 
 def _meter_to_response(row: dict[str, Any]) -> dict[str, Any]:
+    """Project a ClickHouse `cp_meter` row into the API shape.
+
+    Storage form is the proto enum name (`"MEASURAND_VOLTAGE"`,
+    `"PHASE_L1"`, …); the API exposes the OCPP wire form
+    (`"Voltage"`, `"L1"`). `*_UNSPECIFIED`, vendor extensions, and
+    empty strings all surface as `null` rather than leak the proto
+    sentinel to clients."""
     return {
         "event_id": row["event_id"],
         "occurred_at": _isoformat(row["occurred_at"]),
@@ -202,12 +227,12 @@ def _meter_to_response(row: dict[str, Any]) -> dict[str, Any]:
         "charger_reported_at": row["charger_reported_at"] or None,
         "sample": {
             "value": row["value"],
-            "context": row["context"] or None,
-            "format": row["format"] or None,
-            "measurand": row["measurand"] or None,
-            "phase": row["phase"] or None,
-            "location": row["location"] or None,
-            "unit": row["unit"] or None,
+            "context": ocpp_string_for("context", row["context"]),
+            "format": ocpp_string_for("format", row["format"]),
+            "measurand": ocpp_string_for("measurand", row["measurand"]),
+            "phase": ocpp_string_for("phase", row["phase"]),
+            "location": ocpp_string_for("location", row["location"]),
+            "unit": ocpp_string_for("unit", row["unit"]),
         },
     }
 

@@ -11,6 +11,9 @@ import pytest
 
 
 def _meter_row(connector_id: int = 1) -> dict[str, Any]:
+    """Mock the *storage* shape — proto enum names (`MEASURAND_*`,
+    `PHASE_*`, …) — not the OCPP wire form. The route layer (#136)
+    translates these to the wire form on the way out."""
     return {
         "event_id": "evt-0001",
         "occurred_at": datetime(2026, 5, 6, 14, 0, tzinfo=UTC),
@@ -19,12 +22,12 @@ def _meter_row(connector_id: int = 1) -> dict[str, Any]:
         "transaction_id": 12345,
         "charger_reported_at": "2026-05-06T13:59:59Z",
         "value": "1500",
-        "context": "Sample.Periodic",
-        "format": "Raw",
-        "measurand": "Energy.Active.Import.Register",
+        "context": "CONTEXT_SAMPLE_PERIODIC",
+        "format": "FORMAT_RAW",
+        "measurand": "MEASURAND_ENERGY_ACTIVE_IMPORT_REGISTER",
         "phase": "",
-        "location": "Outlet",
-        "unit": "Wh",
+        "location": "LOCATION_OUTLET",
+        "unit": "UNIT_WH",
     }
 
 
@@ -110,8 +113,111 @@ async def test_meter_values_passes_filters_through(
     assert response.status_code == 200
     kwargs = spy.await_args.kwargs
     assert kwargs["connector_id"] == 2
-    assert kwargs["measurand"] == "Energy.Active.Import.Register"
+    # Route translates the OCPP wire form on input → proto enum name
+    # (storage form) before issuing the SQL.
+    assert kwargs["measurand"] == "MEASURAND_ENERGY_ACTIVE_IMPORT_REGISTER"
     assert kwargs["limit"] == 50
+
+
+@pytest.mark.asyncio
+async def test_meter_values_response_translates_proto_enum_names_to_ocpp_wire_form(
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+    fake_ch_client: MagicMock,
+) -> None:
+    """Storage layer returns proto enum names (`MEASURAND_*`, `PHASE_*`,
+    `UNIT_*`); the API surfaces the OCPP wire form (`Voltage`, `L1`,
+    `V`). Without this, every API consumer would have to learn two
+    naming systems for the same enum dimension."""
+    from eveys_ocpp.api import timeseries as ts_module
+
+    monkeypatch.setattr(ts_module, "get_charge_point_pk", AsyncMock(return_value=1))
+    row = _meter_row()
+    row.update(
+        {
+            "measurand": "MEASURAND_VOLTAGE",
+            "phase": "PHASE_L1",
+            "unit": "UNIT_V",
+            "context": "CONTEXT_SAMPLE_PERIODIC",
+            "format": "FORMAT_RAW",
+            "location": "LOCATION_OUTLET",
+        }
+    )
+    fake_ch_client.fetch_meter_values = AsyncMock(return_value=[row])
+
+    response = await client.get(
+        "/api/v1/charge-points/CP_001/meter-values"
+        "?from=2026-05-06T00:00:00%2B00:00&to=2026-05-06T23:59:59%2B00:00"
+    )
+
+    sample = response.json()["meter_values"][0]["sample"]
+    assert sample["measurand"] == "Voltage"
+    assert sample["phase"] == "L1"
+    assert sample["unit"] == "V"
+    assert sample["context"] == "Sample.Periodic"
+    assert sample["format"] == "Raw"
+    assert sample["location"] == "Outlet"
+
+
+@pytest.mark.asyncio
+async def test_meter_values_response_normalises_unspecified_to_null(
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+    fake_ch_client: MagicMock,
+) -> None:
+    """`*_UNSPECIFIED` is an internal sentinel — it MUST NOT leak to
+    API clients. Same goes for vendor-extension strings the ingestor
+    stored verbatim from the wire (no proto mapping). Both surface as
+    `null` so consumers can safely treat absent / unknown identically."""
+    from eveys_ocpp.api import timeseries as ts_module
+
+    monkeypatch.setattr(ts_module, "get_charge_point_pk", AsyncMock(return_value=1))
+    row = _meter_row()
+    row.update(
+        {
+            "measurand": "MEASURAND_UNSPECIFIED",  # internal sentinel
+            "phase": "Vendor.Custom.Phase",  # vendor extension
+            "unit": "",  # absent
+        }
+    )
+    fake_ch_client.fetch_meter_values = AsyncMock(return_value=[row])
+
+    response = await client.get(
+        "/api/v1/charge-points/CP_001/meter-values"
+        "?from=2026-05-06T00:00:00%2B00:00&to=2026-05-06T23:59:59%2B00:00"
+    )
+
+    sample = response.json()["meter_values"][0]["sample"]
+    assert sample["measurand"] is None
+    assert sample["phase"] is None
+    assert sample["unit"] is None
+
+
+@pytest.mark.asyncio
+async def test_meter_values_unknown_filter_short_circuits_to_empty(
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+    fake_ch_client: MagicMock,
+) -> None:
+    """`?measurand=Vendor.Custom` (unknown) returns an empty page WITHOUT
+    issuing a CH query. The alternative — passing the unknown string
+    through to SQL — would silently match every `_UNSPECIFIED` row and
+    mislead the caller into thinking those rows match their filter."""
+    from eveys_ocpp.api import timeseries as ts_module
+
+    monkeypatch.setattr(ts_module, "get_charge_point_pk", AsyncMock(return_value=1))
+    spy = AsyncMock(return_value=[_meter_row()])
+    fake_ch_client.fetch_meter_values = spy
+
+    response = await client.get(
+        "/api/v1/charge-points/CP_001/meter-values"
+        "?from=2026-05-06T00:00:00%2B00:00&to=2026-05-06T23:59:59%2B00:00"
+        "&measurand=Vendor.Custom.Reading"
+    )
+
+    assert response.status_code == 200
+    assert response.json()["meter_values"] == []
+    spy.assert_not_awaited()
 
 
 @pytest.mark.asyncio

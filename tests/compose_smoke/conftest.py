@@ -62,12 +62,15 @@ _EXPECTED_CONTAINERS = (
 )
 
 # Host ports the compose file publishes. Used by tests that drive the
-# real WS / gRPC / DB / ClickHouse from outside the docker network.
+# real WS / gRPC / DB / ClickHouse / REST from outside the docker network.
 HOST_WS_PORT = 19000
 HOST_PG_PORT = 5432
 # Compose remaps CH HTTP from the canonical 8123 to 8124 to dodge a
 # Homebrew `clickhouse server` already on the laptop (issue #24).
 HOST_CH_HTTP_PORT = 8124
+# Backend-facing REST surface (ADR-0026). 1:1 host:container so curl
+# from the host works without translation.
+HOST_REST_PORT = 8080
 # Envoy edge — TLS-fronted entry point + admin port.
 HOST_ENVOY_TLS_PORT = 19443
 HOST_ENVOY_ADMIN_PORT = 19901
@@ -113,9 +116,26 @@ def _gate() -> None:
 
 
 def _compose(*args: str) -> subprocess.CompletedProcess[str]:
-    """Run `docker compose -f <file> <args>` from the repo root."""
+    """Run `docker compose -f <file> <args>` from the repo root.
+
+    Mirrors `make compose-up`: passes `--env-file .env` when present so
+    container-side env (e.g. `EVEYS_OCPP_REST_INBOUND_TOKENS` for the
+    REST surface) is loaded the same way developers see locally.
+    Without this, the smoke stack runs with an empty inbound-token
+    allowlist and every REST call 401s — silent until a test actually
+    hits REST.
+
+    On CI no `.env` exists; a process-level
+    `EVEYS_OCPP_REST_INBOUND_TOKENS` (set by the harness fixture
+    below) takes over via compose's variable substitution on the
+    `${EVEYS_OCPP_REST_INBOUND_TOKENS:-}` fallback in the YAML.
+    """
+    env_args: list[str] = []
+    env_file = _REPO_ROOT / ".env"
+    if env_file.exists():
+        env_args = ["--env-file", str(env_file)]
     return subprocess.run(
-        ["docker", "compose", "-f", str(_COMPOSE_FILE), *args],
+        ["docker", "compose", "-f", str(_COMPOSE_FILE), *env_args, *args],
         cwd=str(_REPO_ROOT),
         check=False,
         capture_output=True,
@@ -178,6 +198,37 @@ def _wait_for_tcp(host: str, port: int, timeout_s: int = 30) -> bool:
     return False
 
 
+def gateway_inbound_token() -> str:
+    """First token from the running gateway container's inbound allowlist.
+
+    The compose stack loads `EVEYS_OCPP_REST_INBOUND_TOKENS` from the
+    repo's `.env`; pulling it from `docker inspect` instead of the
+    file means the test reads what the gateway is *actually* enforcing,
+    not what the operator wishes it were enforcing. CSV form takes the
+    first entry."""
+    proc = subprocess.run(
+        [
+            "docker",
+            "inspect",
+            "--format",
+            "{{range .Config.Env}}{{println .}}{{end}}",
+            "eveys-ocpp",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    for line in proc.stdout.splitlines():
+        key, _, value = line.partition("=")
+        if key == "EVEYS_OCPP_REST_INBOUND_TOKENS" and value:
+            return value.split(",", 1)[0].strip()
+    raise RuntimeError(
+        "EVEYS_OCPP_REST_INBOUND_TOKENS not set on the eveys-ocpp container — "
+        "compose-smoke needs an inbound token to call the REST surface. Set "
+        "it in .env before bringing the stack up."
+    )
+
+
 def _container_logs(name: str, tail: int = 200) -> str:
     proc = subprocess.run(
         ["docker", "logs", "--tail", str(tail), name],
@@ -196,6 +247,18 @@ def _compose_stack() -> Iterator[None]:
     the next session's "first run" mysteriously broken.
     """
     _gate()
+
+    # Inbound-token discipline: REST tests need a known-good bearer.
+    # Local devs have one in `.env`; CI runs without an .env, so seed
+    # a random per-session token if none is set. Compose's
+    # `${EVEYS_OCPP_REST_INBOUND_TOKENS:-}` interpolation picks it up
+    # at `up` time. Setting it on the parent process here means the
+    # token survives across compose's variable substitution AND any
+    # tests that read it back via `docker inspect` later.
+    if not os.environ.get("EVEYS_OCPP_REST_INBOUND_TOKENS"):
+        import secrets
+
+        os.environ["EVEYS_OCPP_REST_INBOUND_TOKENS"] = secrets.token_hex(16)
 
     # Clean slate. Downing here is cheap if no project exists; it
     # prevents stale containers from a prior aborted run masking an
