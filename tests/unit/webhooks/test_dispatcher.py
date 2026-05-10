@@ -60,6 +60,14 @@ def _envelope(payload_kind: str, **fields: Any) -> events_pb2.EventEnvelope:
         t.transaction_id = fields.pop("transaction_id", 12345)
         t.id_tag = fields.pop("id_tag", "RFID_X")
         t.meter_start_wh = fields.pop("meter_start_wh", 1_000_000)
+    elif payload_kind == "tx_stopped":
+        ts = env.tx_stopped
+        ts.transaction_id = fields.pop("transaction_id", 12345)
+        ts.id_tag = fields.pop("id_tag", "RFID_X")
+        ts.meter_stop_wh = fields.pop("meter_stop_wh", 1_023_500)
+        ts.consumed_wh = fields.pop("consumed_wh", 23_500)
+        ts.stop_reason = fields.pop("stop_reason", "Local")
+        ts.charger_reported_at = fields.pop("charger_reported_at", "2026-05-07T12:30:00+00:00")
     return env
 
 
@@ -94,6 +102,27 @@ def test_build_body_tx_started_shape() -> None:
     assert body is not None
     assert body["data"]["event_type"] == "tx.started"
     assert body["data"]["transaction_id"] == 12345
+
+
+def test_build_body_tx_stopped_shape() -> None:
+    """tx.stopped envelope mirrors the documented contract shape per
+    `docs/integration/03-webhooks.md`."""
+    d = WebhookDispatcher(_settings())
+    body = d._build_body(_envelope("tx_stopped"))
+    assert body is not None
+    data = body["data"]
+    assert data["event_type"] == "tx.stopped"
+    assert data["transaction_id"] == 12345
+    assert data["id_tag"] == "RFID_X"
+    assert data["meter_stop_wh"] == 1_023_500
+    assert data["consumed_wh"] == 23_500
+    assert data["stop_reason"] == "Local"
+    assert data["charger_reported_at"] == "2026-05-07T12:30:00+00:00"
+
+
+def test_build_body_tx_stopped_returns_none_when_disabled() -> None:
+    d = WebhookDispatcher(_settings(webhook_enable_tx_stopped=False))
+    assert d._build_body(_envelope("tx_stopped")) is None
 
 
 def test_build_body_returns_none_for_disabled_event() -> None:
@@ -133,16 +162,27 @@ def test_url_for_returns_none_for_disabled_event() -> None:
     assert d._url_for(_envelope("cp_status")) is None
 
 
+def test_url_for_tx_stopped_falls_back_to_base() -> None:
+    d = WebhookDispatcher(_settings())
+    assert d._url_for(_envelope("tx_stopped")) == "https://backend.example/webhooks/tx-stopped"
+
+
+def test_url_for_tx_stopped_uses_override() -> None:
+    d = WebhookDispatcher(_settings(webhook_url_tx_stopped="https://override.example/closure"))
+    assert d._url_for(_envelope("tx_stopped")) == "https://override.example/closure"
+
+
 # ---- _enabled_topics -------------------------------------------------------
 
 
 def test_enabled_topics_default() -> None:
     d = WebhookDispatcher(_settings())
     topics = d._enabled_topics()
-    # Default: boot, status, tx-started enabled; meter off.
+    # Default: boot, status, tx-started, tx-stopped enabled; meter off.
     assert "cp.boot" in topics
     assert "cp.status" in topics
     assert "tx.started" in topics
+    assert "tx.stopped" in topics
     assert "cp.meter" not in topics
 
 
@@ -152,6 +192,7 @@ def test_enabled_topics_all_off() -> None:
             webhook_enable_cp_boot=False,
             webhook_enable_cp_status=False,
             webhook_enable_tx_started=False,
+            webhook_enable_tx_stopped=False,
         )
     )
     assert d._enabled_topics() == ()

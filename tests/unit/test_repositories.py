@@ -179,7 +179,10 @@ async def test_get_charge_point_pk_unknown_returns_none() -> None:
 
 @pytest.mark.asyncio
 async def test_stop_transaction_skips_replays() -> None:
-    """If the idempotency key already exists, return False without updating."""
+    """If the idempotency key already exists, return None without updating.
+    The non-None vs None distinction (a meter-start reading on apply) is
+    the same applied-vs-replay signal callers used to switch on; replay
+    means no row mutated and no `meter_start_wh` to return."""
     existing = MagicMock()
     existing.scalar_one_or_none.return_value = 1  # row exists
     session = AsyncMock()
@@ -193,17 +196,20 @@ async def test_stop_transaction_skips_replays() -> None:
         reason="Local",
         idempotency_key="dup",
     )
-    assert applied is False
+    assert applied is None
     # Only one execute (the lookup); no UPDATE on replay.
     assert session.execute.await_count == 1
 
 
 @pytest.mark.asyncio
 async def test_stop_transaction_applies_when_no_replay() -> None:
+    """On apply the repo returns the row's `meter_start_wh` so the
+    handler can compute `consumed_wh` for the `tx.stopped` envelope
+    without a second SELECT."""
     not_existing = MagicMock()
     not_existing.scalar_one_or_none.return_value = None
     update_result = MagicMock()
-    update_result.rowcount = 1
+    update_result.first.return_value = (4_500_000,)  # meter_start_wh from RETURNING
 
     session = AsyncMock()
     session.execute = AsyncMock(side_effect=[not_existing, update_result])
@@ -216,7 +222,7 @@ async def test_stop_transaction_applies_when_no_replay() -> None:
         reason="Local",
         idempotency_key="new",
     )
-    assert applied is True
+    assert applied == 4_500_000
     assert session.execute.await_count == 2
 
 

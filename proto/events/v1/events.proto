@@ -14,10 +14,15 @@
 //   cp.status    → CpStatus      (StatusNotification arrived)
 //   cp.meter     → CpMeter       (MeterValues arrived)
 //   tx.started   → TxStarted     (StartTransaction arrived)
+//   tx.stopped   → TxStopped     (StopTransaction arrived + persisted)
 //
-// Note: tx.stopped is intentionally absent — billing/CDR generation is
-// out of scope (see project conventions). StopTransaction state is
-// persisted to Postgres only.
+// `tx.stopped` ships as a belt-and-braces signal alongside the
+// synchronous `/api/eveys/sessions/close` REST call (per the
+// integration contract): if the synchronous call timed out or was
+// retried, the webhook gives the backend a second chance to reconcile.
+// It is NOT a billing/CDR primitive — Postgres `transactions` row
+// state remains the gateway's authoritative record. The webhook is
+// at-least-once, best-effort.
 //
 // Partitioning: every record uses `cp_id` as the Kafka partition key
 // (per AGENTS rule "message ordering is preserved per charger"). This
@@ -57,6 +62,7 @@ message EventEnvelope {
     CpMeter cp_meter = 103;
     TxStarted tx_started = 104;
     CpSecurityEvent cp_security_event = 105;
+    TxStopped tx_stopped = 106;
   }
 }
 
@@ -272,4 +278,38 @@ message CpSecurityEvent {
   // `techInfo`; we keep the snake_case name. Empty string when
   // absent (proto3 default).
   string tech_info = 3;
+}
+
+// -----------------------------------------------------------------------------
+// tx.stopped — StopTransaction arrived AND persisted to Postgres
+// -----------------------------------------------------------------------------
+//
+// Emitted from the StopTransaction handler immediately after the DB
+// commit (the same point where `STOP_TRANSACTIONS_TOTAL` ticks). A
+// stop that fails to persist does NOT produce this event — the
+// dispatcher treats it as an at-least-once-delivery signal that
+// "the transaction is closed in our records."
+//
+// Replays don't re-emit: the DB-layer dedup branch in the handler
+// returns before the publish call. Same shape rule the other
+// emitters use.
+
+message TxStopped {
+  int64 transaction_id = 1;
+  string id_tag = 2;
+  // Final meter reading in Wh (OCPP 1.6 fixed unit).
+  int64 meter_stop_wh = 3;
+  // Pre-computed convenience: meter_stop_wh - meter_start_wh from
+  // the matching TxStarted. Saves consumers a join. -1 if the
+  // matching start row isn't readable (rare; treat as "compute
+  // yourself from the API"). int64 not uint64 because OCPP
+  // doesn't forbid a meter rollback over a session and we'd
+  // rather expose the negative than silently wrap.
+  int64 consumed_wh = 4;
+  // OCPP 1.6 § 6.10 `Reason` enum value, as the spec string. Empty
+  // when the charger omitted it (allowed). Kept as a string for
+  // forward-compat with vendor extensions.
+  string stop_reason = 5;
+  // Charger-claimed timestamp. Server-receive time is in the envelope.
+  string charger_reported_at = 6;
 }

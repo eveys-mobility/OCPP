@@ -8,6 +8,10 @@ This file starts at the merge that introduced it; for anything earlier, the git 
 
 ## [Unreleased]
 
+### Added
+
+- **`tx.stopped` webhook event**, the long-deferred third-of-four planned-but-unshipped events. Fired immediately after a successful `StopTransaction` DB commit, alongside the synchronous `/api/eveys/sessions/close` REST call — at-least-once belt-and-braces signal so a backend that timed out on the synchronous call gets a second chance to reconcile. Envelope shape per `docs/integration/03-webhooks.md`: `{transaction_id, id_tag, meter_stop_wh, consumed_wh, stop_reason, charger_reported_at}`. `consumed_wh` is pre-computed from the matching `tx.started` so consumers don't have to join. New proto message `TxStopped`, new Settings (`kafka_topic_tx_stopped`, `webhook_enable_tx_stopped`, `webhook_url_tx_stopped`); enabled by default. Replays don't re-emit. ClickHouse landing table out of scope (no current consumer asks; Postgres `transactions.stopped_*` is authoritative). (#165)
+
 ### Changed
 
 - CHANGELOG header now carries a one-line "Latest release" callout above the version sections, linking to both the GitHub Release and the in-file section. Each tag updates the same line. (#146)

@@ -287,18 +287,27 @@ async def stop_transaction(
     stopped_reported_at: datetime,
     reason: str | None,
     idempotency_key: str,
-) -> bool:
-    """Mark a transaction stopped. Returns True if applied, False if already stopped.
+) -> int | None:
+    """Mark a transaction stopped. Returns the row's `meter_start_wh`
+    (Wh) on a real first-time apply, ``None`` if already stopped.
 
-    Idempotency: keyed on `idempotency_key` (typically the OCPP message_id of
-    the inbound StopTransaction). A replay with the same key is a no-op.
+    The non-None vs None distinction is the existing applied-vs-replay
+    signal callers used to switch on. Returning the start reading on
+    success lets the StopTransaction handler emit a `tx.stopped`
+    webhook with `consumed_wh` pre-computed without a second SELECT.
+
+    Idempotency: keyed on `idempotency_key` (typically the OCPP
+    message_id of the inbound StopTransaction). A replay with the same
+    key is a no-op.
     """
     existing = await session.execute(
         select(Transaction.id).where(Transaction.idempotency_key == idempotency_key)
     )
     if existing.scalar_one_or_none() is not None:
-        return False
+        return None
 
+    # `RETURNING` on the UPDATE so we get the start reading in one
+    # round-trip; SQLAlchemy renders `UPDATE ... RETURNING` on Postgres.
     result = await session.execute(
         update(Transaction)
         .where(Transaction.transaction_id == transaction_id, Transaction.meter_stop_wh.is_(None))
@@ -308,10 +317,14 @@ async def stop_transaction(
             stop_reason=reason,
             idempotency_key=idempotency_key,
         )
+        .returning(Transaction.meter_start_wh)
         .execution_options(synchronize_session=False)
     )
-    rowcount: int = result.rowcount  # type: ignore[attr-defined]
-    return rowcount > 0
+    row = result.first()
+    if row is None:
+        return None
+    meter_start_wh: int = row[0]
+    return meter_start_wh
 
 
 # ---- LocalAuthList (E2-1B) -------------------------------------------------
