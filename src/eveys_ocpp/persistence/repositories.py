@@ -24,6 +24,7 @@ from .models import (
     ChargingSchedulePeriod,
     LocalAuthList,
     LocalAuthListEntry,
+    PendingCertificateSigning,
     Reservation,
     SecurityEvent,
     Transaction,
@@ -139,6 +140,32 @@ async def upsert_charge_point_certificate(
         .on_conflict_do_nothing(constraint="uq_charge_point_certificates_cp_hash")
     )
     await session.execute(stmt)
+
+
+async def insert_pending_certificate_signing(
+    session: AsyncSession,
+    *,
+    cp_id: str,
+    csr: str,
+) -> int:
+    """Persist a charger-submitted CSR (OCPP 1.6 Security Whitepaper
+    §4.13 SignCertificate) for operator review. The actual signing
+    pipeline is deferred (#187); this function only writes the
+    `pending` row. Returns the row id so the caller can include it
+    in the emitted Kafka envelope.
+
+    Charger-side retries: chargers re-submit if no `CertificateSigned`
+    reply arrives. We accept duplicates — the operator queue can
+    coalesce identical CSRs at review time. Cheaper than a unique
+    constraint over a TEXT column.
+    """
+    cp_pk = await get_charge_point_pk(session, cp_id=cp_id)
+    if cp_pk is None:
+        raise ValueError(f"unknown cp_id for sign_certificate: {cp_id!r}")
+    row = PendingCertificateSigning(charge_point_id=cp_pk, csr=csr)
+    session.add(row)
+    await session.flush()
+    return row.id
 
 
 async def get_certificate_pem_by_hash(

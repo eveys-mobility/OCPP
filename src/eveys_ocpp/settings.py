@@ -468,6 +468,22 @@ class Settings(BaseSettings):
             "stability": "structural",
         },
     )
+    kafka_topic_cp_csr_submitted: str = Field(
+        default="cp.csr_submitted",
+        description=(
+            "`SignCertificate` CSRs from chargers (OCPP 1.6 Security "
+            "Whitepaper §4.13). Operator review hook — the gateway "
+            "persists each CSR to `pending_certificate_signings` and "
+            "publishes here so external systems can observe pending "
+            "work. The actual signing pipeline is a separate concern."
+        ),
+        json_schema_extra={
+            "category": "kafka_topics",
+            "impact": "Renaming detaches every existing consumer.",
+            "secret": False,
+            "stability": "structural",
+        },
+    )
 
     # ---- Redis (online registry + pub/sub bus, ADR-0016) ----------------
     redis_url: str = Field(
