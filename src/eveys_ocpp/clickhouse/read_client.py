@@ -217,6 +217,13 @@ class ClickHouseReadClient:
         # the scan. The string-cast on `value` matches `cp_meter`'s
         # column type — sampled values are stored as Strings (DDL
         # at clickhouse/ddl/0002_create_cp_meter.sql); cast at read.
+        #
+        # Storage form is the proto enum *name* (e.g. `MEASURAND_VOLTAGE`,
+        # `PHASE_L1`) — written by the ingestor from `events_pb2.*.Name(v)`
+        # against the values produced by `_ocpp_enums.MEASURAND_BY_OCPP`
+        # in the MeterValues handler. Filter strings here MUST match that
+        # form, not the OCPP wire form (`"Voltage"`, `"L1"`); the route
+        # layer translates user-facing wire-form filter params on input.
         soc_sql = """
             SELECT
                 argMin(toFloat64OrNull(sv.value), occurred_at) AS start_pct,
@@ -226,7 +233,7 @@ class ClickHouseReadClient:
             ARRAY JOIN sampled_values AS sv
             WHERE cp_id = {cp_id}
               AND transaction_id = {transaction_id}
-              AND sv.measurand = 'SoC'
+              AND sv.measurand = 'MEASURAND_SOC'
         """
         phases_sql = """
             SELECT
@@ -238,8 +245,12 @@ class ClickHouseReadClient:
             ARRAY JOIN sampled_values AS sv
             WHERE cp_id = {cp_id}
               AND transaction_id = {transaction_id}
-              AND sv.phase IN ('L1', 'L2', 'L3')
-              AND sv.measurand IN ('Voltage', 'Current.Import', 'Power.Active.Import')
+              AND sv.phase IN ('PHASE_L1', 'PHASE_L2', 'PHASE_L3')
+              AND sv.measurand IN (
+                  'MEASURAND_VOLTAGE',
+                  'MEASURAND_CURRENT_IMPORT',
+                  'MEASURAND_POWER_ACTIVE_IMPORT'
+              )
             GROUP BY phase, measurand
         """
         params: dict[str, Any] = {"cp_id": cp_id, "transaction_id": transaction_id}
@@ -267,17 +278,26 @@ class ClickHouseReadClient:
                 "last_at": last_at.isoformat() if has_data and last_at is not None else None,
             }
 
+        # Keyed on the proto enum *name* form (storage form). The
+        # response dict is keyed by the OCPP wire-form phase name
+        # (`"L1"`, not `"PHASE_L1"`) so API consumers see the spec
+        # form they already know.
         phases: dict[str, dict[str, Any]] = {}
         _measurand_to_field = {
-            "Voltage": "voltage_v",
-            "Current.Import": "current_a",
-            "Power.Active.Import": "power_w",
+            "MEASURAND_VOLTAGE": "voltage_v",
+            "MEASURAND_CURRENT_IMPORT": "current_a",
+            "MEASURAND_POWER_ACTIVE_IMPORT": "power_w",
+        }
+        _phase_to_wire = {
+            "PHASE_L1": "L1",
+            "PHASE_L2": "L2",
+            "PHASE_L3": "L3",
         }
         for raw in phase_rows:
             row = dict(zip(phase_cols, raw, strict=True))
-            phase = row["phase"]
+            phase = _phase_to_wire.get(row["phase"])
             field = _measurand_to_field.get(row["measurand"])
-            if field is None:
+            if phase is None or field is None:
                 continue
             snap = phases.setdefault(
                 phase,

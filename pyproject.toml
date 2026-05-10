@@ -165,6 +165,9 @@ module = [
     "eveys_ocpp.clickhouse.ingestor",
     # E3-9 webhook dispatcher — same generated `events_pb2` opaqueness.
     "eveys_ocpp.webhooks.dispatcher",
+    # OCPP wire-form ↔ proto enum translation tables. Touches the
+    # generated `events_pb2` symbols by name (same opaqueness).
+    "eveys_ocpp._ocpp_enums",
 ]
 disallow_untyped_decorators = false
 disallow_untyped_calls = false

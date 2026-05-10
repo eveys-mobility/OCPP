@@ -20,7 +20,7 @@ from __future__ import annotations
 import asyncio
 import json
 import subprocess
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from ocpp.v16 import ChargePoint as Cp
@@ -31,10 +31,12 @@ from tests.compose_smoke.conftest import (
     HOST_CH_HTTP_PORT,
     HOST_ENVOY_ADMIN_PORT,
     HOST_ENVOY_TLS_PORT,
+    HOST_REST_PORT,
     HOST_WS_PORT,
     PUBLISHED_HOST,
     _container_logs,
     _container_state,
+    gateway_inbound_token,
 )
 
 # ---- container shape ------------------------------------------------------
@@ -321,6 +323,72 @@ def test_meter_value_enums_land_in_clickhouse_as_proto_enum_names() -> None:
         f"Energy register sample lost its measurand enum on ingest. Stored: {measurands}"
     )
     assert "PHASE_L1" in phases, f"L1 sample lost its phase enum on ingest. Stored: {phases}"
+
+
+def test_rest_meter_values_returns_ocpp_wire_form_not_proto_enum_names() -> None:
+    """The `/api/v1/charge-points/{cp_id}/meter-values` response must
+    show OCPP 1.6 wire-form strings (`"Voltage"`, `"L1"`, `"V"`), not
+    the proto enum names that ClickHouse stores (`"MEASURAND_VOLTAGE"`,
+    `"PHASE_L1"`, `"UNIT_V"`).
+
+    This is the #136 contract: the storage layer canonical form is the
+    proto enum name, but the public REST surface speaks the OCPP wire
+    form. Without translation at the boundary, every API consumer
+    would have to know two naming systems for the same enum and there
+    would be no path to a stable contract.
+
+    Reads back the same Voltage+L1 / SoC samples the previous tests
+    already published. Auth: pulled live from the running container
+    so the test enforces what the gateway is actually accepting.
+    """
+    import urllib.parse
+    import urllib.request
+
+    cp_id = "COMPOSE_SMOKE_CP"
+    # The /meter-values route caps query windows at 7 days
+    # (`WINDOW_TOO_LARGE`); the previous tests' samples were emitted
+    # seconds ago, so a window straddling "now" by a day on each side
+    # comfortably contains them while staying under the cap.
+    now = datetime.now(UTC)
+    window_from = (now - timedelta(days=1)).isoformat()
+    window_to = (now + timedelta(days=1)).isoformat()
+    qs = urllib.parse.urlencode(
+        {
+            "from": window_from,
+            "to": window_to,
+            "measurand": "Voltage",
+            "limit": 10,
+        }
+    )
+    url = f"http://{PUBLISHED_HOST}:{HOST_REST_PORT}/api/v1/charge-points/{cp_id}/meter-values?{qs}"
+    token = gateway_inbound_token()
+    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        body = json.loads(resp.read())
+
+    samples = body.get("meter_values", [])
+    assert samples, (
+        f"expected at least one Voltage sample; got empty page. body={body}. "
+        "If this fails, the OCPP-wire → proto-enum-name translation on the "
+        "?measurand= filter is broken (an unknown wire string returns []), "
+        "OR the Voltage sample never reached ClickHouse (separate from #136)."
+    )
+
+    # All samples MUST be in OCPP wire form. Even one `MEASURAND_*`
+    # leaking through means the boundary translation is incomplete.
+    for s in samples:
+        sample = s["sample"]
+        assert sample["measurand"] == "Voltage", (
+            f"measurand leaked storage form: {sample['measurand']!r} "
+            f"(should be the OCPP wire string 'Voltage')"
+        )
+        # Phase: only the L1 sample we sent has a phase; later vendor
+        # extensions might be `null` — accept either, but never the
+        # proto enum form.
+        assert sample["phase"] in {"L1", "L2", "L3", "L1-N", "L2-N", "L3-N", None}, (
+            f"phase leaked storage form: {sample['phase']!r}"
+        )
+        assert sample["unit"] in {"V", None}, f"unit leaked storage form: {sample['unit']!r}"
 
 
 # ---- Envoy edge --------------------------------------------------------
