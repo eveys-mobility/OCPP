@@ -2,6 +2,8 @@
 
 All notable changes to the gateway land here. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [SemVer](https://semver.org/) once a tag is cut; until then everything sits under `[Unreleased]`.
 
+> **Latest release: [v0.1.0](https://github.com/eveys-mobility/OCPP/releases/tag/v0.1.0)** (2026-05-10) — first tagged release; ships per-transaction telemetry on the gateway REST API. See [`[0.1.0]`](#010---2026-05-10) below for the full notes.
+
 This file starts at the merge that introduced it; for anything earlier, the git log is authoritative.
 
 ## [Unreleased]
