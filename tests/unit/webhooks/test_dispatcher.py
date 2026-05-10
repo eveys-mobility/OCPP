@@ -76,6 +76,10 @@ def _envelope(payload_kind: str, **fields: Any) -> events_pb2.EventEnvelope:
         ts.consumed_wh = fields.pop("consumed_wh", 23_500)
         ts.stop_reason = fields.pop("stop_reason", "Local")
         ts.charger_reported_at = fields.pop("charger_reported_at", "2026-05-07T12:30:00+00:00")
+    elif payload_kind == "cp_firmware_status_changed":
+        env.cp_firmware_status_changed.status = fields.pop("status", "Downloading")
+    elif payload_kind == "cp_diagnostics_status_changed":
+        env.cp_diagnostics_status_changed.status = fields.pop("status", "Uploading")
     return env
 
 
@@ -151,6 +155,38 @@ def test_build_body_cp_offline_returns_none_when_disabled() -> None:
     assert d._build_body(_envelope("cp_disconnected")) is None
 
 
+def test_build_body_cp_firmware_status_changed_shape() -> None:
+    """cp.firmware_status_changed envelope mirrors the documented
+    contract shape per `docs/integration/03-webhooks.md`."""
+    d = WebhookDispatcher(_settings())
+    body = d._build_body(_envelope("cp_firmware_status_changed", status="Downloading"))
+    assert body is not None
+    data = body["data"]
+    assert data["event_type"] == "cp.firmware_status_changed"
+    assert data["cp_id"] == "CP_TEST"
+    assert data["status"] == "Downloading"
+
+
+def test_build_body_cp_firmware_status_changed_returns_none_when_disabled() -> None:
+    d = WebhookDispatcher(_settings(webhook_enable_cp_firmware_status=False))
+    assert d._build_body(_envelope("cp_firmware_status_changed")) is None
+
+
+def test_build_body_cp_diagnostics_status_changed_shape() -> None:
+    d = WebhookDispatcher(_settings())
+    body = d._build_body(_envelope("cp_diagnostics_status_changed", status="Uploading"))
+    assert body is not None
+    data = body["data"]
+    assert data["event_type"] == "cp.diagnostics_status_changed"
+    assert data["cp_id"] == "CP_TEST"
+    assert data["status"] == "Uploading"
+
+
+def test_build_body_cp_diagnostics_status_changed_returns_none_when_disabled() -> None:
+    d = WebhookDispatcher(_settings(webhook_enable_cp_diagnostics_status=False))
+    assert d._build_body(_envelope("cp_diagnostics_status_changed")) is None
+
+
 def test_build_body_returns_none_for_disabled_event() -> None:
     """`webhook_enable_cp_boot=False` → cp.boot skipped silently."""
     d = WebhookDispatcher(_settings(webhook_enable_cp_boot=False))
@@ -210,18 +246,47 @@ def test_url_for_cp_offline_uses_override() -> None:
     assert d._url_for(_envelope("cp_disconnected")) == "https://override.example/presence/down"
 
 
+def test_url_for_cp_firmware_status_falls_back_to_base() -> None:
+    d = WebhookDispatcher(_settings())
+    assert d._url_for(_envelope("cp_firmware_status_changed")) == (
+        "https://backend.example/webhooks/cp-firmware-status-changed"
+    )
+
+
+def test_url_for_cp_firmware_status_uses_override() -> None:
+    d = WebhookDispatcher(_settings(webhook_url_cp_firmware_status="https://override.example/fw"))
+    assert d._url_for(_envelope("cp_firmware_status_changed")) == "https://override.example/fw"
+
+
+def test_url_for_cp_diagnostics_status_falls_back_to_base() -> None:
+    d = WebhookDispatcher(_settings())
+    assert d._url_for(_envelope("cp_diagnostics_status_changed")) == (
+        "https://backend.example/webhooks/cp-diagnostics-status-changed"
+    )
+
+
+def test_url_for_cp_diagnostics_status_uses_override() -> None:
+    d = WebhookDispatcher(
+        _settings(webhook_url_cp_diagnostics_status="https://override.example/diag")
+    )
+    assert d._url_for(_envelope("cp_diagnostics_status_changed")) == "https://override.example/diag"
+
+
 # ---- _enabled_topics -------------------------------------------------------
 
 
 def test_enabled_topics_default() -> None:
     d = WebhookDispatcher(_settings())
     topics = d._enabled_topics()
-    # Default: boot, connected, disconnected, status, tx-started, tx-stopped
-    # enabled; meter off (high volume — Kafka subscribers, not webhooks).
+    # Default: every event except cp.meter is enabled. cp.meter stays
+    # off — high volume; the right channel for it is a Kafka subscription
+    # to `cp.meter`, not webhook delivery.
     assert "cp.boot" in topics
     assert "cp.connected" in topics
     assert "cp.disconnected" in topics
     assert "cp.status" in topics
+    assert "cp.firmware_status" in topics
+    assert "cp.diagnostics_status" in topics
     assert "tx.started" in topics
     assert "tx.stopped" in topics
     assert "cp.meter" not in topics
@@ -236,6 +301,8 @@ def test_enabled_topics_all_off() -> None:
             webhook_enable_cp_status=False,
             webhook_enable_tx_started=False,
             webhook_enable_tx_stopped=False,
+            webhook_enable_cp_firmware_status=False,
+            webhook_enable_cp_diagnostics_status=False,
         )
     )
     assert d._enabled_topics() == ()

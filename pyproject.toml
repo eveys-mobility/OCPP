@@ -162,6 +162,8 @@ module = [
     "eveys_ocpp.handlers.v16.start_transaction",
     "eveys_ocpp.handlers.v16.stop_transaction",
     "eveys_ocpp.handlers.v16.security_event_notification",
+    "eveys_ocpp.handlers.v16.firmware_status_notification",
+    "eveys_ocpp.handlers.v16.diagnostics_status_notification",
     # E2-14 ClickHouse ingestor — same generated `events_pb2` opaqueness.
     "eveys_ocpp.clickhouse.ingestor",
     # E3-9 webhook dispatcher — same generated `events_pb2` opaqueness.

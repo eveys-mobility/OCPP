@@ -9,13 +9,15 @@
 // - The `oneof payload` discriminator is what consumers switch on.
 //
 // Topic mapping:
-//   cp.connected    → CpConnected    (charger opened a WS to us)
-//   cp.disconnected → CpDisconnected (charger's WS went away)
-//   cp.boot         → CpBoot         (BootNotification arrived)
-//   cp.status       → CpStatus       (StatusNotification arrived)
-//   cp.meter        → CpMeter        (MeterValues arrived)
-//   tx.started      → TxStarted      (StartTransaction arrived)
-//   tx.stopped      → TxStopped      (StopTransaction arrived + persisted)
+//   cp.connected          → CpConnected               (charger opened a WS to us)
+//   cp.disconnected       → CpDisconnected            (charger's WS went away)
+//   cp.boot               → CpBoot                    (BootNotification arrived)
+//   cp.status             → CpStatus                  (StatusNotification arrived)
+//   cp.meter              → CpMeter                   (MeterValues arrived)
+//   cp.firmware_status    → CpFirmwareStatusChanged   (FirmwareStatusNotification arrived)
+//   cp.diagnostics_status → CpDiagnosticsStatusChanged (DiagnosticsStatusNotification arrived)
+//   tx.started            → TxStarted                 (StartTransaction arrived)
+//   tx.stopped            → TxStopped                 (StopTransaction arrived + persisted)
 //
 // `tx.stopped` ships as a belt-and-braces signal alongside the
 // synchronous `/api/eveys/sessions/close` REST call (per the
@@ -65,6 +67,8 @@ message EventEnvelope {
     CpSecurityEvent cp_security_event = 105;
     TxStopped tx_stopped = 106;
     CpDisconnected cp_disconnected = 107;
+    CpFirmwareStatusChanged cp_firmware_status_changed = 108;
+    CpDiagnosticsStatusChanged cp_diagnostics_status_changed = 109;
   }
 }
 
@@ -336,4 +340,39 @@ message TxStopped {
   string stop_reason = 5;
   // Charger-claimed timestamp. Server-receive time is in the envelope.
   string charger_reported_at = 6;
+}
+
+// -----------------------------------------------------------------------------
+// cp.firmware_status — FirmwareStatusNotification arrived
+// -----------------------------------------------------------------------------
+//
+// Belt-and-braces signal alongside the charger-side firmware update
+// state machine. The CSMS uses it to know when a previously-issued
+// `UpdateFirmware` landed (or failed) without polling. Per OCPP 1.6
+// FirmwareManagement profile (E2-1F).
+//
+// Status values (kept as a string for forward-compat with the
+// Phase-5 Security profile additions and vendor extensions): `Idle`,
+// `Downloading`, `Downloaded`, `DownloadFailed`, `Installing`,
+// `Installed`, `InstallationFailed`. The matching Postgres column
+// `charge_points.last_firmware_status` is `String(32)` for the same
+// reason — never enum-cast at the DB layer either.
+
+message CpFirmwareStatusChanged {
+  // Charger-reported state-machine status. Free-form string.
+  string status = 1;
+}
+
+// -----------------------------------------------------------------------------
+// cp.diagnostics_status — DiagnosticsStatusNotification arrived
+// -----------------------------------------------------------------------------
+//
+// Same shape and pattern as `cp.firmware_status` but for the
+// diagnostics-upload state machine. Status values: `Idle`,
+// `Uploading`, `Uploaded`, `UploadFailed`. Same string-not-enum
+// rationale.
+
+message CpDiagnosticsStatusChanged {
+  // Charger-reported state-machine status. Free-form string.
+  string status = 1;
 }

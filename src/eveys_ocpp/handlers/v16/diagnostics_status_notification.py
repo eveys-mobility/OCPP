@@ -20,10 +20,13 @@ Behaviour:
 
 from __future__ import annotations
 
+import uuid
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from ocpp.v16 import call_result
 
+from eveys_ocpp._generated.events.v1 import events_pb2
 from eveys_ocpp.metrics import record_handler_error, time_handler
 from eveys_ocpp.metrics import registry as metrics_registry
 from eveys_ocpp.observability import bind_contextvars, get_logger
@@ -48,6 +51,30 @@ async def handle(
                 await update_diagnostics_status(session, cp_id=cp.id, status=status)
 
             log.info("diagnostics_status_notification", status=status)
+
+            # cp.diagnostics_status webhook source. Low volume (a few
+            # per charger per upload lifecycle); best-effort publish
+            # per the same pattern the other emitters use — broker
+            # drop must not crash the OCPP handler.
+            if cp.event_producer is not None:
+                envelope = events_pb2.EventEnvelope(
+                    event_id=str(uuid.uuid4()),
+                    occurred_at=datetime.now(UTC).isoformat(),
+                    cp_id=cp.id,
+                    schema_version="v1",
+                    cp_diagnostics_status_changed=events_pb2.CpDiagnosticsStatusChanged(
+                        status=status,
+                    ),
+                )
+                try:
+                    await cp.event_producer.publish(
+                        topic=cp.settings.kafka_topic_cp_diagnostics_status,
+                        key=cp.id,
+                        value=envelope.SerializeToString(),
+                    )
+                except Exception as exc:
+                    log.warning("diagnostics_status.publish_failed", error=str(exc))
+
             return call_result.DiagnosticsStatusNotification()
         except Exception as exc:
             record_handler_error("DiagnosticsStatusNotification", exc)

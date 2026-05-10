@@ -400,6 +400,34 @@ class Settings(BaseSettings):
             "stability": "structural",
         },
     )
+    kafka_topic_cp_firmware_status: str = Field(
+        default="cp.firmware_status",
+        description=(
+            "`FirmwareStatusNotification` events. Source for the "
+            "`cp.firmware_status_changed` webhook. Low volume (a few "
+            "per charger per firmware-update lifecycle)."
+        ),
+        json_schema_extra={
+            "category": "kafka_topics",
+            "impact": "Renaming detaches every existing consumer.",
+            "secret": False,
+            "stability": "structural",
+        },
+    )
+    kafka_topic_cp_diagnostics_status: str = Field(
+        default="cp.diagnostics_status",
+        description=(
+            "`DiagnosticsStatusNotification` events. Source for the "
+            "`cp.diagnostics_status_changed` webhook. Low volume "
+            "(a few per charger per diagnostics-upload lifecycle)."
+        ),
+        json_schema_extra={
+            "category": "kafka_topics",
+            "impact": "Renaming detaches every existing consumer.",
+            "secret": False,
+            "stability": "structural",
+        },
+    )
     kafka_topic_tx_started: str = Field(
         default="tx.started",
         description="`StartTransaction` events (financial path).",
@@ -1083,6 +1111,34 @@ class Settings(BaseSettings):
         },
     )
 
+    webhook_url_cp_firmware_status: str = Field(
+        default="",
+        description=(
+            "Override the URL for `cp.firmware_status_changed` events. "
+            "Empty falls back to `<webhook_base_url>/cp-firmware-status-changed`."
+        ),
+        json_schema_extra={
+            "category": "webhooks",
+            "impact": "Per-event routing override.",
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+
+    webhook_url_cp_diagnostics_status: str = Field(
+        default="",
+        description=(
+            "Override the URL for `cp.diagnostics_status_changed` events. "
+            "Empty falls back to `<webhook_base_url>/cp-diagnostics-status-changed`."
+        ),
+        json_schema_extra={
+            "category": "webhooks",
+            "impact": "Per-event routing override.",
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+
     webhook_url_cp_offline: str = Field(
         default="",
         description=(
@@ -1188,6 +1244,38 @@ class Settings(BaseSettings):
         json_schema_extra={
             "category": "webhooks",
             "impact": ("Pairs with `cp.offline` for backend-side online-state tracking."),
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+
+    webhook_enable_cp_firmware_status: bool = Field(
+        default=True,
+        description=(
+            "Enable webhook delivery for `cp.firmware_status_changed` "
+            "events (charger-reported firmware-update state-machine "
+            "transitions). Low volume — a few events per charger per "
+            "firmware-update lifecycle."
+        ),
+        json_schema_extra={
+            "category": "webhooks",
+            "impact": "Disable to silence firmware-status pushes.",
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+
+    webhook_enable_cp_diagnostics_status: bool = Field(
+        default=True,
+        description=(
+            "Enable webhook delivery for `cp.diagnostics_status_changed` "
+            "events (charger-reported diagnostics-upload state-machine "
+            "transitions). Low volume — a few events per charger per "
+            "diagnostics-upload lifecycle."
+        ),
+        json_schema_extra={
+            "category": "webhooks",
+            "impact": "Disable to silence diagnostics-status pushes.",
             "secret": False,
             "stability": "tunable",
         },
