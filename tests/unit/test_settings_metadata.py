@@ -16,6 +16,7 @@ ALLOWED_CATEGORIES = {
     "ws_server",
     "grpc_server",
     "rest_server",
+    "auth",
     "kafka_producer",
     "kafka_topics",
     "redis",

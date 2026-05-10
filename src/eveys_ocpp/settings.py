@@ -150,7 +150,7 @@ class Settings(BaseSettings):
             "must match exactly; whitespace is stripped."
         ),
         json_schema_extra={
-            "category": "rest_server",
+            "category": "auth",
             "impact": (
                 "Empty allowlist + `rest_auth_disabled=False` (the "
                 "default) → all inbound requests are rejected with 401. "
@@ -169,7 +169,7 @@ class Settings(BaseSettings):
             "unit-test convenience only — never set in production."
         ),
         json_schema_extra={
-            "category": "rest_server",
+            "category": "auth",
             "impact": (
                 "When True the gateway accepts any (or no) Authorization "
                 "header on `/api/v1/*`. The boot-time log line "
@@ -1658,7 +1658,7 @@ class Settings(BaseSettings):
             "don't carry certs."
         ),
         json_schema_extra={
-            "category": "ws_server",
+            "category": "auth",
             "impact": (
                 "Enabling without setting cert / key / ca paths fails "
                 "loud at boot. Disabling in production drops the in-"
@@ -1678,7 +1678,7 @@ class Settings(BaseSettings):
             "from a TLS Secret via the Helm chart."
         ),
         json_schema_extra={
-            "category": "ws_server",
+            "category": "auth",
             "impact": (
                 "Wrong path → boot fails with `FileNotFoundError`. The "
                 "cert is the gateway's own identity to Envoy."
@@ -1694,7 +1694,7 @@ class Settings(BaseSettings):
             "Loaded with `ws_mtls_cert_path` into the `SSLContext`."
         ),
         json_schema_extra={
-            "category": "ws_server",
+            "category": "auth",
             "impact": (
                 "Path leak isn't a secret leak — the file at the path "
                 "is. File permissions on the mount are the operator's "
@@ -1713,7 +1713,7 @@ class Settings(BaseSettings):
             "to revoke."
         ),
         json_schema_extra={
-            "category": "ws_server",
+            "category": "auth",
             "impact": (
                 "Trust anchor for the Envoy-side identity. A widened "
                 "CA (e.g. a public root) effectively disables the "
@@ -1736,7 +1736,7 @@ class Settings(BaseSettings):
             "must provision a credential before the charger connects."
         ),
         json_schema_extra={
-            "category": "ws_server",
+            "category": "auth",
             "impact": (
                 "Production sets True so an unprovisioned charger can't "
                 "sneak through. Dev / compose stays False so the "
