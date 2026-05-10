@@ -7,7 +7,7 @@ keeps the handler/persistence boundary narrow.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -166,6 +166,144 @@ async def insert_pending_certificate_signing(
     session.add(row)
     await session.flush()
     return row.id
+
+
+def _pending_csr_to_dict(row: PendingCertificateSigning, cp_id: str) -> dict[str, Any]:
+    """Operator-facing shape. Includes the CSR text so the operator
+    UI / API consumer can inspect it before approving."""
+    return {
+        "id": row.id,
+        "cp_id": cp_id,
+        "csr": row.csr,
+        "received_at": row.received_at,
+        "status": row.status,
+        "signed_at": row.signed_at,
+        "approved_by": row.approved_by,
+        "rejected_at": row.rejected_at,
+        "rejected_reason": row.rejected_reason,
+    }
+
+
+async def list_pending_certificate_signings_by_cp(
+    session: AsyncSession,
+    *,
+    cp_id: str,
+    after_id: int | None,
+    limit: int,
+    status: str | None = None,
+) -> list[dict[str, Any]] | None:
+    """List pending-CSR rows for a charger, cursor-paginated.
+
+    Returns up to `limit + 1` rows (caller uses the extra row to
+    decide `next_cursor`). Returns `None` when the charger doesn't
+    exist — distinguishes "no charger" from "no rows" so the REST
+    layer can answer 404 vs an empty list.
+    """
+    cp_pk = await get_charge_point_pk(session, cp_id=cp_id)
+    if cp_pk is None:
+        return None
+    stmt = select(PendingCertificateSigning).where(
+        PendingCertificateSigning.charge_point_id == cp_pk
+    )
+    if status is not None:
+        stmt = stmt.where(PendingCertificateSigning.status == status)
+    if after_id is not None:
+        stmt = stmt.where(PendingCertificateSigning.id > after_id)
+    stmt = stmt.order_by(PendingCertificateSigning.id.asc()).limit(limit + 1)
+    result = await session.execute(stmt)
+    return [_pending_csr_to_dict(row, cp_id) for row in result.scalars().all()]
+
+
+async def get_pending_certificate_signing(
+    session: AsyncSession,
+    *,
+    cp_id: str,
+    pending_id: int,
+) -> dict[str, Any] | None:
+    """Fetch one row scoped to a charger. Returns None when either
+    the charger or the row doesn't exist; the REST layer collapses
+    both to 404."""
+    cp_pk = await get_charge_point_pk(session, cp_id=cp_id)
+    if cp_pk is None:
+        return None
+    stmt = select(PendingCertificateSigning).where(
+        and_(
+            PendingCertificateSigning.id == pending_id,
+            PendingCertificateSigning.charge_point_id == cp_pk,
+        )
+    )
+    row = (await session.execute(stmt)).scalar_one_or_none()
+    if row is None:
+        return None
+    return _pending_csr_to_dict(row, cp_id)
+
+
+async def mark_pending_certificate_signing_signed(
+    session: AsyncSession,
+    *,
+    cp_id: str,
+    pending_id: int,
+    signed_chain: str,
+    approved_by: str | None,
+) -> bool:
+    """Transition a `pending` row to `signed`. Returns False when the
+    row doesn't exist OR isn't pending — the REST layer returns 404 /
+    409 accordingly. Idempotent against double-submits at the SQL
+    layer: only `pending` rows match the WHERE clause."""
+    cp_pk = await get_charge_point_pk(session, cp_id=cp_id)
+    if cp_pk is None:
+        return False
+    stmt = (
+        update(PendingCertificateSigning)
+        .where(
+            and_(
+                PendingCertificateSigning.id == pending_id,
+                PendingCertificateSigning.charge_point_id == cp_pk,
+                PendingCertificateSigning.status == "pending",
+            )
+        )
+        .values(
+            status="signed",
+            signed_at=datetime.now(UTC),
+            signed_chain=signed_chain,
+            approved_by=approved_by,
+        )
+    )
+    result = await session.execute(stmt)
+    rowcount = getattr(result, "rowcount", 0)
+    return bool(rowcount and rowcount > 0)
+
+
+async def mark_pending_certificate_signing_rejected(
+    session: AsyncSession,
+    *,
+    cp_id: str,
+    pending_id: int,
+    reason: str,
+) -> bool:
+    """Transition a `pending` row to `rejected`. Same return shape as
+    `mark_signed`."""
+    cp_pk = await get_charge_point_pk(session, cp_id=cp_id)
+    if cp_pk is None:
+        return False
+    stmt = (
+        update(PendingCertificateSigning)
+        .where(
+            and_(
+                PendingCertificateSigning.id == pending_id,
+                PendingCertificateSigning.charge_point_id == cp_pk,
+                PendingCertificateSigning.status == "pending",
+            )
+        )
+        .values(
+            status="rejected",
+            rejected_at=datetime.now(UTC),
+            rejected_reason=reason,
+        )
+    )
+    result = await session.execute(stmt)
+    rowcount = getattr(result, "rowcount", 0)
+    return bool(rowcount and rowcount > 0)
 
 
 async def get_certificate_pem_by_hash(

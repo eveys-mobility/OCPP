@@ -517,6 +517,21 @@ The full request / response body shape for each is the same as the corresponding
 
 ---
 
+## Pending certificate signings (operator queue)
+
+Operator review surface for charger-initiated CSRs (OCPP 1.6 Security Whitepaper §4.13 SignCertificate). The charger sends a CSR; the gateway persists it as a `pending` row. An operator inspects the row, signs the CSR offline against whatever CA they choose, and posts the resulting chain back to `/approve` — at which point the gateway dispatches `CertificateSigned.req` to the charger and surfaces the charger's reply.
+
+| Endpoint | Body | Returns |
+|---|---|---|
+| `GET /api/v1/charge-points/{cp_id}/pending-certificate-signings` | `(none)` (query: `status ∈ pending\|signed\|rejected`, `cursor`, `limit`) | `{ "pending_certificate_signings": [...], "next_cursor": "..." }` — each row carries `id`, `cp_id`, `csr` (PEM), `received_at`, `status`, `signed_at`, `approved_by`, `rejected_at`, `rejected_reason`. |
+| `GET .../pending-certificate-signings/{id}` | `(none)` | Single row, same shape. `404` when the row or charger doesn't exist. |
+| `POST .../pending-certificate-signings/{id}/approve` | `{ "signed_chain": "-----BEGIN CERTIFICATE-----\n...\n-----BEGIN CERTIFICATE-----\n...", "approved_by": "..." }` (`approved_by` optional) | `{ "id", "cp_id", "status": "signed", "charger_status": "Accepted" \| "Rejected" }`. The DB transition happens before the dispatch — a Rejected charger reply still leaves the row `signed`; operators reading the row later can tell from the response that the chain didn't take. |
+| `POST .../pending-certificate-signings/{id}/reject` | `{ "reason": "..." }` | `{ "id", "cp_id", "status": "rejected", "rejected_reason": "..." }`. No charger interaction — per spec, the charger re-submits if it cares, producing a fresh row. |
+
+Both action endpoints return `404` with `error_code=UNKNOWN_CP_ID` when the row is missing OR no longer `pending` (i.e. another operator already approved/rejected it). The transition is guarded at the SQL row-state level so concurrent calls collapse to one dispatch + one 404.
+
+---
+
 ## `GET /api/v1/health`
 
 Probe.

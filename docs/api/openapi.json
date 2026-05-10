@@ -3261,6 +3261,260 @@
         ]
       }
     },
+    "/api/v1/charge-points/{cp_id}/pending-certificate-signings": {
+      "get": {
+        "operationId": "list_route_api_v1_charge_points__cp_id__pending_certificate_signings_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cp_id",
+            "required": true,
+            "schema": {
+              "title": "Cp Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 10000,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Limit"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Route Api V1 Charge Points  Cp Id  Pending Certificate Signings Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Route",
+        "tags": [
+          "pending-certificate-signings"
+        ]
+      }
+    },
+    "/api/v1/charge-points/{cp_id}/pending-certificate-signings/{pending_id}": {
+      "get": {
+        "operationId": "get_route_api_v1_charge_points__cp_id__pending_certificate_signings__pending_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cp_id",
+            "required": true,
+            "schema": {
+              "title": "Cp Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "pending_id",
+            "required": true,
+            "schema": {
+              "title": "Pending Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Route Api V1 Charge Points  Cp Id  Pending Certificate Signings  Pending Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Route",
+        "tags": [
+          "pending-certificate-signings"
+        ]
+      }
+    },
+    "/api/v1/charge-points/{cp_id}/pending-certificate-signings/{pending_id}/approve": {
+      "post": {
+        "description": "Operator-supplied signed PEM chain \u2192 mark row signed \u2192 dispatch\n`CertificateSigned.req` to the charger \u2192 return the charger's\nreply status. The DB write happens BEFORE the charger dispatch:\n\n- If the dispatch fails (charger offline, etc.) the operator can\n  retry by re-fetching the row's `signed_chain` and using the\n  existing `commands/certificate-signed` endpoint, OR by waiting\n  for the charger to re-submit (per spec).\n- If the dispatch succeeds but the charger replies `Rejected`,\n  the row stays `signed` (the operator's decision) and the\n  charger's verdict surfaces in the response \u2014 operators reading\n  the row later can tell from the response that the charger\n  didn't accept the chain.",
+        "operationId": "approve_route_api_v1_charge_points__cp_id__pending_certificate_signings__pending_id__approve_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cp_id",
+            "required": true,
+            "schema": {
+              "title": "Cp Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "pending_id",
+            "required": true,
+            "schema": {
+              "title": "Pending Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Approve Route Api V1 Charge Points  Cp Id  Pending Certificate Signings  Pending Id  Approve Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Approve Route",
+        "tags": [
+          "pending-certificate-signings"
+        ]
+      }
+    },
+    "/api/v1/charge-points/{cp_id}/pending-certificate-signings/{pending_id}/reject": {
+      "post": {
+        "operationId": "reject_route_api_v1_charge_points__cp_id__pending_certificate_signings__pending_id__reject_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cp_id",
+            "required": true,
+            "schema": {
+              "title": "Cp Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "pending_id",
+            "required": true,
+            "schema": {
+              "title": "Pending Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Reject Route Api V1 Charge Points  Cp Id  Pending Certificate Signings  Pending Id  Reject Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reject Route",
+        "tags": [
+          "pending-certificate-signings"
+        ]
+      }
+    },
     "/api/v1/charge-points/{cp_id}/reservations": {
       "get": {
         "operationId": "list_reservations_route_api_v1_charge_points__cp_id__reservations_get",

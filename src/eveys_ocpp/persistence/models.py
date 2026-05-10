@@ -524,3 +524,6 @@ class PendingCertificateSigning(Base):
     status: Mapped[str] = mapped_column(String(16), server_default="pending", nullable=False)
     signed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     signed_chain: Mapped[str | None] = mapped_column(Text, nullable=True)
+    approved_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    rejected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    rejected_reason: Mapped[str | None] = mapped_column(String(512), nullable=True)
