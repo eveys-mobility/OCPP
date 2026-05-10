@@ -34,6 +34,8 @@ Every PR must:
 - **stock hygiene** — trailing whitespace, end-of-file fixer, large-file guard, merge-conflict markers, mixed line endings.
 - **conventional-pre-commit** — enforces the commit-message format below.
 
+If `make install` prints `pre-commit skipped: core.hooksPath is set`, your repo has `core.hooksPath` configured (often by an editor / dev-environment manager). Pre-commit refuses to install when that's set — even to the default `.git/hooks`. Run `git config --unset core.hooksPath` to enable hook auto-install. The rest of `make install` succeeds either way; you can also invoke the hooks manually with `pre-commit run --all-files`.
+
 To run the hooks against the whole tree without committing:
 
 ```bash
