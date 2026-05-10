@@ -114,6 +114,18 @@ def _coerce_url(value: Any) -> str:
     return stripped
 
 
+# Per-event webhook enable flags share an asymmetry that operators
+# need to know about, so we share the explanation rather than re-typing
+# it on every entry.
+_WEBHOOK_ENABLE_ASYMMETRY = (
+    " Asymmetry: turning OFF is fully live (delivery is suppressed on "
+    "the next event); turning ON is live ONLY if this event was already "
+    "enabled at boot — _enabled_topics() runs once at consumer start, so "
+    "a topic that wasn't subscribed then needs a pod restart to begin "
+    "delivering."
+)
+
+
 # The allowlist itself. See the module docstring for the criteria.
 _ALLOWLIST: dict[str, _AllowlistEntry] = {
     "log_level": _AllowlistEntry(
@@ -130,6 +142,107 @@ _ALLOWLIST: dict[str, _AllowlistEntry] = {
         name="backend_authorize_cache_enabled",
         coerce=_coerce_bool,
         description="Per-pod Authorize cache (E3-4) kill-switch.",
+    ),
+    "webhook_base_url": _AllowlistEntry(
+        name="webhook_base_url",
+        coerce=_coerce_url,
+        description=(
+            "Default base URL for webhook delivery. Per-event URLs that "
+            "are empty fall back to `<base>/<event-slug>`. Cannot be "
+            "cleared via runtime override — clearing it disables the "
+            "dispatcher entirely, which is a deploy-time call."
+        ),
+    ),
+    "webhook_url_cp_boot": _AllowlistEntry(
+        name="webhook_url_cp_boot",
+        coerce=_coerce_url_or_empty,
+        description=(
+            "Override URL for cp.boot webhook deliveries. Empty string "
+            "falls back to `<webhook_base_url>/cp-boot`."
+        ),
+    ),
+    "webhook_url_cp_online": _AllowlistEntry(
+        name="webhook_url_cp_online",
+        coerce=_coerce_url_or_empty,
+        description=(
+            "Override URL for cp.online webhook deliveries. Empty string "
+            "falls back to `<webhook_base_url>/cp-online`."
+        ),
+    ),
+    "webhook_url_cp_offline": _AllowlistEntry(
+        name="webhook_url_cp_offline",
+        coerce=_coerce_url_or_empty,
+        description=(
+            "Override URL for cp.offline webhook deliveries. Empty string "
+            "falls back to `<webhook_base_url>/cp-offline`."
+        ),
+    ),
+    "webhook_url_cp_status": _AllowlistEntry(
+        name="webhook_url_cp_status",
+        coerce=_coerce_url_or_empty,
+        description=(
+            "Override URL for cp.status_changed webhook deliveries. Empty "
+            "string falls back to `<webhook_base_url>/cp-status-changed`."
+        ),
+    ),
+    "webhook_url_cp_meter": _AllowlistEntry(
+        name="webhook_url_cp_meter",
+        coerce=_coerce_url_or_empty,
+        description=(
+            "Override URL for cp.meter webhook deliveries. Empty string "
+            "falls back to `<webhook_base_url>/cp-meter`."
+        ),
+    ),
+    "webhook_url_tx_started": _AllowlistEntry(
+        name="webhook_url_tx_started",
+        coerce=_coerce_url_or_empty,
+        description=(
+            "Override URL for tx.started webhook deliveries. Empty string "
+            "falls back to `<webhook_base_url>/tx-started`."
+        ),
+    ),
+    "webhook_url_tx_stopped": _AllowlistEntry(
+        name="webhook_url_tx_stopped",
+        coerce=_coerce_url_or_empty,
+        description=(
+            "Override URL for tx.stopped webhook deliveries. Empty string "
+            "falls back to `<webhook_base_url>/tx-stopped`."
+        ),
+    ),
+    "webhook_enable_cp_boot": _AllowlistEntry(
+        name="webhook_enable_cp_boot",
+        coerce=_coerce_bool,
+        description="cp.boot webhook delivery toggle." + _WEBHOOK_ENABLE_ASYMMETRY,
+    ),
+    "webhook_enable_cp_online": _AllowlistEntry(
+        name="webhook_enable_cp_online",
+        coerce=_coerce_bool,
+        description="cp.online webhook delivery toggle." + _WEBHOOK_ENABLE_ASYMMETRY,
+    ),
+    "webhook_enable_cp_offline": _AllowlistEntry(
+        name="webhook_enable_cp_offline",
+        coerce=_coerce_bool,
+        description="cp.offline webhook delivery toggle." + _WEBHOOK_ENABLE_ASYMMETRY,
+    ),
+    "webhook_enable_cp_status": _AllowlistEntry(
+        name="webhook_enable_cp_status",
+        coerce=_coerce_bool,
+        description="cp.status_changed webhook delivery toggle." + _WEBHOOK_ENABLE_ASYMMETRY,
+    ),
+    "webhook_enable_cp_meter": _AllowlistEntry(
+        name="webhook_enable_cp_meter",
+        coerce=_coerce_bool,
+        description="cp.meter webhook delivery toggle." + _WEBHOOK_ENABLE_ASYMMETRY,
+    ),
+    "webhook_enable_tx_started": _AllowlistEntry(
+        name="webhook_enable_tx_started",
+        coerce=_coerce_bool,
+        description="tx.started webhook delivery toggle." + _WEBHOOK_ENABLE_ASYMMETRY,
+    ),
+    "webhook_enable_tx_stopped": _AllowlistEntry(
+        name="webhook_enable_tx_stopped",
+        coerce=_coerce_bool,
+        description="tx.stopped webhook delivery toggle." + _WEBHOOK_ENABLE_ASYMMETRY,
     ),
 }
 
@@ -250,4 +363,19 @@ AllowlistName = Literal[
     "log_level",
     "ws_rate_limit_enabled",
     "backend_authorize_cache_enabled",
+    "webhook_base_url",
+    "webhook_url_cp_boot",
+    "webhook_url_cp_online",
+    "webhook_url_cp_offline",
+    "webhook_url_cp_status",
+    "webhook_url_cp_meter",
+    "webhook_url_tx_started",
+    "webhook_url_tx_stopped",
+    "webhook_enable_cp_boot",
+    "webhook_enable_cp_online",
+    "webhook_enable_cp_offline",
+    "webhook_enable_cp_status",
+    "webhook_enable_cp_meter",
+    "webhook_enable_tx_started",
+    "webhook_enable_tx_stopped",
 ]

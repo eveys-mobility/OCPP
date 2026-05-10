@@ -184,3 +184,113 @@ async def test_delete_on_unset_key_is_idempotent(
 
     assert response.status_code == 200
     assert response.json()["cleared"] is False
+
+
+# --- webhook allowlist additions ----------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_allowlist_includes_webhook_fields(
+    client: httpx.AsyncClient,
+) -> None:
+    """The operator UI uses the allowlist to render the right form
+    controls. Every field PATCH will now accept must show up here."""
+    response = await client.get("/api/v1/admin/config")
+
+    assert response.status_code == 200, response.text
+    allowlist = response.json()["allowlist"]
+    expected = {
+        "webhook_base_url",
+        "webhook_url_cp_boot",
+        "webhook_url_cp_online",
+        "webhook_url_cp_offline",
+        "webhook_url_cp_status",
+        "webhook_url_cp_meter",
+        "webhook_url_tx_started",
+        "webhook_url_tx_stopped",
+        "webhook_enable_cp_boot",
+        "webhook_enable_cp_online",
+        "webhook_enable_cp_offline",
+        "webhook_enable_cp_status",
+        "webhook_enable_cp_meter",
+        "webhook_enable_tx_started",
+        "webhook_enable_tx_stopped",
+    }
+    missing = expected - set(allowlist)
+    assert not missing, f"missing from allowlist: {missing}"
+
+
+@pytest.mark.asyncio
+async def test_patch_webhook_url_with_valid_http_value(
+    client: httpx.AsyncClient,
+) -> None:
+    response = await client.patch(
+        "/api/v1/admin/config",
+        json={"updates": {"webhook_url_cp_boot": "https://hooks.example.com/cp-boot-v2"}},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["applied"] == {
+        "webhook_url_cp_boot": "https://hooks.example.com/cp-boot-v2"
+    }
+
+
+@pytest.mark.asyncio
+async def test_patch_webhook_url_accepts_empty_for_fallback(
+    client: httpx.AsyncClient,
+) -> None:
+    """Empty string is the sentinel for "fall back to <base>/<event>"
+    in the dispatcher; the per-event URL coerce must accept it."""
+    response = await client.patch(
+        "/api/v1/admin/config",
+        json={"updates": {"webhook_url_cp_boot": ""}},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["applied"] == {"webhook_url_cp_boot": ""}
+
+
+@pytest.mark.asyncio
+async def test_patch_webhook_url_rejects_non_http(
+    client: httpx.AsyncClient,
+) -> None:
+    response = await client.patch(
+        "/api/v1/admin/config",
+        json={"updates": {"webhook_url_cp_boot": "ftp://hooks.example.com/cp-boot"}},
+    )
+
+    assert response.status_code == 400, response.text
+    error = response.json()["error"]
+    assert "webhook_url_cp_boot" in error
+    assert "http" in error.lower()
+
+
+@pytest.mark.asyncio
+async def test_patch_webhook_base_url_rejects_empty(
+    client: httpx.AsyncClient,
+) -> None:
+    """Clearing the base URL would disable the dispatcher entirely —
+    that's a deploy-time call, not a runtime override. The coerce
+    rejects so an operator can't accidentally take delivery offline."""
+    response = await client.patch(
+        "/api/v1/admin/config",
+        json={"updates": {"webhook_base_url": ""}},
+    )
+
+    assert response.status_code == 400, response.text
+    assert "webhook_base_url" in response.json()["error"]
+
+
+@pytest.mark.asyncio
+async def test_patch_webhook_enable_flag_with_tolerant_bool(
+    client: httpx.AsyncClient,
+) -> None:
+    """The bool coerce takes JSON `false`, the string `"false"`, and
+    the int `0` interchangeably — operator tooling varies."""
+    for raw in ("false", False, 0):
+        response = await client.patch(
+            "/api/v1/admin/config",
+            json={"updates": {"webhook_enable_cp_boot": raw}},
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["applied"] == {"webhook_enable_cp_boot": False}
