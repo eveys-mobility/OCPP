@@ -215,3 +215,105 @@ async def test_handler_survives_kafka_publish_exception(fake_cp: Any) -> None:
 
     assert isinstance(result, call_result.MeterValues)
     fake_producer.publish.assert_awaited_once()
+
+
+# ----- enum mapping (#135) --------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("ocpp_field", "wire_value", "proto_field", "expected_proto_value"),
+    [
+        # Measurand
+        ("measurand", "Voltage", "measurand", events_pb2.MEASURAND_VOLTAGE),
+        ("measurand", "SoC", "measurand", events_pb2.MEASURAND_SOC),
+        ("measurand", "Current.Import", "measurand", events_pb2.MEASURAND_CURRENT_IMPORT),
+        ("measurand", "Power.Active.Import", "measurand", events_pb2.MEASURAND_POWER_ACTIVE_IMPORT),
+        (
+            "measurand",
+            "Energy.Active.Import.Register",
+            "measurand",
+            events_pb2.MEASURAND_ENERGY_ACTIVE_IMPORT_REGISTER,
+        ),
+        # Phase — including the dashed variants that aren't a mechanical
+        # uppercase/replace transform of the proto enum name.
+        ("phase", "L1", "phase", events_pb2.PHASE_L1),
+        ("phase", "L2", "phase", events_pb2.PHASE_L2),
+        ("phase", "L3", "phase", events_pb2.PHASE_L3),
+        ("phase", "L1-N", "phase", events_pb2.PHASE_L1_N),
+        ("phase", "L2-L3", "phase", events_pb2.PHASE_L2_L3),
+        # Unit — case-sensitive distinction `kW` vs `W` matters.
+        ("unit", "V", "unit", events_pb2.UNIT_V),
+        ("unit", "W", "unit", events_pb2.UNIT_W),
+        ("unit", "kW", "unit", events_pb2.UNIT_KW),
+        ("unit", "Percent", "unit", events_pb2.UNIT_PERCENT),
+        # Context / Format / Location.
+        ("context", "Sample.Periodic", "context", events_pb2.CONTEXT_SAMPLE_PERIODIC),
+        ("context", "Transaction.End", "context", events_pb2.CONTEXT_TRANSACTION_END),
+        ("format", "SignedData", "format", events_pb2.FORMAT_SIGNED_DATA),
+        ("location", "Outlet", "location", events_pb2.LOCATION_OUTLET),
+    ],
+)
+def test_to_proto_maps_ocpp_wire_string_to_enum(
+    ocpp_field: str,
+    wire_value: str,
+    proto_field: str,
+    expected_proto_value: int,
+) -> None:
+    """OCPP 1.6 §6.21 wire strings must round-trip into proto enum values
+    (not the literal `*_UNSPECIFIED` they were stored as before #135)."""
+    raw: dict[str, Any] = {"value": "1.0", ocpp_field: wire_value}
+    sv = meter_values._to_proto_sampled_value(raw)
+    assert getattr(sv, proto_field) == expected_proto_value
+
+
+def test_to_proto_unknown_measurand_falls_back_to_unspecified() -> None:
+    """Vendor-extension measurand strings keep the value but land on
+    `MEASURAND_UNSPECIFIED` — no crash, no data loss."""
+    sv = meter_values._to_proto_sampled_value(
+        {"value": "42", "measurand": "Vendor.Custom.Reading", "unit": "V"}
+    )
+    assert sv.value == "42"
+    assert sv.measurand == events_pb2.MEASURAND_UNSPECIFIED
+    assert sv.unit == events_pb2.UNIT_V
+
+
+def test_to_proto_absent_measurand_defaults_to_energy_active_import_register() -> None:
+    """OCPP 1.6 §6.21.4: an absent measurand means
+    `Energy.Active.Import.Register`. Without this default, consumers
+    filtering by that measurand would silently miss bare-energy
+    samples (the most common shape chargers emit)."""
+    sv = meter_values._to_proto_sampled_value({"value": "1234", "unit": "Wh"})
+    assert sv.measurand == events_pb2.MEASURAND_ENERGY_ACTIVE_IMPORT_REGISTER
+
+
+@pytest.mark.asyncio
+async def test_published_envelope_carries_proto_enum_values(fake_cp: Any) -> None:
+    """End-to-end inside the handler: a charger sample with measurand /
+    phase / unit lands on Kafka with the proto enum *values* set, not
+    `_UNSPECIFIED`. This is the assertion that would have caught #135
+    on the unit tier — the originally-shipped handler passed every
+    other test in this file because none of them looked at enum fields."""
+    fake_producer = AsyncMock()
+    fake_cp.event_producer = fake_producer
+
+    await meter_values.handle(
+        fake_cp,
+        connector_id=1,
+        transaction_id=99,
+        meter_value=[
+            {
+                "timestamp": "2026-04-30T00:00:00+00:00",
+                "sampled_value": [
+                    {"value": "230.4", "measurand": "Voltage", "unit": "V", "phase": "L1"},
+                ],
+            }
+        ],
+    )
+
+    envelope = events_pb2.EventEnvelope()
+    envelope.ParseFromString(fake_producer.publish.await_args.kwargs["value"])
+    [sv] = envelope.cp_meter.sampled_values
+    assert sv.value == "230.4"
+    assert sv.measurand == events_pb2.MEASURAND_VOLTAGE
+    assert sv.phase == events_pb2.PHASE_L1
+    assert sv.unit == events_pb2.UNIT_V
