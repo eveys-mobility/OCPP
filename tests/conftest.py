@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Iterator
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -12,7 +13,55 @@ from eveys_ocpp.settings import Settings
 
 
 @pytest.fixture(autouse=True)
-def _disable_metrics_server(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+def _strip_eveys_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Make every unit test hermetic against the developer's local `.env`.
+
+    `Settings()` reads `EVEYS_OCPP_*` from two places: the process
+    env, and the `.env` file at the repo root (via pydantic-settings).
+    A test that asserts a setting's *default* value will silently
+    pass or fail depending on what the developer has configured. CI
+    runners have no `.env` and are accidentally hermetic; local
+    machines aren't. The flake fixed in #155 was the latest example
+    (`EVEYS_OCPP_BACKEND_AUTHORIZE_FALLBACK=accept_offline` in the
+    dev `.env` flipped the test's expected status from Invalid to
+    Accepted).
+
+    Strategy — block both leak paths:
+
+    1. `monkeypatch.delenv` every `EVEYS_OCPP_*` from the process env
+       so a developer who exported one in their shell can't poison
+       a test.
+    2. `monkeypatch.setitem` the `Settings.model_config["env_file"]`
+       to `None` so pydantic-settings doesn't read `.env` from disk
+       during this test. Production env loading
+       (Settings.model_config.env_file = ".env") is unchanged outside
+       the patch's scope — `monkeypatch` reverts it on test teardown.
+
+    Tests that need a specific value use `monkeypatch.setenv` /
+    `settings_factory` and those still take effect (process-env
+    overrides win over the empty-default after this fixture has run).
+
+    Out of scope: e2e and compose-smoke tiers — those legitimately
+    need real env (DSNs, ports, tokens). This fixture lives in
+    `tests/conftest.py` and applies to anything that imports it; the
+    e2e and compose-smoke dirs have their own conftests and don't
+    inherit autouse fixtures from a parent that they don't import.
+    """
+    for key in list(os.environ):
+        if key.startswith("EVEYS_OCPP_"):
+            monkeypatch.delenv(key, raising=False)
+    # Block .env file load by pointing pydantic-settings at nothing.
+    # `Settings.model_config` is a dict on the class; monkeypatch.setitem
+    # reverts it cleanly on teardown.
+    monkeypatch.setitem(Settings.model_config, "env_file", None)
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _disable_metrics_server(
+    _strip_eveys_env: None,  # autouse-ordering: env strip MUST run first
+    monkeypatch: pytest.MonkeyPatch,
+) -> Iterator[None]:
     """Force the Prometheus scrape server off across the unit suite.
 
     Boots are short-lived in tests and `prometheus_client.start_http_server`
@@ -21,6 +70,9 @@ def _disable_metrics_server(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     would race on the bind. The `metrics_enabled=False` path skips the
     bind cleanly; counters/histograms still increment in-process so
     every per-emitter assertion still works.
+
+    Depends on `_strip_eveys_env` so its `monkeypatch.setenv` runs
+    *after* the env strip — otherwise the strip would wipe this knob.
 
     Tests that specifically exercise `MetricsServer` (e.g.
     `tests/unit/metrics/test_server.py`) override this on a fixture-by-
