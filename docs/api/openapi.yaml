@@ -1201,6 +1201,14 @@ paths:
           - type: string
           - type: 'null'
           title: Cp Id Prefix
+      - in: query
+        name: cp_id_contains
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Cp Id Contains
       responses:
         '200':
           content:

@@ -174,6 +174,7 @@ async def list_charge_points_route(
     created_after: str | None = Query(default=None),
     created_before: str | None = Query(default=None),
     cp_id_prefix: str | None = Query(default=None),
+    cp_id_contains: str | None = Query(default=None),
 ) -> dict[str, Any]:
     settings = request.app.state.settings
     reject_mixed_pagination(cursor=cursor, page=page)
@@ -198,6 +199,7 @@ async def list_charge_points_route(
         "created_after": _parse_iso8601_or_400(created_after, field_name="created_after"),
         "created_before": _parse_iso8601_or_400(created_before, field_name="created_before"),
         "cp_id_prefix": cp_id_prefix,
+        "cp_id_contains": cp_id_contains,
     }
 
     # Two pagination paths, never both.

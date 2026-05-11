@@ -910,6 +910,7 @@ def _charge_points_filter_conditions(
     created_after: datetime | None = None,
     created_before: datetime | None = None,
     cp_id_prefix: str | None = None,
+    cp_id_contains: str | None = None,
 ) -> list[Any]:
     """Shared WHERE clauses for `list_charge_points` and
     `count_charge_points`. Excludes the cursor/offset boundary."""
@@ -946,6 +947,12 @@ def _charge_points_filter_conditions(
         # is treated as a literal, not a wildcard.
         safe = cp_id_prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         conditions.append(ChargePoint.cp_id.like(f"{safe}%", escape="\\"))
+    if cp_id_contains:
+        # Free-text substring match for the operator search box. ILIKE
+        # so a user typing "617B" matches "cp_617b…" without caring
+        # about case. Same `%` / `_` escaping as `cp_id_prefix`.
+        safe = cp_id_contains.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        conditions.append(ChargePoint.cp_id.ilike(f"%{safe}%", escape="\\"))
     return conditions
 
 
@@ -968,6 +975,7 @@ async def list_charge_points(
     created_after: datetime | None = None,
     created_before: datetime | None = None,
     cp_id_prefix: str | None = None,
+    cp_id_contains: str | None = None,
     offset: int | None = None,
 ) -> list[dict[str, Any]]:
     """List chargers, ordered by surrogate `id`.
@@ -1005,6 +1013,7 @@ async def list_charge_points(
         created_after=created_after,
         created_before=created_before,
         cp_id_prefix=cp_id_prefix,
+        cp_id_contains=cp_id_contains,
     ):
         stmt = stmt.where(cond)
     if offset is not None:
@@ -1034,6 +1043,7 @@ async def count_charge_points(
     created_after: datetime | None = None,
     created_before: datetime | None = None,
     cp_id_prefix: str | None = None,
+    cp_id_contains: str | None = None,
 ) -> int:
     """`SELECT COUNT(*)` over the same filter chain as
     `list_charge_points`. Used by the offset-pagination path to
@@ -1054,6 +1064,7 @@ async def count_charge_points(
         created_after=created_after,
         created_before=created_before,
         cp_id_prefix=cp_id_prefix,
+        cp_id_contains=cp_id_contains,
     ):
         stmt = stmt.where(cond)
     result = await session.execute(stmt)
