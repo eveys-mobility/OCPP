@@ -57,6 +57,7 @@ Generate consumer bindings from the proto file in your language. The `WhichOneof
 | `cp.csr_submitted` | `CpCsrSubmitted` | `SignCertificate` arrived | sparse; cert-rotation cycles | (Kafka only; operator queue) |
 | `tx.started` | `TxStarted` | `StartTransaction` persisted | one per session start | `EVEYS_OCPP_WEBHOOK_URL_TX_STARTED` |
 | `tx.stopped` | `TxStopped` | `StopTransaction` persisted | one per session end | `EVEYS_OCPP_WEBHOOK_URL_TX_STOPPED` |
+| `cp.credential_rotated` | `CpCredentialRotated` | operator changed a charger credential (TC_073) | sparse; audit-grade | (Kafka only; SIEM pipeline) |
 
 Topic names are configurable; the table shows defaults. Rename only when your platform's naming convention demands it — every consumer detaches.
 
@@ -184,6 +185,17 @@ message CpDiagnosticsStatusChanged { string status = 1; }
 ```
 
 Status is the charger-reported state-machine string — `Downloading`, `Installed`, `UploadFailed`, etc. Kept as a string for forward-compat with vendor extensions.
+
+### `CpCredentialRotated` — operator rotated a charger's Basic Auth (TC_073)
+
+```protobuf
+message CpCredentialRotated {
+  string action = 1;   // "set" or "removed"
+  string actor  = 2;   // opaque operator id; may be empty
+}
+```
+
+Emitted by `PUT` / `DELETE /api/v1/charge-points/{cp_id}/credentials`. Audit-grade; the password itself is never carried.
 
 ### `CpCsrSubmitted` — charger asked us to sign a CSR
 

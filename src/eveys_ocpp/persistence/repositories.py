@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import and_, delete, or_, select, update
+from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -1291,3 +1291,46 @@ async def get_credential_hash(session: AsyncSession, *, cp_id: str) -> str | Non
     result = await session.execute(stmt)
     row = result.scalar_one_or_none()
     return str(row) if row is not None else None
+
+
+async def upsert_charge_point_credential(
+    session: AsyncSession,
+    *,
+    cp_id: str,
+    password_hash: str,
+) -> bool:
+    """Upsert the bcrypt hash for a charger (TC_073). Returns True when
+    the charger row exists and the credential is now in place;
+    False when the `cp_id` is unknown (no `charge_points` row to FK
+    against — the REST layer surfaces this as 404).
+
+    The caller bcrypts the plaintext at the boundary so the plaintext
+    never reaches a SQL statement or a log line.
+    """
+    cp_pk = await get_charge_point_pk(session, cp_id=cp_id)
+    if cp_pk is None:
+        return False
+    stmt = (
+        pg_insert(ChargePointCredential)
+        .values(charge_point_id=cp_pk, password_hash=password_hash)
+        .on_conflict_do_update(
+            index_elements=[ChargePointCredential.charge_point_id],
+            set_={"password_hash": password_hash, "updated_at": func.now()},
+        )
+    )
+    await session.execute(stmt)
+    return True
+
+
+async def delete_charge_point_credential(session: AsyncSession, *, cp_id: str) -> bool:
+    """Drop a charger's credential row. Returns True if a row was
+    deleted, False if there was none (the REST layer treats both
+    as success — idempotent unprovisioning).
+    """
+    cp_pk = await get_charge_point_pk(session, cp_id=cp_id)
+    if cp_pk is None:
+        return False
+    stmt = delete(ChargePointCredential).where(ChargePointCredential.charge_point_id == cp_pk)
+    result = await session.execute(stmt)
+    rowcount = getattr(result, "rowcount", 0)
+    return bool(rowcount and rowcount > 0)

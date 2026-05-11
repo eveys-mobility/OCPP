@@ -532,6 +532,19 @@ Both action endpoints return `404` with `error_code=UNKNOWN_CP_ID` when the row 
 
 ---
 
+## Charger credential rotation (TC_073)
+
+Operator surface for managing per-charger Basic Auth credentials. The plaintext password is supplied in the request body; the gateway bcrypts it server-side. The plaintext never reaches a SQL statement, log line, or audit event.
+
+| Endpoint | Body | Returns |
+|---|---|---|
+| `PUT /api/v1/charge-points/{cp_id}/credentials` | `{ "password": "...", "actor": "ops@example.com" }` (`actor` optional). Password must be 12–72 bytes — the bcrypt input limit. | `{ "cp_id": "...", "status": "provisioned" }`. Idempotent. `404 UNKNOWN_CP_ID` when the charger doesn't exist. |
+| `DELETE /api/v1/charge-points/{cp_id}/credentials` (optional query `?actor=...`) | empty | `{ "cp_id": "...", "status": "unprovisioned" }`. Idempotent — calling on a charger with no credential row still returns 200. `404 UNKNOWN_CP_ID` when the charger itself doesn't exist. |
+
+Every successful change emits a `cp.credential_rotated` Kafka envelope (`action ∈ set|removed`, plus the operator-supplied `actor`). The password is never carried.
+
+---
+
 ## `GET /api/v1/health`
 
 Probe.

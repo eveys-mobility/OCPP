@@ -17,6 +17,7 @@
 //   cp.firmware_status    → CpFirmwareStatusChanged   (FirmwareStatusNotification arrived)
 //   cp.diagnostics_status → CpDiagnosticsStatusChanged (DiagnosticsStatusNotification arrived)
 //   cp.csr_submitted      → CpCsrSubmitted            (SignCertificate arrived — Security Whitepaper §4.13)
+//   cp.credential_rotated → CpCredentialRotated       (operator rotated/unprovisioned a charger's Basic Auth — TC_073)
 //   tx.started            → TxStarted                 (StartTransaction arrived)
 //   tx.stopped            → TxStopped                 (StopTransaction arrived + persisted)
 //
@@ -71,6 +72,7 @@ message EventEnvelope {
     CpFirmwareStatusChanged cp_firmware_status_changed = 108;
     CpDiagnosticsStatusChanged cp_diagnostics_status_changed = 109;
     CpCsrSubmitted cp_csr_submitted = 110;
+    CpCredentialRotated cp_credential_rotated = 111;
   }
 }
 
@@ -400,4 +402,29 @@ message CpCsrSubmitted {
   // Surrogate id of the row we just inserted. Operator UI uses this
   // to address the pending request.
   int64 pending_id = 2;
+}
+
+// -----------------------------------------------------------------------------
+// cp.credential_rotated — operator changed a charger's Basic Auth credential (TC_073)
+// -----------------------------------------------------------------------------
+//
+// Audit-grade. Emitted when an operator hits
+// `PUT /api/v1/charge-points/{cp_id}/credentials` (rotation) or
+// `DELETE /api/v1/charge-points/{cp_id}/credentials` (unprovision).
+// SIEM consumers tail this alongside `cp.security_event` for the
+// full charger-credential audit story.
+//
+// The password itself is NEVER published. The event carries the
+// kind of change (`set` / `removed`) and an opaque actor identifier
+// the operator supplied (or empty if anonymous).
+
+message CpCredentialRotated {
+  // What changed. `set` = provisioned or rotated; `removed` =
+  // credential row deleted.
+  string action = 1;
+  // Opaque actor identifier. Whatever the auth layer in front of
+  // the gateway's REST surface authenticated the caller as
+  // (operator email, service account name, etc.); empty if the
+  // operator did not supply one.
+  string actor = 2;
 }
