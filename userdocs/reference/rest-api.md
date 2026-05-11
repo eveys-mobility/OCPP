@@ -104,7 +104,17 @@ Query params:
 | `page_size` | int (>=1) | `rest_default_page_size` | Page mode size. Capped by `rest_max_page_size`. |
 | `limit` | int | `rest_default_page_size` | Cursor mode size. Capped by `rest_max_page_size`. |
 | `vendor` | string | — | Filter by `BootNotification`-reported vendor. |
+| `model` | string | — | Filter by model. |
+| `firmware_version` | string | — | Filter by firmware version (exact). |
 | `online` | bool | — | Filter by registry presence (`true` or `false`). |
+| `last_status` | string | — | Filter by latest connector status (e.g. `Charging`). |
+| `last_firmware_status` | string | — | Filter by latest firmware-update status. |
+| `last_diagnostics_status` | string | — | Filter by latest diagnostics-upload status. |
+| `last_log_status` | string | — | Filter by latest security-log upload status. |
+| `last_boot_after` / `last_boot_before` | ISO-8601 | — | Window on `last_boot_at`. |
+| `last_heartbeat_after` / `last_heartbeat_before` | ISO-8601 | — | "Hasn't checked in since X". |
+| `created_after` / `created_before` | ISO-8601 | — | When the charger was first seen. |
+| `cp_id_prefix` | string | — | LIKE-style prefix (`CP_ACME_*`). `%` and `_` are escaped. |
 
 Response:
 
@@ -159,19 +169,24 @@ Errors: `404 UNKNOWN_CP_ID`.
 
 ### `GET /transactions` — global transaction list
 
-Cursor-paginated. Query params:
+Cursor- or page-paginated. Query params:
 
 | Param | Type | Notes |
 |---|---|---|
-| `cursor`, `limit` | | Standard pagination. |
+| `cursor` / `limit` | | Cursor pagination. |
+| `page` / `page_size` | int | Offset pagination (1-indexed). |
 | `cp_id` | string | Narrow to one charger. |
 | `id_tag` | string | Narrow to one user identifier. |
-| `status` | string | `running` / `completed`. |
-| `started_after` / `started_before` | ISO-8601 | Time window. |
+| `active` | bool | `true` = currently charging; `false` = stopped. |
+| `from` / `to` | ISO-8601 | Window on `started_reported_at`. |
+| `connector_id` | int | Specific connector. |
+| `stop_reason` | string | `Local`, `Remote`, `EmergencyStop`, `EVDisconnected`, etc. |
+| `stopped_after` / `stopped_before` | ISO-8601 | Window on `stopped_reported_at` (end time). |
+| `min_consumed_wh` / `max_consumed_wh` | int (≥0) | Energy band; open transactions excluded by NULL semantics. |
 
 ### `GET /charge-points/{cp_id}/transactions` — per-charger list
 
-Same query params; `cp_id` comes from the path instead of a filter.
+Same query params (minus `cp_id`); `cp_id` comes from the path.
 
 ### `GET /transactions/{transaction_id}` — single transaction with telemetry
 

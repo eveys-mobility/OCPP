@@ -107,12 +107,28 @@ async def list_transactions_route(
     open: bool | None = Query(default=None),
     from_: str | None = Query(default=None, alias="from"),
     to: str | None = Query(default=None),
+    connector_id: int | None = Query(default=None),
+    stop_reason: str | None = Query(default=None),
+    stopped_after: str | None = Query(default=None),
+    stopped_before: str | None = Query(default=None),
+    min_consumed_wh: int | None = Query(default=None, ge=0),
+    max_consumed_wh: int | None = Query(default=None, ge=0),
 ) -> dict[str, Any]:
     settings = request.app.state.settings
     reject_mixed_pagination(cursor=cursor, page=page)
 
-    started_from = _parse_iso8601(from_, field_name="from")
-    started_to = _parse_iso8601(to, field_name="to")
+    filter_kwargs: dict[str, Any] = {
+        "id_tag": id_tag,
+        "open_only": open,
+        "started_from": _parse_iso8601(from_, field_name="from"),
+        "started_to": _parse_iso8601(to, field_name="to"),
+        "connector_id": connector_id,
+        "stop_reason": stop_reason,
+        "stopped_from": _parse_iso8601(stopped_after, field_name="stopped_after"),
+        "stopped_to": _parse_iso8601(stopped_before, field_name="stopped_before"),
+        "min_consumed_wh": min_consumed_wh,
+        "max_consumed_wh": max_consumed_wh,
+    }
 
     if page is not None:
         effective_size = clamp_limit(
@@ -127,19 +143,13 @@ async def list_transactions_route(
                 cp_id=cp_id,
                 after_id=None,
                 limit=effective_size,
-                id_tag=id_tag,
-                open_only=open,
-                started_from=started_from,
-                started_to=started_to,
                 offset=offset,
+                **filter_kwargs,
             )
             total = await count_transactions_by_cp(
                 session,
                 cp_id=cp_id,
-                id_tag=id_tag,
-                open_only=open,
-                started_from=started_from,
-                started_to=started_to,
+                **filter_kwargs,
             )
         if rows is None or total is None:
             raise ApiError(
@@ -177,10 +187,7 @@ async def list_transactions_route(
             cp_id=cp_id,
             after_id=after_id,
             limit=effective_size,
-            id_tag=id_tag,
-            open_only=open,
-            started_from=started_from,
-            started_to=started_to,
+            **filter_kwargs,
         )
 
     if rows is None:
@@ -225,12 +232,29 @@ async def list_transactions_global_route(
     active: bool | None = Query(default=None),
     from_: str | None = Query(default=None, alias="from"),
     to: str | None = Query(default=None),
+    connector_id: int | None = Query(default=None),
+    stop_reason: str | None = Query(default=None),
+    stopped_after: str | None = Query(default=None),
+    stopped_before: str | None = Query(default=None),
+    min_consumed_wh: int | None = Query(default=None, ge=0),
+    max_consumed_wh: int | None = Query(default=None, ge=0),
 ) -> dict[str, Any]:
     settings = request.app.state.settings
     reject_mixed_pagination(cursor=cursor, page=page)
 
-    started_from = _parse_iso8601(from_, field_name="from")
-    started_to = _parse_iso8601(to, field_name="to")
+    filter_kwargs: dict[str, Any] = {
+        "cp_id": cp_id,
+        "id_tag": id_tag,
+        "active": active,
+        "started_from": _parse_iso8601(from_, field_name="from"),
+        "started_to": _parse_iso8601(to, field_name="to"),
+        "connector_id": connector_id,
+        "stop_reason": stop_reason,
+        "stopped_from": _parse_iso8601(stopped_after, field_name="stopped_after"),
+        "stopped_to": _parse_iso8601(stopped_before, field_name="stopped_before"),
+        "min_consumed_wh": min_consumed_wh,
+        "max_consumed_wh": max_consumed_wh,
+    }
 
     if page is not None:
         effective_size = clamp_limit(
@@ -244,21 +268,10 @@ async def list_transactions_global_route(
                 session,
                 after_id=None,
                 limit=effective_size,
-                cp_id=cp_id,
-                id_tag=id_tag,
-                active=active,
-                started_from=started_from,
-                started_to=started_to,
                 offset=offset,
+                **filter_kwargs,
             )
-            total = await count_transactions(
-                session,
-                cp_id=cp_id,
-                id_tag=id_tag,
-                active=active,
-                started_from=started_from,
-                started_to=started_to,
-            )
+            total = await count_transactions(session, **filter_kwargs)
         return {
             "transactions": [_transaction_to_response(tx) for tx in rows],
             "pagination": pagination_block(page=page, page_size=effective_size, total=total),
@@ -288,11 +301,7 @@ async def list_transactions_global_route(
             session,
             after_id=after_id,
             limit=effective_size,
-            cp_id=cp_id,
-            id_tag=id_tag,
-            active=active,
-            started_from=started_from,
-            started_to=started_to,
+            **filter_kwargs,
         )
 
     has_more = len(rows) > effective_size
