@@ -77,6 +77,7 @@ async def test_charge_points_filters_forwarded_to_repo(
         "&created_after=2026-01-01T00:00:00Z"
         "&created_before=2026-12-31T00:00:00Z"
         "&cp_id_prefix=CP_ACME_"
+        "&cp_id_contains=617b"
     )
     assert response.status_code == 200, response.json()
 
@@ -94,6 +95,7 @@ async def test_charge_points_filters_forwarded_to_repo(
     assert kwargs["created_after"] == datetime(2026, 1, 1, tzinfo=UTC)
     assert kwargs["created_before"] == datetime(2026, 12, 31, tzinfo=UTC)
     assert kwargs["cp_id_prefix"] == "CP_ACME_"
+    assert kwargs["cp_id_contains"] == "617b"
 
 
 @pytest.mark.asyncio
