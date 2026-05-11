@@ -29,7 +29,7 @@ from typing import Any
 
 from fastapi import APIRouter, Query, Request
 
-from eveys_ocpp.api._errors import ERR_UNKNOWN_CP_ID, ApiError
+from eveys_ocpp.api._errors import ERR_BAD_REQUEST, ERR_UNKNOWN_CP_ID, ApiError
 from eveys_ocpp.api._pagination import (
     clamp_limit,
     decode_cursor,
@@ -135,6 +135,19 @@ async def _enrich_with_connectors(
     return cp_dicts
 
 
+def _parse_iso8601_or_400(value: str | None, *, field_name: str) -> datetime | None:
+    if value is None:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise ApiError(
+            status_code=400,
+            error_code=ERR_BAD_REQUEST,
+            message=f"invalid {field_name}: not ISO-8601",
+        ) from exc
+
+
 @router.get(
     "/charge-points",
     summary="List charge points (cursor- or page-paginated)",
@@ -148,9 +161,44 @@ async def list_charge_points_route(
     page_size: int | None = Query(default=None, ge=1, le=10_000),
     online: bool | None = Query(default=None),
     vendor: str | None = Query(default=None),
+    model: str | None = Query(default=None),
+    firmware_version: str | None = Query(default=None),
+    last_status: str | None = Query(default=None),
+    last_firmware_status: str | None = Query(default=None),
+    last_diagnostics_status: str | None = Query(default=None),
+    last_log_status: str | None = Query(default=None),
+    last_boot_after: str | None = Query(default=None),
+    last_boot_before: str | None = Query(default=None),
+    last_heartbeat_after: str | None = Query(default=None),
+    last_heartbeat_before: str | None = Query(default=None),
+    created_after: str | None = Query(default=None),
+    created_before: str | None = Query(default=None),
+    cp_id_prefix: str | None = Query(default=None),
 ) -> dict[str, Any]:
     settings = request.app.state.settings
     reject_mixed_pagination(cursor=cursor, page=page)
+
+    # Parse every time-window param once. Each may 400 individually.
+    filter_kwargs: dict[str, Any] = {
+        "vendor": vendor,
+        "model": model,
+        "firmware_version": firmware_version,
+        "last_status": last_status,
+        "last_firmware_status": last_firmware_status,
+        "last_diagnostics_status": last_diagnostics_status,
+        "last_log_status": last_log_status,
+        "last_boot_after": _parse_iso8601_or_400(last_boot_after, field_name="last_boot_after"),
+        "last_boot_before": _parse_iso8601_or_400(last_boot_before, field_name="last_boot_before"),
+        "last_heartbeat_after": _parse_iso8601_or_400(
+            last_heartbeat_after, field_name="last_heartbeat_after"
+        ),
+        "last_heartbeat_before": _parse_iso8601_or_400(
+            last_heartbeat_before, field_name="last_heartbeat_before"
+        ),
+        "created_after": _parse_iso8601_or_400(created_after, field_name="created_after"),
+        "created_before": _parse_iso8601_or_400(created_before, field_name="created_before"),
+        "cp_id_prefix": cp_id_prefix,
+    }
 
     # Two pagination paths, never both.
     if page is not None:
@@ -165,10 +213,10 @@ async def list_charge_points_route(
                 session,
                 after_id=None,
                 limit=effective_size,
-                vendor=vendor,
                 offset=offset,
+                **filter_kwargs,
             )
-            total = await count_charge_points(session, vendor=vendor)
+            total = await count_charge_points(session, **filter_kwargs)
         enriched = [await _enrich_with_presence(request, cp) for cp in rows]
         if online is not None:
             enriched = [cp for cp in enriched if cp["online"] == online]
@@ -202,7 +250,7 @@ async def list_charge_points_route(
             session,
             after_id=after_id,
             limit=effective_size,
-            vendor=vendor,
+            **filter_kwargs,
         )
 
     # Detect next page: we asked for limit+1; trim the extra row and

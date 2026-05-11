@@ -28,8 +28,19 @@ List chargers known to the gateway. Cursor-paginated.
 |---|---|---|
 | `cursor` | string | Opaque cursor from a prior response. Omit on first page. |
 | `limit` | int | 1–500. Default 100. |
+| `page` / `page_size` | int | Offset paging (1-indexed) as an alternative to `cursor`. |
 | `online` | bool | Filter by registry presence. Omit for "all". |
 | `vendor` | string | Filter (exact match). |
+| `model` | string | Filter (exact match). |
+| `firmware_version` | string | Filter (exact match). |
+| `last_status` | string | Latest connector status (e.g. `Charging`). |
+| `last_firmware_status` | string | Latest firmware-update state. |
+| `last_diagnostics_status` | string | Latest diagnostics-upload state. |
+| `last_log_status` | string | Latest security-log upload state. |
+| `last_boot_after` / `last_boot_before` | ISO-8601 | Window on `last_boot_at`. |
+| `last_heartbeat_after` / `last_heartbeat_before` | ISO-8601 | "Hasn't checked in since X". |
+| `created_after` / `created_before` | ISO-8601 | When the charger was first seen. |
+| `cp_id_prefix` | string | LIKE-style prefix (`CP_ACME_*`). `%` and `_` escaped to literals. |
 
 **Response**:
 
@@ -266,7 +277,12 @@ Transactions for a charger. **Postgres-backed**.
 | `to` | ISO-8601 | Filter by `started_received_at < to`. |
 | `id_tag` | string | Exact-match. |
 | `open` | bool | `true` → only sessions where `meter_stop_wh IS NULL`. |
-| `cursor` / `limit` | | Standard cursor paging. |
+| `connector_id` | int | Specific connector on this charger. |
+| `stop_reason` | string | Exact match (`Local`, `Remote`, `EmergencyStop`, etc.). |
+| `stopped_after` / `stopped_before` | ISO-8601 | Window on `stopped_reported_at`. |
+| `min_consumed_wh` / `max_consumed_wh` | int (≥ 0) | Energy band. Open transactions are excluded by NULL semantics. |
+| `cursor` / `limit` | | Cursor paging. |
+| `page` / `page_size` | int | Offset paging (1-indexed). |
 
 **Response**:
 
@@ -309,11 +325,16 @@ caller doesn't need a second lookup.
 |---|---|---|
 | `cursor` | string | Opaque cursor from a prior response. Omit on first page. |
 | `limit` | int | 1–10000. Default from `Settings.rest_default_page_size`. |
+| `page` / `page_size` | int | Offset paging (1-indexed) as an alternative to `cursor`. |
 | `cp_id` | string | Exact match. Omit for "all chargers". |
 | `id_tag` | string | Exact match. |
 | `active` | bool | `true` keeps txns with no stop event yet; `false` keeps only stopped txns; omitted returns both. |
 | `from` | ISO 8601 | Lower bound on `started_reported_at`. |
 | `to` | ISO 8601 | Upper bound on `started_reported_at`. |
+| `connector_id` | int | Specific connector. |
+| `stop_reason` | string | Exact match (`Local`, `Remote`, `EmergencyStop`, etc.). |
+| `stopped_after` / `stopped_before` | ISO-8601 | Window on `stopped_reported_at`. |
+| `min_consumed_wh` / `max_consumed_wh` | int (≥ 0) | Energy band. Open transactions are excluded. |
 
 Use this endpoint for "what's charging across the fleet right now?"
 (`active=true`) without N+1 fan-out across the per-cp endpoint.

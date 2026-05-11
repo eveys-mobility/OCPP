@@ -1097,6 +1097,110 @@ paths:
           - type: string
           - type: 'null'
           title: Vendor
+      - in: query
+        name: model
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Model
+      - in: query
+        name: firmware_version
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Firmware Version
+      - in: query
+        name: last_status
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Last Status
+      - in: query
+        name: last_firmware_status
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Last Firmware Status
+      - in: query
+        name: last_diagnostics_status
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Last Diagnostics Status
+      - in: query
+        name: last_log_status
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Last Log Status
+      - in: query
+        name: last_boot_after
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Last Boot After
+      - in: query
+        name: last_boot_before
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Last Boot Before
+      - in: query
+        name: last_heartbeat_after
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Last Heartbeat After
+      - in: query
+        name: last_heartbeat_before
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Last Heartbeat Before
+      - in: query
+        name: created_after
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Created After
+      - in: query
+        name: created_before
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Created Before
+      - in: query
+        name: cp_id_prefix
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Cp Id Prefix
       responses:
         '200':
           content:
@@ -2718,6 +2822,56 @@ paths:
           - type: string
           - type: 'null'
           title: To
+      - in: query
+        name: connector_id
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Connector Id
+      - in: query
+        name: stop_reason
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Stop Reason
+      - in: query
+        name: stopped_after
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Stopped After
+      - in: query
+        name: stopped_before
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Stopped Before
+      - in: query
+        name: min_consumed_wh
+        required: false
+        schema:
+          anyOf:
+          - minimum: 0
+            type: integer
+          - type: 'null'
+          title: Min Consumed Wh
+      - in: query
+        name: max_consumed_wh
+        required: false
+        schema:
+          anyOf:
+          - minimum: 0
+            type: integer
+          - type: 'null'
+          title: Max Consumed Wh
       responses:
         '200':
           content:
@@ -2870,6 +3024,56 @@ paths:
           - type: string
           - type: 'null'
           title: To
+      - in: query
+        name: connector_id
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Connector Id
+      - in: query
+        name: stop_reason
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Stop Reason
+      - in: query
+        name: stopped_after
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Stopped After
+      - in: query
+        name: stopped_before
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Stopped Before
+      - in: query
+        name: min_consumed_wh
+        required: false
+        schema:
+          anyOf:
+          - minimum: 0
+            type: integer
+          - type: 'null'
+          title: Min Consumed Wh
+      - in: query
+        name: max_consumed_wh
+        required: false
+        schema:
+          anyOf:
+          - minimum: 0
+            type: integer
+          - type: 'null'
+          title: Max Consumed Wh
       responses:
         '200':
           content:

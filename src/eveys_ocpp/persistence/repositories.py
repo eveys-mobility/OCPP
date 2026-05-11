@@ -894,12 +894,58 @@ def _charge_point_to_dict(cp: ChargePoint) -> dict[str, Any]:
     }
 
 
-def _charge_points_filter_conditions(*, vendor: str | None) -> list[Any]:
+def _charge_points_filter_conditions(
+    *,
+    vendor: str | None,
+    model: str | None = None,
+    firmware_version: str | None = None,
+    last_status: str | None = None,
+    last_firmware_status: str | None = None,
+    last_diagnostics_status: str | None = None,
+    last_log_status: str | None = None,
+    last_boot_after: datetime | None = None,
+    last_boot_before: datetime | None = None,
+    last_heartbeat_after: datetime | None = None,
+    last_heartbeat_before: datetime | None = None,
+    created_after: datetime | None = None,
+    created_before: datetime | None = None,
+    cp_id_prefix: str | None = None,
+) -> list[Any]:
     """Shared WHERE clauses for `list_charge_points` and
     `count_charge_points`. Excludes the cursor/offset boundary."""
     conditions: list[Any] = []
     if vendor is not None:
         conditions.append(ChargePoint.vendor == vendor)
+    if model is not None:
+        conditions.append(ChargePoint.model == model)
+    if firmware_version is not None:
+        conditions.append(ChargePoint.firmware_version == firmware_version)
+    if last_status is not None:
+        conditions.append(ChargePoint.last_status == last_status)
+    if last_firmware_status is not None:
+        conditions.append(ChargePoint.last_firmware_status == last_firmware_status)
+    if last_diagnostics_status is not None:
+        conditions.append(ChargePoint.last_diagnostics_status == last_diagnostics_status)
+    if last_log_status is not None:
+        conditions.append(ChargePoint.last_log_status == last_log_status)
+    if last_boot_after is not None:
+        conditions.append(ChargePoint.last_boot_at >= last_boot_after)
+    if last_boot_before is not None:
+        conditions.append(ChargePoint.last_boot_at <= last_boot_before)
+    if last_heartbeat_after is not None:
+        conditions.append(ChargePoint.last_heartbeat_at >= last_heartbeat_after)
+    if last_heartbeat_before is not None:
+        conditions.append(ChargePoint.last_heartbeat_at <= last_heartbeat_before)
+    if created_after is not None:
+        conditions.append(ChargePoint.created_at >= created_after)
+    if created_before is not None:
+        conditions.append(ChargePoint.created_at <= created_before)
+    if cp_id_prefix:
+        # Operator search: "all CP_ACME_*". Postgres LIKE; we escape
+        # `%` / `_` inside the user-supplied prefix so a literal `_`
+        # is treated as a literal, not a wildcard.
+        safe = cp_id_prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        conditions.append(ChargePoint.cp_id.like(f"{safe}%", escape="\\"))
     return conditions
 
 
@@ -909,6 +955,19 @@ async def list_charge_points(
     after_id: int | None,
     limit: int,
     vendor: str | None = None,
+    model: str | None = None,
+    firmware_version: str | None = None,
+    last_status: str | None = None,
+    last_firmware_status: str | None = None,
+    last_diagnostics_status: str | None = None,
+    last_log_status: str | None = None,
+    last_boot_after: datetime | None = None,
+    last_boot_before: datetime | None = None,
+    last_heartbeat_after: datetime | None = None,
+    last_heartbeat_before: datetime | None = None,
+    created_after: datetime | None = None,
+    created_before: datetime | None = None,
+    cp_id_prefix: str | None = None,
     offset: int | None = None,
 ) -> list[dict[str, Any]]:
     """List chargers, ordered by surrogate `id`.
@@ -931,7 +990,22 @@ async def list_charge_points(
     or `online=false`.
     """
     stmt = select(ChargePoint).order_by(ChargePoint.id)
-    for cond in _charge_points_filter_conditions(vendor=vendor):
+    for cond in _charge_points_filter_conditions(
+        vendor=vendor,
+        model=model,
+        firmware_version=firmware_version,
+        last_status=last_status,
+        last_firmware_status=last_firmware_status,
+        last_diagnostics_status=last_diagnostics_status,
+        last_log_status=last_log_status,
+        last_boot_after=last_boot_after,
+        last_boot_before=last_boot_before,
+        last_heartbeat_after=last_heartbeat_after,
+        last_heartbeat_before=last_heartbeat_before,
+        created_after=created_after,
+        created_before=created_before,
+        cp_id_prefix=cp_id_prefix,
+    ):
         stmt = stmt.where(cond)
     if offset is not None:
         stmt = stmt.offset(offset).limit(limit)
@@ -947,12 +1021,40 @@ async def count_charge_points(
     session: AsyncSession,
     *,
     vendor: str | None = None,
+    model: str | None = None,
+    firmware_version: str | None = None,
+    last_status: str | None = None,
+    last_firmware_status: str | None = None,
+    last_diagnostics_status: str | None = None,
+    last_log_status: str | None = None,
+    last_boot_after: datetime | None = None,
+    last_boot_before: datetime | None = None,
+    last_heartbeat_after: datetime | None = None,
+    last_heartbeat_before: datetime | None = None,
+    created_after: datetime | None = None,
+    created_before: datetime | None = None,
+    cp_id_prefix: str | None = None,
 ) -> int:
     """`SELECT COUNT(*)` over the same filter chain as
     `list_charge_points`. Used by the offset-pagination path to
     populate `pagination.total`."""
     stmt = select(func.count()).select_from(ChargePoint)
-    for cond in _charge_points_filter_conditions(vendor=vendor):
+    for cond in _charge_points_filter_conditions(
+        vendor=vendor,
+        model=model,
+        firmware_version=firmware_version,
+        last_status=last_status,
+        last_firmware_status=last_firmware_status,
+        last_diagnostics_status=last_diagnostics_status,
+        last_log_status=last_log_status,
+        last_boot_after=last_boot_after,
+        last_boot_before=last_boot_before,
+        last_heartbeat_after=last_heartbeat_after,
+        last_heartbeat_before=last_heartbeat_before,
+        created_after=created_after,
+        created_before=created_before,
+        cp_id_prefix=cp_id_prefix,
+    ):
         stmt = stmt.where(cond)
     result = await session.execute(stmt)
     return int(result.scalar_one() or 0)
@@ -1040,6 +1142,12 @@ def _transactions_by_cp_filter_conditions(
     open_only: bool | None,
     started_from: datetime | None,
     started_to: datetime | None,
+    connector_id: int | None = None,
+    stop_reason: str | None = None,
+    stopped_from: datetime | None = None,
+    stopped_to: datetime | None = None,
+    min_consumed_wh: int | None = None,
+    max_consumed_wh: int | None = None,
 ) -> list[Any]:
     conditions: list[Any] = [Transaction.charge_point_id == cp_pk]
     if id_tag is not None:
@@ -1052,6 +1160,26 @@ def _transactions_by_cp_filter_conditions(
         conditions.append(Transaction.started_reported_at >= started_from)
     if started_to is not None:
         conditions.append(Transaction.started_reported_at <= started_to)
+    if connector_id is not None:
+        conditions.append(Transaction.connector_id == connector_id)
+    if stop_reason is not None:
+        conditions.append(Transaction.stop_reason == stop_reason)
+    if stopped_from is not None:
+        conditions.append(Transaction.stopped_reported_at >= stopped_from)
+    if stopped_to is not None:
+        conditions.append(Transaction.stopped_reported_at <= stopped_to)
+    if min_consumed_wh is not None:
+        # `consumed_wh` is `meter_stop_wh - meter_start_wh`. Open
+        # transactions have no `meter_stop_wh` so the expression is
+        # NULL and the row is excluded — the spec for this filter is
+        # "rows where we know the consumed energy".
+        conditions.append(
+            (Transaction.meter_stop_wh - Transaction.meter_start_wh) >= min_consumed_wh
+        )
+    if max_consumed_wh is not None:
+        conditions.append(
+            (Transaction.meter_stop_wh - Transaction.meter_start_wh) <= max_consumed_wh
+        )
     return conditions
 
 
@@ -1065,6 +1193,12 @@ async def list_transactions_by_cp(
     open_only: bool | None = None,
     started_from: datetime | None = None,
     started_to: datetime | None = None,
+    connector_id: int | None = None,
+    stop_reason: str | None = None,
+    stopped_from: datetime | None = None,
+    stopped_to: datetime | None = None,
+    min_consumed_wh: int | None = None,
+    max_consumed_wh: int | None = None,
     offset: int | None = None,
 ) -> list[dict[str, Any]] | None:
     """Transactions for a charger.
@@ -1094,6 +1228,12 @@ async def list_transactions_by_cp(
         open_only=open_only,
         started_from=started_from,
         started_to=started_to,
+        connector_id=connector_id,
+        stop_reason=stop_reason,
+        stopped_from=stopped_from,
+        stopped_to=stopped_to,
+        min_consumed_wh=min_consumed_wh,
+        max_consumed_wh=max_consumed_wh,
     )
     stmt = select(Transaction).where(and_(*conditions)).order_by(Transaction.id)
     if offset is not None:
@@ -1114,6 +1254,12 @@ async def count_transactions_by_cp(
     open_only: bool | None = None,
     started_from: datetime | None = None,
     started_to: datetime | None = None,
+    connector_id: int | None = None,
+    stop_reason: str | None = None,
+    stopped_from: datetime | None = None,
+    stopped_to: datetime | None = None,
+    min_consumed_wh: int | None = None,
+    max_consumed_wh: int | None = None,
 ) -> int | None:
     """`SELECT COUNT(*)` matching `list_transactions_by_cp`'s filters.
     Returns `None` for unknown `cp_id` (same semantics as the list)."""
@@ -1126,6 +1272,12 @@ async def count_transactions_by_cp(
         open_only=open_only,
         started_from=started_from,
         started_to=started_to,
+        connector_id=connector_id,
+        stop_reason=stop_reason,
+        stopped_from=stopped_from,
+        stopped_to=stopped_to,
+        min_consumed_wh=min_consumed_wh,
+        max_consumed_wh=max_consumed_wh,
     )
     stmt = select(func.count()).select_from(Transaction).where(and_(*conditions))
     result = await session.execute(stmt)
@@ -1139,6 +1291,12 @@ def _transactions_filter_conditions(
     active: bool | None,
     started_from: datetime | None,
     started_to: datetime | None,
+    connector_id: int | None = None,
+    stop_reason: str | None = None,
+    stopped_from: datetime | None = None,
+    stopped_to: datetime | None = None,
+    min_consumed_wh: int | None = None,
+    max_consumed_wh: int | None = None,
 ) -> list[Any]:
     conditions: list[Any] = []
     if cp_id is not None:
@@ -1153,6 +1311,22 @@ def _transactions_filter_conditions(
         conditions.append(Transaction.started_reported_at >= started_from)
     if started_to is not None:
         conditions.append(Transaction.started_reported_at <= started_to)
+    if connector_id is not None:
+        conditions.append(Transaction.connector_id == connector_id)
+    if stop_reason is not None:
+        conditions.append(Transaction.stop_reason == stop_reason)
+    if stopped_from is not None:
+        conditions.append(Transaction.stopped_reported_at >= stopped_from)
+    if stopped_to is not None:
+        conditions.append(Transaction.stopped_reported_at <= stopped_to)
+    if min_consumed_wh is not None:
+        conditions.append(
+            (Transaction.meter_stop_wh - Transaction.meter_start_wh) >= min_consumed_wh
+        )
+    if max_consumed_wh is not None:
+        conditions.append(
+            (Transaction.meter_stop_wh - Transaction.meter_start_wh) <= max_consumed_wh
+        )
     return conditions
 
 
@@ -1166,6 +1340,12 @@ async def list_transactions(
     active: bool | None = None,
     started_from: datetime | None = None,
     started_to: datetime | None = None,
+    connector_id: int | None = None,
+    stop_reason: str | None = None,
+    stopped_from: datetime | None = None,
+    stopped_to: datetime | None = None,
+    min_consumed_wh: int | None = None,
+    max_consumed_wh: int | None = None,
     offset: int | None = None,
 ) -> list[dict[str, Any]]:
     """Global transactions list.
@@ -1195,6 +1375,12 @@ async def list_transactions(
         active=active,
         started_from=started_from,
         started_to=started_to,
+        connector_id=connector_id,
+        stop_reason=stop_reason,
+        stopped_from=stopped_from,
+        stopped_to=stopped_to,
+        min_consumed_wh=min_consumed_wh,
+        max_consumed_wh=max_consumed_wh,
     )
     if conditions:
         stmt = stmt.where(and_(*conditions))
@@ -1223,6 +1409,12 @@ async def count_transactions(
     active: bool | None = None,
     started_from: datetime | None = None,
     started_to: datetime | None = None,
+    connector_id: int | None = None,
+    stop_reason: str | None = None,
+    stopped_from: datetime | None = None,
+    stopped_to: datetime | None = None,
+    min_consumed_wh: int | None = None,
+    max_consumed_wh: int | None = None,
 ) -> int:
     """`SELECT COUNT(*)` matching `list_transactions`'s filters."""
     stmt = (
@@ -1236,6 +1428,12 @@ async def count_transactions(
         active=active,
         started_from=started_from,
         started_to=started_to,
+        connector_id=connector_id,
+        stop_reason=stop_reason,
+        stopped_from=stopped_from,
+        stopped_to=stopped_to,
+        min_consumed_wh=min_consumed_wh,
+        max_consumed_wh=max_consumed_wh,
     )
     if conditions:
         stmt = stmt.where(and_(*conditions))
