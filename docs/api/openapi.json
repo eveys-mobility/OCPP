@@ -1,6 +1,85 @@
 {
   "components": {
     "schemas": {
+      "ActiveSession": {
+        "description": "One un-stopped charging session for the charger.\n\nPostgres `transactions` row (started, never stopped) joined with a\nClickHouse meter readout so the operator can see live progress\nwithout a second round-trip. `energy_consumed_wh` is `latest meter\non the session's connector - meter_start_wh`; null when no\nMeterValues have arrived since the StartTransaction (charger\nbooting, network gap). `soc_pct` and `power_w` are null when the\ncharger never reports those measurands.",
+        "properties": {
+          "connector_id": {
+            "title": "Connector Id",
+            "type": "integer"
+          },
+          "energy_consumed_wh": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Energy Consumed Wh"
+          },
+          "id_tag": {
+            "title": "Id Tag",
+            "type": "string"
+          },
+          "last_meter_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Meter At"
+          },
+          "meter_start_wh": {
+            "title": "Meter Start Wh",
+            "type": "integer"
+          },
+          "power_w": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Power W"
+          },
+          "soc_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Soc Pct"
+          },
+          "started_at": {
+            "description": "ISO-8601 server-receive time of the StartTransaction.",
+            "title": "Started At",
+            "type": "string"
+          },
+          "transaction_id": {
+            "title": "Transaction Id",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "transaction_id",
+          "connector_id",
+          "id_tag",
+          "started_at",
+          "meter_start_wh"
+        ],
+        "title": "ActiveSession",
+        "type": "object"
+      },
       "ChargePoint": {
         "description": "One row of `GET /api/v1/charge-points`. Detail endpoint adds\n`active_reservations` and `active_charging_profiles`.",
         "properties": {
@@ -37,6 +116,30 @@
               }
             ],
             "title": "Last Heartbeat At"
+          },
+          "last_offline_ended_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "ISO-8601 UTC of the reconnect that closed the most recent outage.",
+            "title": "Last Offline Ended At"
+          },
+          "last_offline_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Seconds the charger was offline during its most recent observed outage. Null when the gateway has never recorded an outage for this charger (first connect, or pre-feature history).",
+            "title": "Last Offline Seconds"
           },
           "last_status": {
             "anyOf": [
@@ -158,6 +261,13 @@
             "title": "Active Reservations",
             "type": "array"
           },
+          "active_sessions": {
+            "items": {
+              "$ref": "#/components/schemas/ActiveSession"
+            },
+            "title": "Active Sessions",
+            "type": "array"
+          },
           "connectors": {
             "items": {
               "$ref": "#/components/schemas/ConnectorStatus"
@@ -192,6 +302,30 @@
             ],
             "title": "Last Heartbeat At"
           },
+          "last_offline_ended_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "ISO-8601 UTC of the reconnect that closed the most recent outage.",
+            "title": "Last Offline Ended At"
+          },
+          "last_offline_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Seconds the charger was offline during its most recent observed outage. Null when the gateway has never recorded an outage for this charger (first connect, or pre-feature history).",
+            "title": "Last Offline Seconds"
+          },
           "last_status": {
             "anyOf": [
               {
@@ -214,6 +348,16 @@
               }
             ],
             "title": "Last Status At"
+          },
+          "latest_meter": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LatestMeter"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "model": {
             "anyOf": [
@@ -635,6 +779,30 @@
         "title": "HealthResponse",
         "type": "object"
       },
+      "LatestMeter": {
+        "description": "Most recent `Energy.Active.Import.Register` reading the charger\nsent, regardless of whether a transaction is active. Useful for\nspotting metering gaps on idle chargers.",
+        "properties": {
+          "connector_id": {
+            "title": "Connector Id",
+            "type": "integer"
+          },
+          "energy_wh": {
+            "title": "Energy Wh",
+            "type": "number"
+          },
+          "occurred_at": {
+            "title": "Occurred At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "connector_id",
+          "energy_wh",
+          "occurred_at"
+        ],
+        "title": "LatestMeter",
+        "type": "object"
+      },
       "MeterValueSample": {
         "properties": {
           "connector_id": {
@@ -739,6 +907,111 @@
           "request_id"
         ],
         "title": "MeterValuesResponse",
+        "type": "object"
+      },
+      "OfflineDurationEvent": {
+        "description": "One observed offline window for a charger.\n\nAnchored on `came_online_at` (the reconnect that closed the\nwindow). `offline_seconds` is precomputed gateway-side.",
+        "properties": {
+          "came_online_at": {
+            "title": "Came Online At",
+            "type": "string"
+          },
+          "event_id": {
+            "title": "Event Id",
+            "type": "string"
+          },
+          "occurred_at": {
+            "description": "Server-receive time of the reconnect (ISO-8601 UTC).",
+            "title": "Occurred At",
+            "type": "string"
+          },
+          "offline_seconds": {
+            "title": "Offline Seconds",
+            "type": "integer"
+          },
+          "prior_pod_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prior Pod Id"
+          },
+          "prior_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prior Reason"
+          },
+          "went_offline_at": {
+            "title": "Went Offline At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "event_id",
+          "occurred_at",
+          "went_offline_at",
+          "came_online_at",
+          "offline_seconds"
+        ],
+        "title": "OfflineDurationEvent",
+        "type": "object"
+      },
+      "OfflineHistoryResponse": {
+        "description": "`GET /api/v1/charge-points/{cp_id}/offline-history?since=&until=`.\n\nPath-scoped to one charger; filters are limited to a `[since, until]`\nwindow on `came_online_at`. Pagination follows the same dual-mode\ncontract as `/charge-points` \u2014 `cursor`+`limit` for streaming, or\n`page`+`page_size` for indexed access.",
+        "properties": {
+          "cp_id": {
+            "title": "Cp Id",
+            "type": "string"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
+          "offline_windows": {
+            "items": {
+              "$ref": "#/components/schemas/OfflineDurationEvent"
+            },
+            "title": "Offline Windows",
+            "type": "array"
+          },
+          "pagination": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PaginationBlock"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "cp_id",
+          "offline_windows",
+          "request_id"
+        ],
+        "title": "OfflineHistoryResponse",
         "type": "object"
       },
       "PaginationBlock": {
@@ -3674,6 +3947,172 @@
           }
         },
         "summary": "ClickHouse-backed MeterValues time-series for a charge point",
+        "tags": [
+          "timeseries"
+        ]
+      }
+    },
+    "/api/v1/charge-points/{cp_id}/offline-history": {
+      "get": {
+        "operationId": "list_offline_history_api_v1_charge_points__cp_id__offline_history_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cp_id",
+            "required": true,
+            "schema": {
+              "title": "Cp Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "since",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Since"
+            }
+          },
+          {
+            "in": "query",
+            "name": "until",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Until"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 10000,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Limit"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Page"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page_size",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 10000,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Page Size"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OfflineHistoryResponse",
+                  "additionalProperties": true,
+                  "title": "Response List Offline History Api V1 Charge Points  Cp Id  Offline History Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Bad since/until or pagination."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Unknown cp_id."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "ClickHouse-backed offline-duration history for a charge point",
         "tags": [
           "timeseries"
         ]

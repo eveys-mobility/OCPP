@@ -11,6 +11,7 @@
 // Topic mapping:
 //   cp.connected          → CpConnected               (charger opened a WS to us)
 //   cp.disconnected       → CpDisconnected            (charger's WS went away)
+//   cp.offline_duration   → CpOfflineDuration         (charger came back; gap measured)
 //   cp.boot               → CpBoot                    (BootNotification arrived)
 //   cp.status             → CpStatus                  (StatusNotification arrived)
 //   cp.meter              → CpMeter                   (MeterValues arrived)
@@ -73,6 +74,7 @@ message EventEnvelope {
     CpDiagnosticsStatusChanged cp_diagnostics_status_changed = 109;
     CpCsrSubmitted cp_csr_submitted = 110;
     CpCredentialRotated cp_credential_rotated = 111;
+    CpOfflineDuration cp_offline_duration = 112;
   }
 }
 
@@ -427,4 +429,41 @@ message CpCredentialRotated {
   // (operator email, service account name, etc.); empty if the
   // operator did not supply one.
   string actor = 2;
+}
+
+// -----------------------------------------------------------------------------
+// cp.offline_duration — charger came back online; we measured the gap
+// -----------------------------------------------------------------------------
+//
+// Emitted on the WS connect path when we find a `cp:last_offline_at:{cp_id}`
+// marker left by the prior disconnect. Computed and published before
+// `cp.connected` is observed, then the marker is consumed (single-shot).
+//
+// `cp.connected` + `cp.disconnected` already let a downstream consumer
+// derive the same number by stitching pairs together, but doing it
+// gateway-side (a) sidesteps cross-topic ordering races, (b) gives one
+// row per outage instead of two, and (c) makes the ClickHouse history
+// table directly answerable to "how long was this CP offline for".
+//
+// If a pod crashed between disconnect and the next connect, the marker
+// was never written and no event is emitted — under-report rather than
+// invent a duration we can't prove.
+
+message CpOfflineDuration {
+  // Server-receive time of the prior disconnect. ISO-8601 UTC.
+  string went_offline_at = 1;
+  // Server-receive time of the connect that closed this outage.
+  // ISO-8601 UTC. Equal to the envelope's `occurred_at`; duplicated
+  // for consumers that prefer to read the duration row standalone.
+  string came_online_at = 2;
+  // came_online_at - went_offline_at, in seconds. Pre-computed for
+  // consumers; bounded by Redis marker durability (no TTL on the
+  // marker means an outage of any length is representable).
+  int64 offline_seconds = 3;
+  // pod_id that observed the prior disconnect; empty when the
+  // previous owner is unknown (cross-pod hand-off cases).
+  string prior_pod_id = 4;
+  // Reason recorded with the prior disconnect: "clean" / "error" /
+  // "" if the marker pre-dated this field.
+  string prior_reason = 5;
 }

@@ -112,6 +112,51 @@ async def test_close_disposes_redis_client(registry: Registry, fake_redis: Async
     fake_redis.aclose.assert_awaited_once()
 
 
+@pytest.mark.asyncio
+async def test_record_offline_marker_writes_hash_without_ttl(
+    registry: Registry, fake_redis: AsyncMock, settings: Settings
+) -> None:
+    await registry.record_offline_marker("CP_001", reason="clean")
+    fake_redis.hset.assert_awaited_once()
+    args, kwargs = fake_redis.hset.call_args
+    assert args[0] == "cp:last_offline_at:CP_001"
+    mapping = kwargs["mapping"]
+    assert mapping["pod_id"] == settings.pod_id
+    assert mapping["reason"] == "clean"
+    # ISO-8601 with tz suffix; parsing must succeed.
+    from datetime import datetime as _dt
+
+    parsed = _dt.fromisoformat(mapping["went_offline_at"])
+    assert parsed.tzinfo is not None
+
+
+@pytest.mark.asyncio
+async def test_pop_offline_marker_returns_none_when_absent(
+    registry: Registry, fake_redis: AsyncMock
+) -> None:
+    fake_redis.hgetall.return_value = {}
+    assert await registry.pop_offline_marker("CP_001") is None
+    fake_redis.delete.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_pop_offline_marker_returns_dict_and_deletes(
+    registry: Registry, fake_redis: AsyncMock
+) -> None:
+    fake_redis.hgetall.return_value = {
+        "went_offline_at": "2026-05-11T12:00:00+00:00",
+        "pod_id": "pod-prev",
+        "reason": "error",
+    }
+    result = await registry.pop_offline_marker("CP_001")
+    assert result == {
+        "went_offline_at": "2026-05-11T12:00:00+00:00",
+        "pod_id": "pod-prev",
+        "reason": "error",
+    }
+    fake_redis.delete.assert_awaited_once_with("cp:last_offline_at:CP_001")
+
+
 def test_settings_redis_defaults() -> None:
     s = Settings()
     assert s.redis_url == "redis://localhost:6379/0"

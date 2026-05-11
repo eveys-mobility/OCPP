@@ -34,10 +34,18 @@ from eveys_ocpp.api._errors import (
     ERR_WINDOW_TOO_LARGE,
     ApiError,
 )
-from eveys_ocpp.api._pagination import clamp_limit
+from eveys_ocpp.api._pagination import (
+    clamp_limit,
+    decode_cursor,
+    encode_cursor,
+    offset_for_page,
+    pagination_block,
+    reject_mixed_pagination,
+)
 from eveys_ocpp.api._schemas import (
     ErrorEnvelope,
     MeterValuesResponse,
+    OfflineHistoryResponse,
     StatusHistoryResponse,
 )
 from eveys_ocpp.persistence.db import session_scope
@@ -234,6 +242,118 @@ def _meter_to_response(row: dict[str, Any]) -> dict[str, Any]:
             "location": ocpp_string_for("location", row["location"]),
             "unit": ocpp_string_for("unit", row["unit"]),
         },
+    }
+
+
+@router.get(
+    "/charge-points/{cp_id}/offline-history",
+    summary="ClickHouse-backed offline-duration history for a charge point",
+    responses={
+        200: {"model": OfflineHistoryResponse},
+        400: {"model": ErrorEnvelope, "description": "Bad since/until or pagination."},
+        404: {"model": ErrorEnvelope, "description": "Unknown cp_id."},
+    },
+)
+async def list_offline_history(
+    request: Request,
+    cp_id: str,
+    since: str | None = Query(default=None),
+    until: str | None = Query(default=None),
+    cursor: str | None = Query(default=None),
+    limit: int | None = Query(default=None, ge=1, le=10_000),
+    page: int | None = Query(default=None, ge=1),
+    page_size: int | None = Query(default=None, ge=1, le=10_000),
+) -> dict[str, Any]:
+    settings = request.app.state.settings
+    reject_mixed_pagination(cursor=cursor, page=page)
+
+    since_dt = _parse_iso8601(since, field_name="since") if since else None
+    until_dt = _parse_iso8601(until, field_name="until") if until else None
+    if since_dt is not None and until_dt is not None and until_dt < since_dt:
+        raise ApiError(
+            status_code=400,
+            error_code=ERR_BAD_REQUEST,
+            message="`until` must be >= `since`",
+        )
+
+    await _ensure_cp_exists(request, cp_id)
+
+    client = _ch_client(request)
+
+    if page is not None:
+        effective_size = clamp_limit(
+            page_size if page_size is not None else limit,
+            default=settings.rest_default_page_size,
+            maximum=settings.rest_max_page_size,
+        )
+        offset = offset_for_page(page, effective_size)
+        rows, total = await client.fetch_offline_history(
+            cp_id=cp_id,
+            since=since_dt,
+            until=until_dt,
+            limit=effective_size,
+            offset=offset,
+        )
+        return {
+            "cp_id": cp_id,
+            "offline_windows": [_offline_to_response(r) for r in rows],
+            "pagination": pagination_block(page=page, page_size=effective_size, total=total),
+            "request_id": request.state.request_id,
+        }
+
+    effective_size = clamp_limit(
+        limit,
+        default=settings.rest_default_page_size,
+        maximum=settings.rest_max_page_size,
+    )
+
+    # Cursor mode keys on `offset` — same opaque-base64 contract as the
+    # /charge-points cursor, just paged by row count instead of a
+    # surrogate id (ClickHouse has no stable PK to keyset on; ordering
+    # is by came_online_at DESC). Acceptable for a per-charger feed
+    # that's bounded to one CP's outages.
+    cursor_payload = decode_cursor(cursor)
+    cursor_offset = 0
+    if cursor_payload is not None:
+        raw_offset = cursor_payload.get("offset")
+        if not isinstance(raw_offset, int) or raw_offset < 0:
+            raise ApiError(
+                status_code=400,
+                error_code=ERR_BAD_REQUEST,
+                message="malformed cursor: missing or negative 'offset'",
+            )
+        cursor_offset = raw_offset
+
+    rows, total = await client.fetch_offline_history(
+        cp_id=cp_id,
+        since=since_dt,
+        until=until_dt,
+        limit=effective_size + 1,
+        offset=cursor_offset,
+    )
+    has_more = len(rows) > effective_size
+    page_rows = rows[:effective_size]
+    next_cursor: str | None = None
+    if has_more:
+        next_cursor = encode_cursor({"offset": cursor_offset + effective_size})
+
+    return {
+        "cp_id": cp_id,
+        "offline_windows": [_offline_to_response(r) for r in page_rows],
+        "next_cursor": next_cursor,
+        "request_id": request.state.request_id,
+    }
+
+
+def _offline_to_response(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "event_id": row["event_id"],
+        "occurred_at": _isoformat(row["occurred_at"]),
+        "went_offline_at": _isoformat(row["went_offline_at"]),
+        "came_online_at": _isoformat(row["came_online_at"]),
+        "offline_seconds": int(row["offline_seconds"]),
+        "prior_pod_id": row["prior_pod_id"] or None,
+        "prior_reason": row["prior_reason"] or None,
     }
 
 

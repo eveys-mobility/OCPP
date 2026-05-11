@@ -27,6 +27,7 @@ from __future__ import annotations
 import contextlib
 import time
 from collections.abc import Iterator
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from redis.asyncio import Redis
@@ -43,6 +44,17 @@ log = get_logger(__name__)
 def _key(cp_id: str) -> str:
     """Redis key for a charger's online presence."""
     return f"cp:online:{cp_id}"
+
+
+def _offline_marker_key(cp_id: str) -> str:
+    """Redis key for the most recent disconnect timestamp.
+
+    Used to compute per-CP offline duration on the next connect. Value
+    is a HASH with `went_offline_at` (ISO-8601 UTC), `pod_id`, and
+    `reason`. No TTL — survives an arbitrary outage; consumed by the
+    next `pop_offline_marker` call on reconnect.
+    """
+    return f"cp:last_offline_at:{cp_id}"
 
 
 @contextlib.contextmanager
@@ -154,6 +166,60 @@ class Registry:
             was_ours=was_ours,
         )
         return was_ours
+
+    async def record_offline_marker(self, cp_id: str, *, reason: str) -> None:
+        """Record that `cp_id`'s WS just dropped.
+
+        Writes the disconnect time + this pod's id + the close reason
+        into a hash at `cp:last_offline_at:{cp_id}`. No TTL — outages of
+        any length must remain measurable on the next reconnect.
+
+        Called from the WS server's finally-block only when the
+        compare-and-delete on the online key confirms we still owned
+        it. Without that gate a reconnect-to-different-pod race would
+        clobber the new pod's marker with this pod's stale one.
+        """
+        went_offline_at = datetime.now(UTC).isoformat()
+        with _timed_redis("set"):
+            # redis-py's async hset is typed as `Awaitable[int] | int`
+            # (sync/async dual-API typing leak) — same shape as the
+            # `eval` ignore in `mark_offline`.
+            await self._redis.hset(  # type: ignore[misc]
+                _offline_marker_key(cp_id),
+                mapping={
+                    "went_offline_at": went_offline_at,
+                    "pod_id": self._settings.pod_id,
+                    "reason": reason,
+                },
+            )
+        log.debug(
+            "registry.record_offline_marker",
+            cp_id=cp_id,
+            pod_id=self._settings.pod_id,
+            reason=reason,
+        )
+
+    async def pop_offline_marker(self, cp_id: str) -> dict[str, str] | None:
+        """Read-and-delete the offline marker.
+
+        Returns the recorded `{went_offline_at, pod_id, reason}` dict
+        on hit or None when no marker exists (first connect, or a pod
+        crash skipped the prior disconnect's write). The read+delete
+        pair is not atomic — duplicating it across two reconnects in
+        quick succession is acceptable; downstream dedup keys on
+        `event_id` handle it.
+        """
+        key = _offline_marker_key(cp_id)
+        with _timed_redis("get"):
+            # Same dual-API typing leak as `record_offline_marker`.
+            data = await self._redis.hgetall(key)  # type: ignore[misc]
+        if not data:
+            return None
+        # decode_responses=True → str keys/values; normalize defensively.
+        out = {str(k): str(v) for k, v in data.items()}
+        with _timed_redis("set"):
+            await self._redis.delete(key)
+        return out
 
     async def get_pod(self, cp_id: str) -> str | None:
         """Return the pod_id currently holding cp_id's WS, or None if offline."""

@@ -48,6 +48,7 @@ from eveys_ocpp.persistence.repositories import (
     count_charge_points,
     get_charge_point_detail,
     list_charge_points,
+    list_transactions_by_cp,
 )
 
 router = APIRouter(tags=["charge_points"])
@@ -93,6 +94,8 @@ def _to_response(cp: dict[str, Any]) -> dict[str, Any]:
         "last_diagnostics_status": cp["last_diagnostics_status"],
         "last_firmware_status": cp["last_firmware_status"],
         "connectors": cp.get("connectors", []),
+        "last_offline_seconds": cp.get("last_offline_seconds"),
+        "last_offline_ended_at": _isoformat(cp.get("last_offline_ended_at")),
     }
 
 
@@ -132,6 +135,40 @@ async def _enrich_with_connectors(
             }
             for r in rows
         ]
+    return cp_dicts
+
+
+async def _enrich_with_last_offline(
+    request: Request, cp_dicts: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Attach `last_offline_seconds` + `last_offline_ended_at` from
+    ClickHouse `cp_offline_duration`.
+
+    Same batched read pattern as `_enrich_with_connectors` — one
+    round-trip for the whole page. Chargers without any recorded
+    outage are left with `last_offline_*` absent (which becomes
+    `None` in the response). ClickHouse failure falls back the same
+    way: no enrichment, metadata path still serves.
+    """
+    if not cp_dicts:
+        return cp_dicts
+
+    client = getattr(request.app.state, "ch_client", None)
+    if client is None:
+        return cp_dicts
+
+    cp_ids = [cp["cp_id"] for cp in cp_dicts]
+    try:
+        latest_by_cp = await client.fetch_latest_offline_durations(cp_ids=cp_ids)
+    except Exception:
+        latest_by_cp = {}
+
+    for cp in cp_dicts:
+        row = latest_by_cp.get(cp["cp_id"])
+        if row is None:
+            continue
+        cp["last_offline_seconds"] = int(row["offline_seconds"])
+        cp["last_offline_ended_at"] = row["last_offline_ended_at"]
     return cp_dicts
 
 
@@ -246,6 +283,7 @@ async def list_charge_points_route(
         # `online` was already pushed into the SQL filter above — no
         # post-page trimming needed.
         enriched = await _enrich_with_connectors(request, enriched)
+        enriched = await _enrich_with_last_offline(request, enriched)
         return {
             "charge_points": [_to_response(cp) for cp in enriched],
             "pagination": pagination_block(page=page, page_size=effective_size, total=total),
@@ -293,12 +331,115 @@ async def list_charge_points_route(
     # already honour the filter — no post-page trim.
 
     enriched = await _enrich_with_connectors(request, enriched)
+    enriched = await _enrich_with_last_offline(request, enriched)
 
     return {
         "charge_points": [_to_response(cp) for cp in enriched],
         "next_cursor": next_cursor,
         "request_id": request.state.request_id,
     }
+
+
+async def _fetch_active_sessions(
+    request: Request, cp_id: str
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    """Pull active sessions + latest meter for one charger, both
+    best-effort.
+
+    Returns `(active_sessions, latest_meter)`. Either side may be
+    empty / None when:
+    - no `transactions` rows have `stopped_received_at IS NULL`
+      (charger idle);
+    - the ClickHouse client isn't wired (dev / tests);
+    - the ClickHouse query failed (broker hiccup) — degrade rather
+      than 500.
+
+    Active sessions are enriched with the latest meter on their
+    connector and an SoC + power snapshot from
+    `fetch_transaction_telemetry`. Worst case is N+1 CH queries
+    where N = active session count, which is bounded by connector
+    count (typically 1, max ~4 for a multi-connector station)."""
+    async with session_scope(request.app.state.session_factory) as session:
+        rows = await list_transactions_by_cp(
+            session,
+            cp_id=cp_id,
+            after_id=None,
+            limit=10,
+            open_only=True,
+        )
+    open_txns = rows or []
+
+    client = getattr(request.app.state, "ch_client", None)
+    latest_by_connector: dict[int, dict[str, Any]] = {}
+    if client is not None:
+        try:
+            latest_by_connector = await client.fetch_latest_meter_per_connector(cp_id=cp_id)
+        except Exception:
+            latest_by_connector = {}
+
+    latest_meter: dict[str, Any] | None = None
+    if latest_by_connector:
+        best_connector, best_row = max(
+            latest_by_connector.items(),
+            key=lambda kv: kv[1]["occurred_at"],
+        )
+        latest_meter = {
+            "connector_id": best_connector,
+            "energy_wh": best_row["value_wh"],
+            "occurred_at": _isoformat(best_row["occurred_at"]),
+        }
+
+    sessions: list[dict[str, Any]] = []
+    for tx in open_txns:
+        connector_id = tx["connector_id"]
+        meter = latest_by_connector.get(connector_id)
+        energy_consumed: int | None = None
+        last_meter_at: str | None = None
+        if meter is not None and meter["value_wh"] is not None:
+            energy_consumed = int(meter["value_wh"] - tx["meter_start_wh"])
+            last_meter_at = _isoformat(meter["occurred_at"])
+
+        soc_pct: float | None = None
+        power_w: float | None = None
+        if client is not None:
+            try:
+                telemetry = await client.fetch_transaction_telemetry(
+                    cp_id=cp_id,
+                    transaction_id=tx["transaction_id"],
+                )
+            except Exception:
+                telemetry = None
+            if telemetry is not None:
+                soc_pct = telemetry.get("soc", {}).get("last_pct")
+                # Power readout: prefer the per-phase snapshot's
+                # power_w. Sum across phases that report it — a
+                # three-phase charger publishes per phase; a DC
+                # charger publishes once on PHASE_UNSPECIFIED which
+                # the telemetry fetch already buckets out. Null
+                # when no phase reported.
+                phase_powers = [
+                    snap["power_w"]
+                    for snap in telemetry.get("phases", {}).values()
+                    if snap.get("power_w") is not None
+                ]
+                if phase_powers:
+                    power_w = float(sum(phase_powers))
+
+        sessions.append(
+            {
+                "transaction_id": tx["transaction_id"],
+                "connector_id": connector_id,
+                "id_tag": tx["id_tag"],
+                "started_at": _isoformat(tx["started_received_at"]),
+                "meter_start_wh": tx["meter_start_wh"],
+                "energy_consumed_wh": energy_consumed,
+                "last_meter_at": last_meter_at,
+                "soc_pct": soc_pct,
+                "power_w": power_w,
+            }
+        )
+
+    return sessions, latest_meter
 
 
 @router.get(
@@ -324,6 +465,7 @@ async def get_charge_point_route(request: Request, cp_id: str) -> dict[str, Any]
 
     enriched = await _enrich_with_presence(request, detail)
     [enriched] = await _enrich_with_connectors(request, [enriched])
+    [enriched] = await _enrich_with_last_offline(request, [enriched])
     response = _to_response(enriched)
     response["active_reservations"] = [
         {
@@ -336,5 +478,8 @@ async def get_charge_point_route(request: Request, cp_id: str) -> dict[str, Any]
         for r in detail["active_reservations"]
     ]
     response["active_charging_profiles"] = detail["active_charging_profiles"]
+    active_sessions, latest_meter = await _fetch_active_sessions(request, cp_id)
+    response["active_sessions"] = active_sessions
+    response["latest_meter"] = latest_meter
     response["request_id"] = request.state.request_id
     return response

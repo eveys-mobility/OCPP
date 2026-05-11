@@ -2,7 +2,7 @@
 
 The end-to-end Kafka→CH round-trip is in tests/e2e/. These are the
 pure-function tests that don't need Kafka or ClickHouse running:
-the four row-extractors, the dispatch table, and the parse-failure
+the row-extractors, the dispatch table, and the parse-failure
 guards in `_process_record`.
 """
 
@@ -185,14 +185,14 @@ def test_dispatch_table_covers_every_persisted_oneof() -> None:
     """The dispatch table maps every `oneof payload` variant we
     persist. `cp_connected` is intentionally missing (not telemetry —
     see ingestor.py module docstring)."""
-    persisted = {"cp_meter", "cp_status", "cp_boot", "tx_started"}
+    persisted = {"cp_meter", "cp_status", "cp_boot", "tx_started", "cp_offline_duration"}
     assert set(_DISPATCH.keys()) == persisted
 
 
 def test_dispatch_uses_table_names_matching_ddl() -> None:
     """The (table, extractor) pair points at the table name in
     src/eveys_ocpp/clickhouse/ddl/, not the proto field name."""
-    expected_tables = {"cp_meter", "cp_status", "cp_boot", "tx_started"}
+    expected_tables = {"cp_meter", "cp_status", "cp_boot", "tx_started", "cp_offline_duration"}
     actual_tables = {table for (table, _extractor) in _DISPATCH.values()}
     assert actual_tables == expected_tables
 
@@ -309,18 +309,20 @@ async def test_start_constructs_kafka_consumer_with_at_least_once_kwargs(
         kafka_topic_cp_status="cp.status",
         kafka_topic_cp_boot="cp.boot",
         kafka_topic_tx_started="tx.started",
+        kafka_topic_cp_offline_duration="cp.offline_duration",
         clickhouse_ingestor_group="test-group",
     )
     ingestor = ClickHouseIngestor(settings)
 
     await ingestor.start()
 
-    # All four event topics subscribed.
+    # All event topics subscribed.
     assert set(captured_kwargs["topics"]) == {
         "cp.meter",
         "cp.status",
         "cp.boot",
         "tx.started",
+        "cp.offline_duration",
     }
     # at-least-once: manual commit only after a successful INSERT.
     assert captured_kwargs["enable_auto_commit"] is False
