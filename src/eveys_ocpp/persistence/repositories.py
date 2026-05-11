@@ -894,32 +894,68 @@ def _charge_point_to_dict(cp: ChargePoint) -> dict[str, Any]:
     }
 
 
+def _charge_points_filter_conditions(*, vendor: str | None) -> list[Any]:
+    """Shared WHERE clauses for `list_charge_points` and
+    `count_charge_points`. Excludes the cursor/offset boundary."""
+    conditions: list[Any] = []
+    if vendor is not None:
+        conditions.append(ChargePoint.vendor == vendor)
+    return conditions
+
+
 async def list_charge_points(
     session: AsyncSession,
     *,
     after_id: int | None,
     limit: int,
     vendor: str | None = None,
+    offset: int | None = None,
 ) -> list[dict[str, Any]]:
-    """Cursor-paginated list of chargers, ordered by surrogate `id`.
+    """List chargers, ordered by surrogate `id`.
 
-    `after_id` is the keyset boundary (exclusive) — `None` means first
-    page. `vendor` filters by exact match. The `online` filter is NOT
+    Two pagination modes — never both:
+
+    - **Cursor mode** (`after_id` set, `offset` None): keyset paginate.
+      `after_id` is the exclusive lower bound. Returns up to `limit+1`
+      rows so the route handler can detect whether a next page exists
+      without an extra COUNT — it trims the extra row and sets
+      `next_cursor` from the last kept row.
+    - **Offset mode** (`offset` set, `after_id` None): standard
+      `OFFSET N LIMIT M`. Returns exactly up to `limit` rows. The
+      caller is expected to use `count_charge_points` separately for
+      the `total`.
+
+    `vendor` filters by exact match. The `online` filter is NOT
     applied here because presence lives in Redis; the route handler
     filters the result post-hoc when the client passes `online=true`
     or `online=false`.
-
-    Returns up to `limit + 1` rows so the caller can detect whether a
-    next page exists without an extra COUNT — the handler trims the
-    extra row and sets `next_cursor` from the last kept row.
     """
-    stmt = select(ChargePoint).order_by(ChargePoint.id).limit(limit + 1)
-    if after_id is not None:
-        stmt = stmt.where(ChargePoint.id > after_id)
-    if vendor is not None:
-        stmt = stmt.where(ChargePoint.vendor == vendor)
+    stmt = select(ChargePoint).order_by(ChargePoint.id)
+    for cond in _charge_points_filter_conditions(vendor=vendor):
+        stmt = stmt.where(cond)
+    if offset is not None:
+        stmt = stmt.offset(offset).limit(limit)
+    else:
+        if after_id is not None:
+            stmt = stmt.where(ChargePoint.id > after_id)
+        stmt = stmt.limit(limit + 1)
     result = await session.execute(stmt)
     return [_charge_point_to_dict(cp) for cp in result.scalars().all()]
+
+
+async def count_charge_points(
+    session: AsyncSession,
+    *,
+    vendor: str | None = None,
+) -> int:
+    """`SELECT COUNT(*)` over the same filter chain as
+    `list_charge_points`. Used by the offset-pagination path to
+    populate `pagination.total`."""
+    stmt = select(func.count()).select_from(ChargePoint)
+    for cond in _charge_points_filter_conditions(vendor=vendor):
+        stmt = stmt.where(cond)
+    result = await session.execute(stmt)
+    return int(result.scalar_one() or 0)
 
 
 async def get_charge_point_detail(session: AsyncSession, *, cp_id: str) -> dict[str, Any] | None:
@@ -997,33 +1033,15 @@ def _transaction_to_dict(tx: Transaction) -> dict[str, Any]:
     }
 
 
-async def list_transactions_by_cp(
-    session: AsyncSession,
+def _transactions_by_cp_filter_conditions(
     *,
-    cp_id: str,
-    after_id: int | None,
-    limit: int,
-    id_tag: str | None = None,
-    open_only: bool | None = None,
-    started_from: datetime | None = None,
-    started_to: datetime | None = None,
-) -> list[dict[str, Any]] | None:
-    """Cursor-paginated transactions for a charger.
-
-    Returns `None` when the charger is unknown (caller maps to
-    `UNKNOWN_CP_ID`); empty list = known charger with no matching txns.
-
-    Filters: `id_tag` exact match; `open_only=True` keeps txns whose
-    `stopped_reported_at IS NULL` (currently charging); `False` keeps
-    only stopped txns; `None` returns both. Time window matches on
-    `started_reported_at`. Returns up to `limit+1` rows for next-page
-    detection (same shape as `list_charge_points`).
-    """
-    cp_pk = await get_charge_point_pk(session, cp_id=cp_id)
-    if cp_pk is None:
-        return None
-
-    conditions = [Transaction.charge_point_id == cp_pk]
+    cp_pk: int,
+    id_tag: str | None,
+    open_only: bool | None,
+    started_from: datetime | None,
+    started_to: datetime | None,
+) -> list[Any]:
+    conditions: list[Any] = [Transaction.charge_point_id == cp_pk]
     if id_tag is not None:
         conditions.append(Transaction.id_tag == id_tag)
     if open_only is True:
@@ -1034,41 +1052,95 @@ async def list_transactions_by_cp(
         conditions.append(Transaction.started_reported_at >= started_from)
     if started_to is not None:
         conditions.append(Transaction.started_reported_at <= started_to)
-    if after_id is not None:
-        conditions.append(Transaction.id > after_id)
+    return conditions
 
-    stmt = select(Transaction).where(and_(*conditions)).order_by(Transaction.id).limit(limit + 1)
+
+async def list_transactions_by_cp(
+    session: AsyncSession,
+    *,
+    cp_id: str,
+    after_id: int | None,
+    limit: int,
+    id_tag: str | None = None,
+    open_only: bool | None = None,
+    started_from: datetime | None = None,
+    started_to: datetime | None = None,
+    offset: int | None = None,
+) -> list[dict[str, Any]] | None:
+    """Transactions for a charger.
+
+    Pagination modes (mutually exclusive at the caller):
+
+    - **Cursor mode** (`after_id`): keyset-paginate; returns `limit+1`
+      rows so the route can detect a next page.
+    - **Offset mode** (`offset`): `OFFSET N LIMIT M`; returns exactly
+      up to `limit`.
+
+    Returns `None` when the charger is unknown (caller maps to
+    `UNKNOWN_CP_ID`); empty list = known charger with no matching txns.
+
+    Filters: `id_tag` exact match; `open_only=True` keeps txns whose
+    `stopped_reported_at IS NULL` (currently charging); `False` keeps
+    only stopped txns; `None` returns both. Time window matches on
+    `started_reported_at`.
+    """
+    cp_pk = await get_charge_point_pk(session, cp_id=cp_id)
+    if cp_pk is None:
+        return None
+
+    conditions = _transactions_by_cp_filter_conditions(
+        cp_pk=cp_pk,
+        id_tag=id_tag,
+        open_only=open_only,
+        started_from=started_from,
+        started_to=started_to,
+    )
+    stmt = select(Transaction).where(and_(*conditions)).order_by(Transaction.id)
+    if offset is not None:
+        stmt = stmt.offset(offset).limit(limit)
+    else:
+        if after_id is not None:
+            stmt = stmt.where(Transaction.id > after_id)
+        stmt = stmt.limit(limit + 1)
     result = await session.execute(stmt)
     return [_transaction_to_dict(tx) for tx in result.scalars().all()]
 
 
-async def list_transactions(
+async def count_transactions_by_cp(
     session: AsyncSession,
     *,
-    after_id: int | None,
-    limit: int,
-    cp_id: str | None = None,
+    cp_id: str,
     id_tag: str | None = None,
-    active: bool | None = None,
+    open_only: bool | None = None,
     started_from: datetime | None = None,
     started_to: datetime | None = None,
-) -> list[dict[str, Any]]:
-    """Global cursor-paginated transactions list.
-
-    Same filter shape as ``list_transactions_by_cp`` plus an optional
-    ``cp_id`` filter (exact match). Unlike the per-cp variant this
-    function does not return ``None`` for unknown chargers — an unknown
-    or omitted ``cp_id`` simply yields the unfiltered (or empty) result.
-
-    Joins ``charge_points`` so each row's projected dict includes the
-    charger's OCPP-visible ``cp_id`` string; the BaaS / operator
-    console can render rows without a second lookup. Returns up to
-    ``limit + 1`` rows for next-page detection.
-    """
-    stmt = select(Transaction, ChargePoint.cp_id).join(
-        ChargePoint, Transaction.charge_point_id == ChargePoint.id
+) -> int | None:
+    """`SELECT COUNT(*)` matching `list_transactions_by_cp`'s filters.
+    Returns `None` for unknown `cp_id` (same semantics as the list)."""
+    cp_pk = await get_charge_point_pk(session, cp_id=cp_id)
+    if cp_pk is None:
+        return None
+    conditions = _transactions_by_cp_filter_conditions(
+        cp_pk=cp_pk,
+        id_tag=id_tag,
+        open_only=open_only,
+        started_from=started_from,
+        started_to=started_to,
     )
-    conditions = []
+    stmt = select(func.count()).select_from(Transaction).where(and_(*conditions))
+    result = await session.execute(stmt)
+    return int(result.scalar_one() or 0)
+
+
+def _transactions_filter_conditions(
+    *,
+    cp_id: str | None,
+    id_tag: str | None,
+    active: bool | None,
+    started_from: datetime | None,
+    started_to: datetime | None,
+) -> list[Any]:
+    conditions: list[Any] = []
     if cp_id is not None:
         conditions.append(ChargePoint.cp_id == cp_id)
     if id_tag is not None:
@@ -1081,11 +1153,58 @@ async def list_transactions(
         conditions.append(Transaction.started_reported_at >= started_from)
     if started_to is not None:
         conditions.append(Transaction.started_reported_at <= started_to)
-    if after_id is not None:
-        conditions.append(Transaction.id > after_id)
+    return conditions
+
+
+async def list_transactions(
+    session: AsyncSession,
+    *,
+    after_id: int | None,
+    limit: int,
+    cp_id: str | None = None,
+    id_tag: str | None = None,
+    active: bool | None = None,
+    started_from: datetime | None = None,
+    started_to: datetime | None = None,
+    offset: int | None = None,
+) -> list[dict[str, Any]]:
+    """Global transactions list.
+
+    Pagination modes (mutually exclusive at the caller):
+
+    - **Cursor mode** (`after_id`): keyset-paginate; returns up to
+      `limit+1` rows for next-page detection.
+    - **Offset mode** (`offset`): `OFFSET N LIMIT M`; returns exactly
+      up to `limit`.
+
+    Same filter shape as ``list_transactions_by_cp`` plus an optional
+    ``cp_id`` filter (exact match). Unlike the per-cp variant this
+    function does not return ``None`` for unknown chargers — an unknown
+    or omitted ``cp_id`` simply yields the unfiltered (or empty) result.
+
+    Joins ``charge_points`` so each row's projected dict includes the
+    charger's OCPP-visible ``cp_id`` string; the BaaS / operator
+    console can render rows without a second lookup.
+    """
+    stmt = select(Transaction, ChargePoint.cp_id).join(
+        ChargePoint, Transaction.charge_point_id == ChargePoint.id
+    )
+    conditions = _transactions_filter_conditions(
+        cp_id=cp_id,
+        id_tag=id_tag,
+        active=active,
+        started_from=started_from,
+        started_to=started_to,
+    )
     if conditions:
         stmt = stmt.where(and_(*conditions))
-    stmt = stmt.order_by(Transaction.id).limit(limit + 1)
+    stmt = stmt.order_by(Transaction.id)
+    if offset is not None:
+        stmt = stmt.offset(offset).limit(limit)
+    else:
+        if after_id is not None:
+            stmt = stmt.where(Transaction.id > after_id)
+        stmt = stmt.limit(limit + 1)
 
     result = await session.execute(stmt)
     rows: list[dict[str, Any]] = []
@@ -1094,6 +1213,34 @@ async def list_transactions(
         row["cp_id"] = cp_id_value
         rows.append(row)
     return rows
+
+
+async def count_transactions(
+    session: AsyncSession,
+    *,
+    cp_id: str | None = None,
+    id_tag: str | None = None,
+    active: bool | None = None,
+    started_from: datetime | None = None,
+    started_to: datetime | None = None,
+) -> int:
+    """`SELECT COUNT(*)` matching `list_transactions`'s filters."""
+    stmt = (
+        select(func.count())
+        .select_from(Transaction)
+        .join(ChargePoint, Transaction.charge_point_id == ChargePoint.id)
+    )
+    conditions = _transactions_filter_conditions(
+        cp_id=cp_id,
+        id_tag=id_tag,
+        active=active,
+        started_from=started_from,
+        started_to=started_to,
+    )
+    if conditions:
+        stmt = stmt.where(and_(*conditions))
+    result = await session.execute(stmt)
+    return int(result.scalar_one() or 0)
 
 
 async def get_transaction_by_id(

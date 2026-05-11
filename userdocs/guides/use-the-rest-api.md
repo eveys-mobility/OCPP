@@ -99,9 +99,11 @@ echo "asked the gateway about CP_X, request_id=$REQ"
 
 ---
 
-## 5. Pagination — opaque cursors
+## 5. Pagination — two modes
 
-List endpoints (`/charge-points`, `/transactions`, `/charge-points/{cp_id}/transactions`, `/charge-points/{cp_id}/reservations`, …) all paginate the same way:
+Every list endpoint (`/charge-points`, `/transactions`, `/charge-points/{cp_id}/transactions`, `/charge-points/{cp_id}/reservations`, …) supports **two** pagination shapes. Pick the one that fits your caller.
+
+### Cursor pagination — for streaming through every row
 
 ```bash
 curl -s "http://<gateway>/api/v1/transactions?limit=100" \
@@ -127,7 +129,41 @@ curl -s "http://<gateway>/api/v1/transactions?limit=100&cursor=eyJpZCI6MTIzNDV9"
 
 When you reach the end, `next_cursor` is `null`. Don't try to decode the cursor — its internal shape may change between releases. Treat it as a string the gateway gave you to hand back.
 
-`limit` is bounded; the gateway clamps it to a maximum (default 1000) and uses a sensible default if you don't pass one. The defaults are in [`../reference/configuration.md`](../reference/configuration.md) under `rest_default_page_size` / `rest_max_page_size`.
+Use this mode for **backfills, integrations, and any caller that's going to read every row**. Performance stays constant regardless of how deep the table is — cursor lookup is O(log N).
+
+### Page pagination — for operator UIs
+
+```bash
+curl -s "http://<gateway>/api/v1/transactions?page=7&page_size=50" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+Response:
+
+```json
+{
+  "transactions": [ ... up to 50 rows ... ],
+  "pagination": {
+    "page":        7,
+    "page_size":   50,
+    "total":       4523,
+    "total_pages": 91,
+    "has_next":    true,
+    "has_prev":    true
+  },
+  "request_id": "..."
+}
+```
+
+Use this mode for **operator dashboards** ("show me page 7 of 91"). The `total` lets you render a page selector; `has_next` / `has_prev` light up the prev/next buttons. The page numbers are 1-indexed.
+
+### Pick one
+
+- Sending both `cursor` and `page` returns `400 BAD_REQUEST`. You must commit to one mode per call.
+- Sending neither defaults to cursor mode, first page, default size — i.e. the existing legacy behaviour.
+- Both `limit` and `page_size` work as size hints; if you set `page` and only `limit`, `limit` is used. If you set `page_size`, it wins.
+
+`limit` / `page_size` is bounded. The gateway clamps to a maximum (default 1000) and uses a sensible default if you don't pass one. The defaults are in [`../reference/configuration.md`](../reference/configuration.md) under `rest_default_page_size` / `rest_max_page_size`.
 
 ---
 
