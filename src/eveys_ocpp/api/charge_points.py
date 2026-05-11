@@ -179,6 +179,27 @@ async def list_charge_points_route(
     settings = request.app.state.settings
     reject_mixed_pagination(cursor=cursor, page=page)
 
+    # Resolve the online filter against Redis BEFORE the SQL queries
+    # so the count + page math stay consistent. `online=true` becomes
+    # `cp_id IN (<online_ids>)`; `online=false` becomes the NOT IN.
+    # When the registry isn't wired (tests / no-Redis dev), treat
+    # every charger as offline (mirroring `_enrich_with_presence`).
+    cp_ids_in: list[str] | None = None
+    cp_ids_not_in: list[str] | None = None
+    if online is not None:
+        registry = request.app.state.registry
+        if registry is None:
+            online_ids: list[str] = []
+        else:
+            try:
+                online_ids = await registry.list_online_ids()
+            except Exception:
+                online_ids = []
+        if online:
+            cp_ids_in = online_ids
+        else:
+            cp_ids_not_in = online_ids
+
     # Parse every time-window param once. Each may 400 individually.
     filter_kwargs: dict[str, Any] = {
         "vendor": vendor,
@@ -200,6 +221,8 @@ async def list_charge_points_route(
         "created_before": _parse_iso8601_or_400(created_before, field_name="created_before"),
         "cp_id_prefix": cp_id_prefix,
         "cp_id_contains": cp_id_contains,
+        "cp_ids_in": cp_ids_in,
+        "cp_ids_not_in": cp_ids_not_in,
     }
 
     # Two pagination paths, never both.
@@ -220,8 +243,8 @@ async def list_charge_points_route(
             )
             total = await count_charge_points(session, **filter_kwargs)
         enriched = [await _enrich_with_presence(request, cp) for cp in rows]
-        if online is not None:
-            enriched = [cp for cp in enriched if cp["online"] == online]
+        # `online` was already pushed into the SQL filter above — no
+        # post-page trimming needed.
         enriched = await _enrich_with_connectors(request, enriched)
         return {
             "charge_points": [_to_response(cp) for cp in enriched],
@@ -265,12 +288,9 @@ async def list_charge_points_route(
 
     enriched = [await _enrich_with_presence(request, cp) for cp in page_rows]
 
-    # `online` filter is post-Postgres because presence lives in Redis.
-    # This means the page may shrink below `limit` after filtering — a
-    # known trade-off documented as acceptable in the spec ("limit is
-    # a hint; pages may be shorter").
-    if online is not None:
-        enriched = [cp for cp in enriched if cp["online"] == online]
+    # `online` was pushed into the SQL filter via cp_ids_in /
+    # cp_ids_not_in earlier in this handler, so the page contents
+    # already honour the filter — no post-page trim.
 
     enriched = await _enrich_with_connectors(request, enriched)
 

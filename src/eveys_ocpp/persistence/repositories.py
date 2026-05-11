@@ -911,9 +911,19 @@ def _charge_points_filter_conditions(
     created_before: datetime | None = None,
     cp_id_prefix: str | None = None,
     cp_id_contains: str | None = None,
+    cp_ids_in: list[str] | None = None,
+    cp_ids_not_in: list[str] | None = None,
 ) -> list[Any]:
     """Shared WHERE clauses for `list_charge_points` and
-    `count_charge_points`. Excludes the cursor/offset boundary."""
+    `count_charge_points`. Excludes the cursor/offset boundary.
+
+    `cp_ids_in` / `cp_ids_not_in` are how the route layer pushes the
+    Redis online registry into the SQL filter when the operator
+    selects online / offline. Pre-computed by the route so the
+    count + page math stays consistent. An empty `cp_ids_in` list
+    forces a no-match condition (so the page renders 0 of 0) rather
+    than being silently ignored.
+    """
     conditions: list[Any] = []
     if vendor is not None:
         conditions.append(ChargePoint.vendor == vendor)
@@ -953,6 +963,16 @@ def _charge_points_filter_conditions(
         # about case. Same `%` / `_` escaping as `cp_id_prefix`.
         safe = cp_id_contains.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         conditions.append(ChargePoint.cp_id.ilike(f"%{safe}%", escape="\\"))
+    if cp_ids_in is not None:
+        # Empty list means "no charger is online" — the IN clause would
+        # be a SQL error, so we synthesise a false predicate that
+        # returns zero rows for both list_ and count_.
+        if not cp_ids_in:
+            conditions.append(ChargePoint.id == -1)
+        else:
+            conditions.append(ChargePoint.cp_id.in_(cp_ids_in))
+    if cp_ids_not_in:
+        conditions.append(ChargePoint.cp_id.not_in(cp_ids_not_in))
     return conditions
 
 
@@ -976,6 +996,8 @@ async def list_charge_points(
     created_before: datetime | None = None,
     cp_id_prefix: str | None = None,
     cp_id_contains: str | None = None,
+    cp_ids_in: list[str] | None = None,
+    cp_ids_not_in: list[str] | None = None,
     offset: int | None = None,
 ) -> list[dict[str, Any]]:
     """List chargers, ordered by surrogate `id`.
@@ -992,10 +1014,11 @@ async def list_charge_points(
       caller is expected to use `count_charge_points` separately for
       the `total`.
 
-    `vendor` filters by exact match. The `online` filter is NOT
-    applied here because presence lives in Redis; the route handler
-    filters the result post-hoc when the client passes `online=true`
-    or `online=false`.
+    `vendor` filters by exact match. Presence lives in Redis, so the
+    route handler resolves `online=true|false` to a set of cp_ids and
+    passes it as `cp_ids_in` / `cp_ids_not_in`. That way count + page
+    math both respect the filter (an unbounded post-page filter would
+    return wrong totals and shrink pages below `limit`).
     """
     stmt = select(ChargePoint).order_by(ChargePoint.id)
     for cond in _charge_points_filter_conditions(
@@ -1014,6 +1037,8 @@ async def list_charge_points(
         created_before=created_before,
         cp_id_prefix=cp_id_prefix,
         cp_id_contains=cp_id_contains,
+        cp_ids_in=cp_ids_in,
+        cp_ids_not_in=cp_ids_not_in,
     ):
         stmt = stmt.where(cond)
     if offset is not None:
@@ -1044,6 +1069,8 @@ async def count_charge_points(
     created_before: datetime | None = None,
     cp_id_prefix: str | None = None,
     cp_id_contains: str | None = None,
+    cp_ids_in: list[str] | None = None,
+    cp_ids_not_in: list[str] | None = None,
 ) -> int:
     """`SELECT COUNT(*)` over the same filter chain as
     `list_charge_points`. Used by the offset-pagination path to
@@ -1065,6 +1092,8 @@ async def count_charge_points(
         created_before=created_before,
         cp_id_prefix=cp_id_prefix,
         cp_id_contains=cp_id_contains,
+        cp_ids_in=cp_ids_in,
+        cp_ids_not_in=cp_ids_not_in,
     ):
         stmt = stmt.where(cond)
     result = await session.execute(stmt)
