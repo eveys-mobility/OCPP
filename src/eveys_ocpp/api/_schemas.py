@@ -202,12 +202,52 @@ class ChargePointDetail(ChargePoint):
     }
 
 
+class PaginationBlock(BaseModel):
+    """Offset-pagination metadata returned alongside list responses when
+    the caller passes `page` + `page_size`. Cursor-mode callers see
+    `next_cursor` instead; the two are mutually exclusive on a single
+    response.
+
+    Shape is frozen — every field below is part of the wire contract.
+    `total_pages` is 0 when `total == 0`; otherwise it's
+    `ceil(total / page_size)`.
+    """
+
+    page: int = Field(description="1-indexed current page number.")
+    page_size: int = Field(description="Rows per page on this response.")
+    total: int = Field(description="Total rows across every page, given the active filters.")
+    total_pages: int = Field(description="Number of pages at the current `page_size`.")
+    has_next: bool = Field(description="True if a subsequent page exists.")
+    has_prev: bool = Field(description="True if a prior page exists.")
+
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "page": 2,
+                "page_size": 100,
+                "total": 4523,
+                "total_pages": 46,
+                "has_next": True,
+                "has_prev": True,
+            }
+        }
+    }
+
+
 class ChargePointListResponse(BaseModel):
-    """`GET /api/v1/charge-points`. Cursor-paginated. `next_cursor=null`
-    means no more pages."""
+    """`GET /api/v1/charge-points`. Two pagination modes — cursor or offset:
+
+    - **Cursor mode** (default): response carries `next_cursor`.
+      `next_cursor=null` means no more pages.
+    - **Offset mode**: when the caller passes `page` + `page_size`,
+      response carries `pagination` instead.
+
+    The two shapes are mutually exclusive on a single response.
+    """
 
     charge_points: list[ChargePoint]
-    next_cursor: str | None
+    next_cursor: str | None = None
+    pagination: PaginationBlock | None = None
     request_id: str
 
     model_config = {
@@ -362,10 +402,13 @@ class TransactionDetail(Transaction):
 
 
 class TransactionListResponse(BaseModel):
-    """`GET /api/v1/charge-points/{cp_id}/transactions`."""
+    """`GET /api/v1/charge-points/{cp_id}/transactions` and
+    `GET /api/v1/transactions`. Cursor- or page-paginated; see
+    `PaginationBlock` for the offset-mode shape."""
 
     transactions: list[Transaction]
-    next_cursor: str | None
+    next_cursor: str | None = None
+    pagination: PaginationBlock | None = None
     request_id: str
 
     model_config = {
@@ -517,6 +560,7 @@ __all__ = [
     "HealthResponse",
     "MeterValueSample",
     "MeterValuesResponse",
+    "PaginationBlock",
     "PhaseSnapshot",
     "RemoteStartRequest",
     "RemoteStopRequest",

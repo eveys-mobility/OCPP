@@ -165,9 +165,11 @@ components:
       title: ChargePointDetail
       type: object
     ChargePointListResponse:
-      description: '`GET /api/v1/charge-points`. Cursor-paginated. `next_cursor=null`
-
-        means no more pages.'
+      description: "`GET /api/v1/charge-points`. Two pagination modes — cursor or\
+        \ offset:\n\n- **Cursor mode** (default): response carries `next_cursor`.\n\
+        \  `next_cursor=null` means no more pages.\n- **Offset mode**: when the caller\
+        \ passes `page` + `page_size`,\n  response carries `pagination` instead.\n\
+        \nThe two shapes are mutually exclusive on a single response."
       example:
         charge_points:
         - connectors: []
@@ -194,12 +196,15 @@ components:
           - type: string
           - type: 'null'
           title: Next Cursor
+        pagination:
+          anyOf:
+          - $ref: '#/components/schemas/PaginationBlock'
+          - type: 'null'
         request_id:
           title: Request Id
           type: string
       required:
       - charge_points
-      - next_cursor
       - request_id
       title: ChargePointListResponse
       type: object
@@ -490,6 +495,62 @@ components:
       - samples
       - request_id
       title: MeterValuesResponse
+      type: object
+    PaginationBlock:
+      description: 'Offset-pagination metadata returned alongside list responses when
+
+        the caller passes `page` + `page_size`. Cursor-mode callers see
+
+        `next_cursor` instead; the two are mutually exclusive on a single
+
+        response.
+
+
+        Shape is frozen — every field below is part of the wire contract.
+
+        `total_pages` is 0 when `total == 0`; otherwise it''s
+
+        `ceil(total / page_size)`.'
+      example:
+        has_next: true
+        has_prev: true
+        page: 2
+        page_size: 100
+        total: 4523
+        total_pages: 46
+      properties:
+        has_next:
+          description: True if a subsequent page exists.
+          title: Has Next
+          type: boolean
+        has_prev:
+          description: True if a prior page exists.
+          title: Has Prev
+          type: boolean
+        page:
+          description: 1-indexed current page number.
+          title: Page
+          type: integer
+        page_size:
+          description: Rows per page on this response.
+          title: Page Size
+          type: integer
+        total:
+          description: Total rows across every page, given the active filters.
+          title: Total
+          type: integer
+        total_pages:
+          description: Number of pages at the current `page_size`.
+          title: Total Pages
+          type: integer
+      required:
+      - page
+      - page_size
+      - total
+      - total_pages
+      - has_next
+      - has_prev
+      title: PaginationBlock
       type: object
     PhaseSnapshot:
       description: 'Most-recent per-phase electrical snapshot for one transaction.
@@ -854,7 +915,11 @@ components:
       title: TransactionDetail
       type: object
     TransactionListResponse:
-      description: '`GET /api/v1/charge-points/{cp_id}/transactions`.'
+      description: '`GET /api/v1/charge-points/{cp_id}/transactions` and
+
+        `GET /api/v1/transactions`. Cursor- or page-paginated; see
+
+        `PaginationBlock` for the offset-mode shape.'
       example:
         request_id: 9b3c5d18-1f7c-4b6a-8e0e-5b9a3c4f2e10
         transactions:
@@ -874,6 +939,10 @@ components:
           - type: string
           - type: 'null'
           title: Next Cursor
+        pagination:
+          anyOf:
+          - $ref: '#/components/schemas/PaginationBlock'
+          - type: 'null'
         request_id:
           title: Request Id
           type: string
@@ -884,7 +953,6 @@ components:
           type: array
       required:
       - transactions
-      - next_cursor
       - request_id
       title: TransactionListResponse
       type: object
