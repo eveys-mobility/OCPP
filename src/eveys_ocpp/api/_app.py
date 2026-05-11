@@ -42,6 +42,7 @@ from eveys_ocpp.api import (
     charge_points,
     charging_profiles,
     commands,
+    credentials,
     health,
     pending_certificate_signings,
     ready,
@@ -191,6 +192,7 @@ def make_app(
     app.include_router(reservations.router, prefix="/api/v1")
     app.include_router(charging_profiles.router, prefix="/api/v1")
     app.include_router(commands.router, prefix="/api/v1")
+    app.include_router(credentials.router, prefix="/api/v1")
     app.include_router(pending_certificate_signings.router, prefix="/api/v1")
     app.include_router(timeseries.router, prefix="/api/v1")
     app.include_router(admin.router, prefix="/api/v1")

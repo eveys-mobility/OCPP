@@ -271,6 +271,36 @@ Marks the row `rejected`; no charger interaction.
 
 ---
 
+## Charger credentials (TC_073)
+
+Operator surface for managing per-charger Basic Auth passwords. The gateway bcrypts the plaintext server-side; the password is not logged and never reaches a SQL statement.
+
+### `PUT /charge-points/{cp_id}/credentials`
+
+Body:
+
+```json
+{ "password": "a-long-enough-password", "actor": "ops@example.com" }
+```
+
+`actor` is optional. Password must be 12–72 bytes.
+
+Returns `{ "cp_id": "...", "status": "provisioned", "request_id": "..." }`. Idempotent — calling with the same password is safe.
+
+Errors: `404 UNKNOWN_CP_ID`, `400 BAD_REQUEST` (password too short or too long).
+
+### `DELETE /charge-points/{cp_id}/credentials`
+
+Optional query param `?actor=...`. No body.
+
+Returns `{ "cp_id": "...", "status": "unprovisioned", "request_id": "..." }`. Idempotent — deleting a missing credential still returns 200.
+
+Errors: `404 UNKNOWN_CP_ID` (the charger itself doesn't exist).
+
+Both endpoints emit a `cp.credential_rotated` Kafka event for audit consumers.
+
+---
+
 ## Admin (runtime config)
 
 ### `GET /admin/config`

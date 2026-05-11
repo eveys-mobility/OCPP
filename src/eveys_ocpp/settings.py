@@ -468,6 +468,22 @@ class Settings(BaseSettings):
             "stability": "structural",
         },
     )
+    kafka_topic_cp_credential_rotated: str = Field(
+        default="cp.credential_rotated",
+        description=(
+            "Per-charger Basic Auth credential rotations (TC_073). "
+            "Emitted when an operator sets, rotates, or removes a "
+            "charger's password via the REST surface. Audit-grade; "
+            "SIEM consumers tail this alongside `cp.security_event`. "
+            "The password is never carried in the payload."
+        ),
+        json_schema_extra={
+            "category": "kafka_topics",
+            "impact": "Renaming detaches every existing consumer.",
+            "secret": False,
+            "stability": "structural",
+        },
+    )
     kafka_topic_cp_csr_submitted: str = Field(
         default="cp.csr_submitted",
         description=(

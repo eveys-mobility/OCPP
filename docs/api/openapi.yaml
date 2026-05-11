@@ -2154,6 +2154,78 @@ paths:
       summary: Update Firmware
       tags:
       - commands
+  /api/v1/charge-points/{cp_id}/credentials:
+    delete:
+      description: 'Drop the charger''s credential. Idempotent: calling this on a
+
+        charger with no credential row returns 200 with the same shape.
+
+
+        The operator may supply `?actor=` as a query param for the audit
+
+        event; the DELETE body is by convention empty for proxies that
+
+        strip it.'
+      operationId: delete_credential_route_api_v1_charge_points__cp_id__credentials_delete
+      parameters:
+      - in: path
+        name: cp_id
+        required: true
+        schema:
+          title: Cp Id
+          type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Delete Credential Route Api V1 Charge Points  Cp Id  Credentials
+                  Delete
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Delete Credential Route
+      tags:
+      - credentials
+    put:
+      description: 'Upsert the charger''s Basic Auth credential. Idempotent — calling
+
+        this twice with the same password is a no-op at the bcrypt-verify
+
+        level (different hashes both verify against the same plaintext).'
+      operationId: set_credential_route_api_v1_charge_points__cp_id__credentials_put
+      parameters:
+      - in: path
+        name: cp_id
+        required: true
+        schema:
+          title: Cp Id
+          type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Set Credential Route Api V1 Charge Points  Cp Id  Credentials
+                  Put
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Set Credential Route
+      tags:
+      - credentials
   /api/v1/charge-points/{cp_id}/meter-values:
     get:
       operationId: list_meter_values_api_v1_charge_points__cp_id__meter_values_get
