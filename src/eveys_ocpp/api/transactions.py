@@ -25,7 +25,14 @@ from eveys_ocpp.api._errors import (
     ERR_UNKNOWN_TRANSACTION_ID,
     ApiError,
 )
-from eveys_ocpp.api._pagination import clamp_limit, decode_cursor, encode_cursor
+from eveys_ocpp.api._pagination import (
+    clamp_limit,
+    decode_cursor,
+    encode_cursor,
+    offset_for_page,
+    pagination_block,
+    reject_mixed_pagination,
+)
 from eveys_ocpp.api._schemas import (
     ErrorEnvelope,
     TransactionDetail,
@@ -33,6 +40,8 @@ from eveys_ocpp.api._schemas import (
 )
 from eveys_ocpp.persistence.db import session_scope
 from eveys_ocpp.persistence.repositories import (
+    count_transactions,
+    count_transactions_by_cp,
     get_transaction_by_id,
     list_transactions,
     list_transactions_by_cp,
@@ -92,13 +101,59 @@ async def list_transactions_route(
     cp_id: str,
     cursor: str | None = Query(default=None),
     limit: int | None = Query(default=None, ge=1, le=10_000),
+    page: int | None = Query(default=None, ge=1),
+    page_size: int | None = Query(default=None, ge=1, le=10_000),
     id_tag: str | None = Query(default=None),
     open: bool | None = Query(default=None),
     from_: str | None = Query(default=None, alias="from"),
     to: str | None = Query(default=None),
 ) -> dict[str, Any]:
     settings = request.app.state.settings
-    page_size = clamp_limit(
+    reject_mixed_pagination(cursor=cursor, page=page)
+
+    started_from = _parse_iso8601(from_, field_name="from")
+    started_to = _parse_iso8601(to, field_name="to")
+
+    if page is not None:
+        effective_size = clamp_limit(
+            page_size if page_size is not None else limit,
+            default=settings.rest_default_page_size,
+            maximum=settings.rest_max_page_size,
+        )
+        offset = offset_for_page(page, effective_size)
+        async with session_scope(request.app.state.session_factory) as session:
+            rows = await list_transactions_by_cp(
+                session,
+                cp_id=cp_id,
+                after_id=None,
+                limit=effective_size,
+                id_tag=id_tag,
+                open_only=open,
+                started_from=started_from,
+                started_to=started_to,
+                offset=offset,
+            )
+            total = await count_transactions_by_cp(
+                session,
+                cp_id=cp_id,
+                id_tag=id_tag,
+                open_only=open,
+                started_from=started_from,
+                started_to=started_to,
+            )
+        if rows is None or total is None:
+            raise ApiError(
+                status_code=404,
+                error_code=ERR_UNKNOWN_CP_ID,
+                message=f"unknown cp_id: {cp_id}",
+            )
+        return {
+            "transactions": [{**_transaction_to_response(tx), "cp_id": cp_id} for tx in rows],
+            "pagination": pagination_block(page=page, page_size=effective_size, total=total),
+            "request_id": request.state.request_id,
+        }
+
+    effective_size = clamp_limit(
         limit,
         default=settings.rest_default_page_size,
         maximum=settings.rest_max_page_size,
@@ -116,15 +171,12 @@ async def list_transactions_route(
             )
         after_id = raw_id
 
-    started_from = _parse_iso8601(from_, field_name="from")
-    started_to = _parse_iso8601(to, field_name="to")
-
     async with session_scope(request.app.state.session_factory) as session:
         rows = await list_transactions_by_cp(
             session,
             cp_id=cp_id,
             after_id=after_id,
-            limit=page_size,
+            limit=effective_size,
             id_tag=id_tag,
             open_only=open,
             started_from=started_from,
@@ -138,14 +190,14 @@ async def list_transactions_route(
             message=f"unknown cp_id: {cp_id}",
         )
 
-    has_more = len(rows) > page_size
-    page = rows[:page_size]
+    has_more = len(rows) > effective_size
+    page_rows = rows[:effective_size]
     next_cursor: str | None = None
-    if has_more and page:
-        next_cursor = encode_cursor({"id": page[-1]["id"]})
+    if has_more and page_rows:
+        next_cursor = encode_cursor({"id": page_rows[-1]["id"]})
 
     return {
-        "transactions": [{**_transaction_to_response(tx), "cp_id": cp_id} for tx in page],
+        "transactions": [{**_transaction_to_response(tx), "cp_id": cp_id} for tx in page_rows],
         "next_cursor": next_cursor,
         "request_id": request.state.request_id,
     }
@@ -166,6 +218,8 @@ async def list_transactions_global_route(
     request: Request,
     cursor: str | None = Query(default=None),
     limit: int | None = Query(default=None, ge=1, le=10_000),
+    page: int | None = Query(default=None, ge=1),
+    page_size: int | None = Query(default=None, ge=1, le=10_000),
     cp_id: str | None = Query(default=None),
     id_tag: str | None = Query(default=None),
     active: bool | None = Query(default=None),
@@ -173,7 +227,45 @@ async def list_transactions_global_route(
     to: str | None = Query(default=None),
 ) -> dict[str, Any]:
     settings = request.app.state.settings
-    page_size = clamp_limit(
+    reject_mixed_pagination(cursor=cursor, page=page)
+
+    started_from = _parse_iso8601(from_, field_name="from")
+    started_to = _parse_iso8601(to, field_name="to")
+
+    if page is not None:
+        effective_size = clamp_limit(
+            page_size if page_size is not None else limit,
+            default=settings.rest_default_page_size,
+            maximum=settings.rest_max_page_size,
+        )
+        offset = offset_for_page(page, effective_size)
+        async with session_scope(request.app.state.session_factory) as session:
+            rows = await list_transactions(
+                session,
+                after_id=None,
+                limit=effective_size,
+                cp_id=cp_id,
+                id_tag=id_tag,
+                active=active,
+                started_from=started_from,
+                started_to=started_to,
+                offset=offset,
+            )
+            total = await count_transactions(
+                session,
+                cp_id=cp_id,
+                id_tag=id_tag,
+                active=active,
+                started_from=started_from,
+                started_to=started_to,
+            )
+        return {
+            "transactions": [_transaction_to_response(tx) for tx in rows],
+            "pagination": pagination_block(page=page, page_size=effective_size, total=total),
+            "request_id": request.state.request_id,
+        }
+
+    effective_size = clamp_limit(
         limit,
         default=settings.rest_default_page_size,
         maximum=settings.rest_max_page_size,
@@ -191,14 +283,11 @@ async def list_transactions_global_route(
             )
         after_id = raw_id
 
-    started_from = _parse_iso8601(from_, field_name="from")
-    started_to = _parse_iso8601(to, field_name="to")
-
     async with session_scope(request.app.state.session_factory) as session:
         rows = await list_transactions(
             session,
             after_id=after_id,
-            limit=page_size,
+            limit=effective_size,
             cp_id=cp_id,
             id_tag=id_tag,
             active=active,
@@ -206,14 +295,14 @@ async def list_transactions_global_route(
             started_to=started_to,
         )
 
-    has_more = len(rows) > page_size
-    page = rows[:page_size]
+    has_more = len(rows) > effective_size
+    page_rows = rows[:effective_size]
     next_cursor: str | None = None
-    if has_more and page:
-        next_cursor = encode_cursor({"id": page[-1]["id"]})
+    if has_more and page_rows:
+        next_cursor = encode_cursor({"id": page_rows[-1]["id"]})
 
     return {
-        "transactions": [_transaction_to_response(tx) for tx in page],
+        "transactions": [_transaction_to_response(tx) for tx in page_rows],
         "next_cursor": next_cursor,
         "request_id": request.state.request_id,
     }

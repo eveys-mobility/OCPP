@@ -30,7 +30,14 @@ from typing import Any
 from fastapi import APIRouter, Query, Request
 
 from eveys_ocpp.api._errors import ERR_UNKNOWN_CP_ID, ApiError
-from eveys_ocpp.api._pagination import clamp_limit, decode_cursor, encode_cursor
+from eveys_ocpp.api._pagination import (
+    clamp_limit,
+    decode_cursor,
+    encode_cursor,
+    offset_for_page,
+    pagination_block,
+    reject_mixed_pagination,
+)
 from eveys_ocpp.api._schemas import (
     ChargePointDetail,
     ChargePointListResponse,
@@ -38,6 +45,7 @@ from eveys_ocpp.api._schemas import (
 )
 from eveys_ocpp.persistence.db import session_scope
 from eveys_ocpp.persistence.repositories import (
+    count_charge_points,
     get_charge_point_detail,
     list_charge_points,
 )
@@ -129,18 +137,49 @@ async def _enrich_with_connectors(
 
 @router.get(
     "/charge-points",
-    summary="List charge points (cursor-paginated)",
+    summary="List charge points (cursor- or page-paginated)",
     responses={200: {"model": ChargePointListResponse}},
 )
 async def list_charge_points_route(
     request: Request,
     cursor: str | None = Query(default=None),
     limit: int | None = Query(default=None, ge=1, le=10_000),
+    page: int | None = Query(default=None, ge=1),
+    page_size: int | None = Query(default=None, ge=1, le=10_000),
     online: bool | None = Query(default=None),
     vendor: str | None = Query(default=None),
 ) -> dict[str, Any]:
     settings = request.app.state.settings
-    page_size = clamp_limit(
+    reject_mixed_pagination(cursor=cursor, page=page)
+
+    # Two pagination paths, never both.
+    if page is not None:
+        effective_size = clamp_limit(
+            page_size if page_size is not None else limit,
+            default=settings.rest_default_page_size,
+            maximum=settings.rest_max_page_size,
+        )
+        offset = offset_for_page(page, effective_size)
+        async with session_scope(request.app.state.session_factory) as session:
+            rows = await list_charge_points(
+                session,
+                after_id=None,
+                limit=effective_size,
+                vendor=vendor,
+                offset=offset,
+            )
+            total = await count_charge_points(session, vendor=vendor)
+        enriched = [await _enrich_with_presence(request, cp) for cp in rows]
+        if online is not None:
+            enriched = [cp for cp in enriched if cp["online"] == online]
+        enriched = await _enrich_with_connectors(request, enriched)
+        return {
+            "charge_points": [_to_response(cp) for cp in enriched],
+            "pagination": pagination_block(page=page, page_size=effective_size, total=total),
+            "request_id": request.state.request_id,
+        }
+
+    effective_size = clamp_limit(
         limit,
         default=settings.rest_default_page_size,
         maximum=settings.rest_max_page_size,
@@ -162,19 +201,19 @@ async def list_charge_points_route(
         rows = await list_charge_points(
             session,
             after_id=after_id,
-            limit=page_size,
+            limit=effective_size,
             vendor=vendor,
         )
 
     # Detect next page: we asked for limit+1; trim the extra row and
     # set the cursor to the last row's surrogate id.
-    has_more = len(rows) > page_size
-    page = rows[:page_size]
+    has_more = len(rows) > effective_size
+    page_rows = rows[:effective_size]
     next_cursor: str | None = None
-    if has_more and page:
-        next_cursor = encode_cursor({"id": page[-1]["id"]})
+    if has_more and page_rows:
+        next_cursor = encode_cursor({"id": page_rows[-1]["id"]})
 
-    enriched = [await _enrich_with_presence(request, cp) for cp in page]
+    enriched = [await _enrich_with_presence(request, cp) for cp in page_rows]
 
     # `online` filter is post-Postgres because presence lives in Redis.
     # This means the page may shrink below `limit` after filtering — a

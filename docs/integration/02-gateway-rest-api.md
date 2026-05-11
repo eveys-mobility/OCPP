@@ -72,6 +72,25 @@ List chargers known to the gateway. Cursor-paginated.
 
 `next_cursor` is `null` on the last page.
 
+> **Two pagination modes.** This response shape (with `next_cursor`) is **cursor pagination** — pass `cursor=<value>` and the server streams the next page. As an alternative, every list endpoint also accepts `page=N` + `page_size=M` (offset pagination). When you pass `page`, the response carries a `pagination` block instead of `next_cursor`:
+>
+> ```json
+> {
+>   "charge_points": [ ... ],
+>   "pagination": {
+>     "page":        2,
+>     "page_size":   100,
+>     "total":       4523,
+>     "total_pages": 46,
+>     "has_next":    true,
+>     "has_prev":    true
+>   },
+>   "request_id": "<uuid>"
+> }
+> ```
+>
+> Sending both `cursor` and `page` returns `400 BAD_REQUEST` ("pick one"). Cursor mode is best for streaming through a deep list; offset mode is best for "show me page 7" operator UIs. Pick one per call.
+
 #### `connectors[]` vs `last_status`
 
 `connectors[]` is the source of truth for **per-connector state** — one

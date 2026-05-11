@@ -1063,6 +1063,25 @@ paths:
           - type: 'null'
           title: Limit
       - in: query
+        name: page
+        required: false
+        schema:
+          anyOf:
+          - minimum: 1
+            type: integer
+          - type: 'null'
+          title: Page
+      - in: query
+        name: page_size
+        required: false
+        schema:
+          anyOf:
+          - maximum: 10000
+            minimum: 1
+            type: integer
+          - type: 'null'
+          title: Page Size
+      - in: query
         name: online
         required: false
         schema:
@@ -1094,7 +1113,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
           description: Validation Error
-      summary: List charge points (cursor-paginated)
+      summary: List charge points (cursor- or page-paginated)
       tags:
       - charge_points
   /api/v1/charge-points/{cp_id}:
@@ -2649,6 +2668,25 @@ paths:
           - type: 'null'
           title: Limit
       - in: query
+        name: page
+        required: false
+        schema:
+          anyOf:
+          - minimum: 1
+            type: integer
+          - type: 'null'
+          title: Page
+      - in: query
+        name: page_size
+        required: false
+        schema:
+          anyOf:
+          - maximum: 10000
+            minimum: 1
+            type: integer
+          - type: 'null'
+          title: Page Size
+      - in: query
         name: id_tag
         required: false
         schema:
@@ -2773,6 +2811,25 @@ paths:
             type: integer
           - type: 'null'
           title: Limit
+      - in: query
+        name: page
+        required: false
+        schema:
+          anyOf:
+          - minimum: 1
+            type: integer
+          - type: 'null'
+          title: Page
+      - in: query
+        name: page_size
+        required: false
+        schema:
+          anyOf:
+          - maximum: 10000
+            minimum: 1
+            type: integer
+          - type: 'null'
+          title: Page Size
       - in: query
         name: cp_id
         required: false

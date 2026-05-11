@@ -78,3 +78,71 @@ def clamp_limit(value: int | None, *, default: int, maximum: int) -> int:
             message="limit must be >= 1",
         )
     return min(value, maximum)
+
+
+def reject_mixed_pagination(*, cursor: str | None, page: int | None) -> None:
+    """List endpoints accept either cursor pagination or offset
+    pagination. Sending both is ambiguous — refuse rather than guess.
+
+    Called by every list route before any other pagination work."""
+    if cursor is not None and page is not None:
+        raise ApiError(
+            status_code=400,
+            error_code=ERR_BAD_REQUEST,
+            message=(
+                "pick one pagination style: either `cursor` (streaming) "
+                "or `page` + `page_size` (offset), not both"
+            ),
+        )
+
+
+def offset_for_page(page: int, page_size: int) -> int:
+    """Translate a 1-indexed `page` and `page_size` into a SQL offset.
+
+    The contract is 1-indexed (page=1 is the first page) because that's
+    what every operator UI presents to users; the SQL layer's 0-indexed
+    OFFSET is hidden here."""
+    if page < 1:
+        raise ApiError(
+            status_code=400,
+            error_code=ERR_BAD_REQUEST,
+            message="page must be >= 1",
+        )
+    return (page - 1) * page_size
+
+
+def pagination_block(*, page: int, page_size: int, total: int) -> dict[str, Any]:
+    """Build the `pagination` response object for an offset-paginated
+    list endpoint.
+
+    Shape (frozen — clients depend on these keys):
+
+        {
+          "page":        1,
+          "page_size":   100,
+          "total":       4523,
+          "total_pages": 46,
+          "has_next":    true,
+          "has_prev":    false
+        }
+
+    `total_pages` is computed as `ceil(total / page_size)`. When
+    `total == 0`, `total_pages` is 0 and both `has_*` are false."""
+    if page_size < 1:
+        # Defensive — clamp_limit already prevents this on the
+        # request side, but the helper should still refuse to divide
+        # by zero or negative.
+        raise ApiError(
+            status_code=400,
+            error_code=ERR_BAD_REQUEST,
+            message="page_size must be >= 1",
+        )
+    total_pages = (total + page_size - 1) // page_size if total > 0 else 0
+    return {
+        "page": page,
+        "page_size": page_size,
+        "total": total,
+        "total_pages": total_pages,
+        "has_next": page < total_pages,
+        "has_prev": page > 1 and total_pages > 0,
+    }

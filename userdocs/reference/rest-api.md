@@ -10,6 +10,53 @@
 
 ---
 
+## Pagination
+
+Every list endpoint supports **two** pagination modes. Pick one per call — sending both `cursor` and `page` returns `400 BAD_REQUEST`.
+
+### Cursor mode (streaming)
+
+Query params: `cursor` (opaque string from the previous page), `limit` (page size hint).
+
+Response shape:
+
+```json
+{ "<resource>": [ ... ], "next_cursor": "eyJpZCI6MTIzfQ", "request_id": "..." }
+```
+
+`next_cursor` is `null` on the last page. The cursor's internal shape is opaque; do not decode it.
+
+Use cursor mode for backfills, sync jobs, and anything that intends to read every row eventually.
+
+### Page mode (offset)
+
+Query params: `page` (1-indexed integer ≥ 1), `page_size` (rows per page, capped by `rest_max_page_size`).
+
+Response shape:
+
+```json
+{
+  "<resource>": [ ... ],
+  "pagination": {
+    "page":        2,
+    "page_size":   100,
+    "total":       4523,
+    "total_pages": 46,
+    "has_next":    true,
+    "has_prev":    true
+  },
+  "request_id": "..."
+}
+```
+
+Use page mode for operator UIs that need to know how many rows exist and let users jump to arbitrary pages.
+
+### Pick one per call
+
+Cursor mode is faster on deep tables (O(log N) per page) but doesn't tell you how many rows exist in total. Page mode runs `SELECT COUNT(*)` for the `total` field — a few milliseconds on millions of rows, but it's there.
+
+---
+
 ## Conventions in this page
 
 - Every path is prefixed with `/api/v1`.
@@ -46,16 +93,18 @@ Auth-exempt. Returns `200 OK` normally. Returns `503 Service Unavailable` once t
 
 ### `GET /charge-points` — list the fleet
 
-Cursor-paginated.
+Cursor- or page-paginated. See [Pagination](#pagination) below for the two modes.
 
 Query params:
 
 | Param | Type | Default | Notes |
 |---|---|---|---|
-| `cursor` | string | — | Opaque; pass `next_cursor` from the previous page. |
-| `limit` | int | `rest_default_page_size` | Capped by `rest_max_page_size`. |
+| `cursor` | string | — | Opaque; pass `next_cursor` from the previous page. Cursor mode. |
+| `page` | int (>=1) | — | 1-indexed page number. Page mode. |
+| `page_size` | int (>=1) | `rest_default_page_size` | Page mode size. Capped by `rest_max_page_size`. |
+| `limit` | int | `rest_default_page_size` | Cursor mode size. Capped by `rest_max_page_size`. |
 | `vendor` | string | — | Filter by `BootNotification`-reported vendor. |
-| `model` | string | — | Filter by model. |
+| `online` | bool | — | Filter by registry presence (`true` or `false`). |
 
 Response:
 
