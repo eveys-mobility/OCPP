@@ -182,3 +182,22 @@ class Registry:
             async for _ in self._redis.scan_iter(match="cp:online:*", count=500):
                 total += 1
         return total
+
+    async def list_online_ids(self) -> list[str]:
+        """Return every currently-online cp_id.
+
+        Used by the `/charge-points?online=…` filter so the SQL count
+        and page limits can both honour presence. Reads via the same
+        SCAN iterator as count_online, then strips the `cp:online:`
+        prefix off each key. Linear in fleet size but bounded by the
+        list endpoint's 30s poll cadence on the Console side.
+        """
+        prefix = "cp:online:"
+        ids: list[str] = []
+        with _timed_redis("scan"):
+            async for key in self._redis.scan_iter(match=f"{prefix}*", count=500):
+                # decode_responses=True on the client → key is a str.
+                s = key if isinstance(key, str) else str(key)
+                if s.startswith(prefix):
+                    ids.append(s[len(prefix) :])
+        return ids

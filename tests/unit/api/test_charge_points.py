@@ -61,32 +61,79 @@ async def test_list_paginates_with_cursor(
 
 
 @pytest.mark.asyncio
-async def test_list_filters_by_online_post_postgres(
+async def test_list_online_true_pushes_cp_ids_in_filter_from_registry(
     client: httpx.AsyncClient,
     monkeypatch: pytest.MonkeyPatch,
     fake_registry: MagicMock,
 ) -> None:
-    """The `online` filter runs against the Redis registry, not Postgres,
-    so it filters AFTER paging — the spec accepts the resulting page may
-    be shorter than `limit`."""
+    """`online=true` resolves to `cp_ids_in=<online_ids>` so the SQL
+    count and page math respect the filter (no post-page trimming)."""
     from eveys_ocpp.api import charge_points as cp_module
 
-    rows = [_cp_row(cp_id="CP_ONLINE", internal_id=1), _cp_row(cp_id="CP_OFFLINE", internal_id=2)]
-    monkeypatch.setattr(cp_module, "list_charge_points", AsyncMock(return_value=rows))
+    fake_registry.list_online_ids = AsyncMock(return_value=["CP_ONLINE_A", "CP_ONLINE_B"])
+    fake_registry.get_pod = AsyncMock(side_effect=lambda cp_id: "pod-1")
 
-    # Registry says CP_ONLINE has a pod, CP_OFFLINE has none.
-    async def _get_pod(cp_id: str) -> str | None:
-        return "pod-1" if cp_id == "CP_ONLINE" else None
-
-    fake_registry.get_pod = AsyncMock(side_effect=_get_pod)
+    list_spy = AsyncMock(return_value=[_cp_row(cp_id="CP_ONLINE_A", internal_id=1)])
+    monkeypatch.setattr(cp_module, "list_charge_points", list_spy)
 
     response = await client.get("/api/v1/charge-points?online=true")
+    assert response.status_code == 200
 
-    body = response.json()
-    assert len(body["charge_points"]) == 1
-    assert body["charge_points"][0]["cp_id"] == "CP_ONLINE"
-    assert body["charge_points"][0]["online"] is True
-    assert body["charge_points"][0]["pod_id"] == "pod-1"
+    kwargs = list_spy.await_args.kwargs
+    assert kwargs["cp_ids_in"] == ["CP_ONLINE_A", "CP_ONLINE_B"]
+    assert kwargs["cp_ids_not_in"] is None
+
+
+@pytest.mark.asyncio
+async def test_list_online_false_pushes_cp_ids_not_in_filter(
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+    fake_registry: MagicMock,
+) -> None:
+    """`online=false` resolves to `cp_ids_not_in=<online_ids>`."""
+    from eveys_ocpp.api import charge_points as cp_module
+
+    fake_registry.list_online_ids = AsyncMock(return_value=["CP_ONLINE_X"])
+    fake_registry.get_pod = AsyncMock(return_value=None)
+
+    list_spy = AsyncMock(return_value=[_cp_row(cp_id="CP_OFFLINE", internal_id=2)])
+    monkeypatch.setattr(cp_module, "list_charge_points", list_spy)
+
+    response = await client.get("/api/v1/charge-points?online=false")
+    assert response.status_code == 200
+
+    kwargs = list_spy.await_args.kwargs
+    assert kwargs["cp_ids_in"] is None
+    assert kwargs["cp_ids_not_in"] == ["CP_ONLINE_X"]
+
+
+@pytest.mark.asyncio
+async def test_list_online_true_in_page_mode_passes_filter_to_count(
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+    fake_registry: MagicMock,
+) -> None:
+    """In page-mode the same `cp_ids_in` filter must reach
+    `count_charge_points` — otherwise total reports the unfiltered
+    count and the page footer lies to the operator."""
+    from eveys_ocpp.api import charge_points as cp_module
+
+    fake_registry.list_online_ids = AsyncMock(return_value=["CP_ONLINE_A"])
+    fake_registry.get_pod = AsyncMock(return_value="pod-1")
+
+    monkeypatch.setattr(
+        cp_module,
+        "list_charge_points",
+        AsyncMock(return_value=[_cp_row(cp_id="CP_ONLINE_A", internal_id=1)]),
+    )
+    count_spy = AsyncMock(return_value=1)
+    monkeypatch.setattr(cp_module, "count_charge_points", count_spy)
+
+    response = await client.get("/api/v1/charge-points?page=1&page_size=10&online=true")
+    assert response.status_code == 200
+
+    kwargs = count_spy.await_args.kwargs
+    assert kwargs["cp_ids_in"] == ["CP_ONLINE_A"]
 
 
 @pytest.mark.asyncio
