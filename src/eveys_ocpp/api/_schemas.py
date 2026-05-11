@@ -163,11 +163,59 @@ class ChargePoint(BaseModel):
         description="Which gateway pod owns the WS. None when offline.",
     )
     connectors: list[ConnectorStatus] = Field(default_factory=list)
+    last_offline_seconds: int | None = Field(
+        default=None,
+        description=(
+            "Seconds the charger was offline during its most recent observed outage. "
+            "Null when the gateway has never recorded an outage for this charger "
+            "(first connect, or pre-feature history)."
+        ),
+    )
+    last_offline_ended_at: str | None = Field(
+        default=None,
+        description="ISO-8601 UTC of the reconnect that closed the most recent outage.",
+    )
+
+
+class ActiveSession(BaseModel):
+    """One un-stopped charging session for the charger.
+
+    Postgres `transactions` row (started, never stopped) joined with a
+    ClickHouse meter readout so the operator can see live progress
+    without a second round-trip. `energy_consumed_wh` is `latest meter
+    on the session's connector - meter_start_wh`; null when no
+    MeterValues have arrived since the StartTransaction (charger
+    booting, network gap). `soc_pct` and `power_w` are null when the
+    charger never reports those measurands.
+    """
+
+    transaction_id: int
+    connector_id: int
+    id_tag: str
+    started_at: str = Field(description="ISO-8601 server-receive time of the StartTransaction.")
+    meter_start_wh: int
+    energy_consumed_wh: int | None = None
+    last_meter_at: str | None = None
+    soc_pct: float | None = None
+    power_w: float | None = None
+
+
+class LatestMeter(BaseModel):
+    """Most recent `Energy.Active.Import.Register` reading the charger
+    sent, regardless of whether a transaction is active. Useful for
+    spotting metering gaps on idle chargers.
+    """
+
+    connector_id: int
+    energy_wh: float
+    occurred_at: str
 
 
 class ChargePointDetail(ChargePoint):
     active_reservations: list[Reservation] = Field(default_factory=list)
     active_charging_profiles: list[ChargingProfile] = Field(default_factory=list)
+    active_sessions: list[ActiveSession] = Field(default_factory=list)
+    latest_meter: LatestMeter | None = None
     request_id: str
 
     model_config = {
@@ -493,6 +541,37 @@ class StatusHistoryResponse(BaseModel):
     request_id: str
 
 
+class OfflineDurationEvent(BaseModel):
+    """One observed offline window for a charger.
+
+    Anchored on `came_online_at` (the reconnect that closed the
+    window). `offline_seconds` is precomputed gateway-side."""
+
+    event_id: str
+    occurred_at: str = Field(description="Server-receive time of the reconnect (ISO-8601 UTC).")
+    went_offline_at: str
+    came_online_at: str
+    offline_seconds: int
+    prior_pod_id: str | None = None
+    prior_reason: str | None = None
+
+
+class OfflineHistoryResponse(BaseModel):
+    """`GET /api/v1/charge-points/{cp_id}/offline-history?since=&until=`.
+
+    Path-scoped to one charger; filters are limited to a `[since, until]`
+    window on `came_online_at`. Pagination follows the same dual-mode
+    contract as `/charge-points` — `cursor`+`limit` for streaming, or
+    `page`+`page_size` for indexed access.
+    """
+
+    cp_id: str
+    offline_windows: list[OfflineDurationEvent]
+    next_cursor: str | None = None
+    pagination: PaginationBlock | None = None
+    request_id: str
+
+
 # --------------------------------------------------------------------------
 # Command surface (E3-8) — typed shapes for the most-used 3 of 19
 # --------------------------------------------------------------------------
@@ -548,6 +627,7 @@ class CommandAcceptedResponse(BaseModel):
 
 
 __all__ = [
+    "ActiveSession",
     "ChargePoint",
     "ChargePointDetail",
     "ChargePointListResponse",
@@ -558,8 +638,11 @@ __all__ = [
     "ErrorEnvelope",
     "HealthComponents",
     "HealthResponse",
+    "LatestMeter",
     "MeterValueSample",
     "MeterValuesResponse",
+    "OfflineDurationEvent",
+    "OfflineHistoryResponse",
     "PaginationBlock",
     "PhaseSnapshot",
     "RemoteStartRequest",

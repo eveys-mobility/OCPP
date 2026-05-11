@@ -80,6 +80,59 @@ async def _publish_lifecycle_event(
         )
 
 
+async def _publish_offline_duration(
+    *,
+    event_producer: EventProducer | None,
+    cp_id: str,
+    topic: str,
+    marker: dict[str, str],
+    came_online_at: datetime,
+) -> None:
+    """Publish the cp.offline_duration envelope for one outage.
+
+    `marker` is the read-and-delete payload from the registry —
+    `went_offline_at` (ISO-8601 UTC), `pod_id`, `reason`. A marker
+    written before this field was set carries an empty reason; we
+    forward that through unchanged.
+
+    Same best-effort shape as `_publish_lifecycle_event` — a Kafka
+    outage logs and continues; a malformed marker (stale schema,
+    typo'd ISO timestamp) logs and continues. Either way the WS
+    upgrade still completes.
+    """
+    went_offline_raw = marker.get("went_offline_at", "")
+    if not went_offline_raw:
+        log.warning("ws.offline_duration_skipped_no_timestamp", cp_id=cp_id)
+        return
+    try:
+        went_offline_dt = datetime.fromisoformat(went_offline_raw)
+    except ValueError as exc:
+        log.warning(
+            "ws.offline_duration_bad_timestamp",
+            cp_id=cp_id,
+            value=went_offline_raw,
+            error=str(exc),
+        )
+        return
+    # Both timestamps are server-receive (UTC). Negative gaps can only
+    # happen if the marker's pod ran with a skewed clock vs ours;
+    # publish anyway, downstream can filter on offline_seconds >= 0.
+    offline_seconds = int((came_online_at - went_offline_dt).total_seconds())
+    await _publish_lifecycle_event(
+        event_producer=event_producer,
+        cp_id=cp_id,
+        topic=topic,
+        payload_field="cp_offline_duration",
+        payload=events_pb2.CpOfflineDuration(
+            went_offline_at=went_offline_raw,
+            came_online_at=came_online_at.isoformat(),
+            offline_seconds=offline_seconds,
+            prior_pod_id=marker.get("pod_id", ""),
+            prior_reason=marker.get("reason", ""),
+        ),
+    )
+
+
 async def _on_connect(
     connection: ServerConnection,
     *,
@@ -114,6 +167,28 @@ async def _on_connect(
     log.info("ws.connected")
     metrics_registry.WS_CONNECTS_TOTAL.inc()
     metrics_registry.WS_CONNECTIONS_ACTIVE.inc()
+
+    # Offline-duration window closes on the connect side. Read-and-
+    # delete the marker BEFORE mark_online: a marker left by a prior
+    # disconnect is, by construction, the matching opening side of
+    # this window. Do it before the cp.connected publish so the
+    # offline-duration event arrives first in stream order. Best-
+    # effort — a Redis hiccup here just means we miss one duration.
+    came_online_at_dt = datetime.now(UTC)
+    if registry is not None:
+        try:
+            marker = await registry.pop_offline_marker(cp_id)
+        except Exception as exc:
+            log.warning("ws.offline_marker_read_failed", cp_id=cp_id, error=str(exc))
+            marker = None
+        if marker is not None:
+            await _publish_offline_duration(
+                event_producer=event_producer,
+                cp_id=cp_id,
+                topic=settings.kafka_topic_cp_offline_duration,
+                marker=marker,
+                came_online_at=came_online_at_dt,
+            )
 
     if registry is not None:
         await registry.mark_online(cp_id)
@@ -177,6 +252,15 @@ async def _on_connect(
         # registry-is-None branch — without a registry there's no way
         # to distinguish a real departure from a race.
         if was_ours:
+            # Record the offline-marker so the next connect can compute
+            # the gap. Same `was_ours` gate as cp.disconnected — a
+            # reconnect-to-different-pod race must not overwrite the
+            # new pod's marker with our stale one.
+            if registry is not None:
+                try:
+                    await registry.record_offline_marker(cp_id, reason=disconnect_reason)
+                except Exception as exc:
+                    log.warning("ws.offline_marker_write_failed", cp_id=cp_id, error=str(exc))
             await _publish_lifecycle_event(
                 event_producer=event_producer,
                 cp_id=cp_id,

@@ -73,13 +73,22 @@ List chargers known to the gateway. Cursor-paginated.
           "error_code": "NoError",
           "last_changed_at": "2026-05-05T14:25:00.000+00:00"
         }
-      ]
+      ],
+      "last_offline_seconds": 247,
+      "last_offline_ended_at": "2026-05-11T09:30:00.000+00:00"
     }
   ],
   "next_cursor": "eyJpZCI6MTAwfQ==",
   "request_id": "<uuid>"
 }
 ```
+
+`last_offline_seconds` is the gap, in seconds, between the prior WS
+disconnect and the reconnect that closed it. `last_offline_ended_at` is
+the server-receive time of that reconnect. Both are `null` for chargers
+the gateway has never observed reconnecting (first boot, history
+older than the feature). For the full reconnect history use
+[`GET /charge-points/{cp_id}/offline-history`](#get-apiv1charge-pointscp_idoffline-history).
 
 `next_cursor` is `null` on the last page.
 
@@ -153,6 +162,8 @@ Single charger detail. Same per-charger object as the list endpoint, plus active
       "last_changed_at": "2026-05-05T14:25:00.000+00:00"
     }
   ],
+  "last_offline_seconds": 247,
+  "last_offline_ended_at": "2026-05-11T09:30:00.000+00:00",
   "active_reservations": [
     {
       "reservation_id": 8842,
@@ -171,9 +182,54 @@ Single charger detail. Same per-charger object as the list endpoint, plus active
       "kind": "Recurring"
     }
   ],
+  "active_sessions": [
+    {
+      "transaction_id": 9001,
+      "connector_id": 1,
+      "id_tag": "RFID_FAMILY_007",
+      "started_at": "2026-05-05T14:30:00.000+00:00",
+      "meter_start_wh": 1500000,
+      "energy_consumed_wh": 4200,
+      "last_meter_at": "2026-05-05T15:14:30.000+00:00",
+      "soc_pct": 78.0,
+      "power_w": 11040.0
+    }
+  ],
+  "latest_meter": {
+    "connector_id": 1,
+    "energy_wh": 1504200.0,
+    "occurred_at": "2026-05-05T15:14:30.000+00:00"
+  },
   "request_id": "<uuid>"
 }
 ```
+
+#### `active_sessions[]`
+
+One entry per currently-running transaction (Postgres `transactions`
+rows with no `stopped_received_at`). Up to 10 rows; a charger with
+more concurrent sessions than that is a misconfiguration worth
+investigating. Empty when the charger is idle.
+
+| Field | Source | When `null` |
+|---|---|---|
+| `transaction_id`, `connector_id`, `id_tag`, `started_at`, `meter_start_wh` | Postgres `transactions` | never |
+| `energy_consumed_wh` | latest `Energy.Active.Import.Register` on the session's connector − `meter_start_wh` | no MeterValues have arrived since the StartTransaction (charger booting, network gap) |
+| `last_meter_at` | server-receive time of that latest sample | same as above |
+| `soc_pct` | `argMax` of `SoC` measurand on the transaction | charger never reports SoC (most AC chargers don't) |
+| `power_w` | sum of per-phase `Power.Active.Import` snapshots | charger never reports power-active-import (some DC chargers, or charger that only reports current/voltage) |
+
+#### `latest_meter`
+
+Most recent `Energy.Active.Import.Register` reading regardless of
+session, picking the connector with the highest `occurred_at`. Useful
+for spotting metering gaps on idle chargers (no active session +
+`latest_meter` going stale = the charger has stopped reporting).
+`null` when the charger has never sent a MeterValues.
+
+`active_sessions[]` and `latest_meter` are best-effort: a ClickHouse
+hiccup degrades them to `null` fields (sessions metadata still
+surfaces from Postgres) rather than 500ing the detail path.
 
 `404` with `error_code: UNKNOWN_CP_ID` if the charger has never sent a BootNotification.
 
@@ -262,6 +318,61 @@ StatusNotification history. **ClickHouse-backed**.
   "request_id": "<uuid>"
 }
 ```
+
+---
+
+### `GET /api/v1/charge-points/{cp_id}/offline-history`
+
+Reconnect-by-reconnect history of WS outages observed for one
+charger. **ClickHouse-backed**. One row per outage, anchored on the
+reconnect that closed it.
+
+**Query parameters**:
+
+| Param | Type | Required | Notes |
+|---|---|---|---|
+| `since` | ISO-8601 | no | Earliest `came_online_at` (inclusive). Omit for "from the beginning". |
+| `until` | ISO-8601 | no | Latest `came_online_at` (inclusive). Omit for "up to now". |
+| `cursor` | string | no | Opaque cursor for streaming through a deep list. |
+| `limit` | int | no | 1–10000. Default 1000. |
+| `page` / `page_size` | int | no | Offset-mode pagination (mutually exclusive with `cursor`). |
+
+`since > until` returns `400 BAD_REQUEST`. Pagination follows the
+same dual-mode contract as `/charge-points` — cursor or
+page+page_size, never both.
+
+**Response**:
+
+```json
+{
+  "cp_id": "CP_ACME_42",
+  "offline_windows": [
+    {
+      "event_id": "evt-...",
+      "occurred_at": "2026-05-11T09:30:00.000+00:00",
+      "went_offline_at": "2026-05-11T09:25:53.000+00:00",
+      "came_online_at": "2026-05-11T09:30:00.000+00:00",
+      "offline_seconds": 247,
+      "prior_pod_id": "ocpp-gw-7b3fc9d-x4z8q",
+      "prior_reason": "clean"
+    }
+  ],
+  "next_cursor": null,
+  "request_id": "<uuid>"
+}
+```
+
+Offline rows are emitted only when the reconnect closes a window
+whose opening disconnect this gateway actually observed and held
+(per the cross-pod ownership rules in ADR-0026). A pod crash that
+skipped writing the disconnect marker means that particular outage
+isn't represented here — the gateway prefers under-reporting to
+inventing a duration it cannot prove.
+
+`prior_reason` is `"clean"` for a 1000-Normal-Closure disconnect or
+`"error"` for any other terminal exception out of the connection
+task. Empty string for outages recorded before this field existed
+(pre-feature history).
 
 ---
 

@@ -160,6 +160,18 @@ def _row_tx_started(env: events_pb2.EventEnvelope) -> dict[str, Any]:
     }
 
 
+def _row_cp_offline_duration(env: events_pb2.EventEnvelope) -> dict[str, Any]:
+    payload = env.cp_offline_duration
+    return {
+        **_envelope_meta(env),
+        "went_offline_at": _parse_occurred_at(payload.went_offline_at),
+        "came_online_at": _parse_occurred_at(payload.came_online_at),
+        "offline_seconds": payload.offline_seconds,
+        "prior_pod_id": payload.prior_pod_id,
+        "prior_reason": payload.prior_reason,
+    }
+
+
 # `oneof` field name → (table, extractor). The protobuf-generated
 # `WhichOneof("payload")` returns the field name of the set variant.
 _DISPATCH: dict[str, tuple[str, Any]] = {
@@ -167,6 +179,7 @@ _DISPATCH: dict[str, tuple[str, Any]] = {
     "cp_status": ("cp_status", _row_cp_status),
     "cp_boot": ("cp_boot", _row_cp_boot),
     "tx_started": ("tx_started", _row_tx_started),
+    "cp_offline_duration": ("cp_offline_duration", _row_cp_offline_duration),
     # Note: cp_connected is intentionally not ingested — that variant
     # is a registry-presence event, not telemetry. If a future ADR
     # decides we want it in CH, add a row here.
@@ -207,6 +220,7 @@ class ClickHouseIngestor:
             self._settings.kafka_topic_cp_status,
             self._settings.kafka_topic_cp_boot,
             self._settings.kafka_topic_tx_started,
+            self._settings.kafka_topic_cp_offline_duration,
         )
         consumer = AIOKafkaConsumer(
             *topics,

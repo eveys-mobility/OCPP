@@ -318,6 +318,166 @@ class ClickHouseReadClient:
 
         return {"soc": soc, "phases": phases}
 
+    async def fetch_offline_history(
+        self,
+        *,
+        cp_id: str,
+        since: datetime | None,
+        until: datetime | None,
+        limit: int,
+        offset: int,
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Return offline-duration rows for one charger, plus the total
+        row count matching the same filters.
+
+        The bare-minimum filter surface — path-scoped `cp_id` plus the
+        optional `[since, until]` window on `came_online_at` (the row's
+        anchor timestamp, partition-aligned). No other filters per the
+        feature scope.
+
+        Returns `(rows, total)`. `rows` honours `limit` + `offset`;
+        `total` is the unbounded count for offset-mode pagination.
+        Both are computed in one round-trip via two cursor executes.
+        """
+        assert self._conn is not None  # narrowed by start()
+
+        where = "WHERE cp_id = {cp_id}"
+        params: dict[str, Any] = {"cp_id": cp_id}
+        if since is not None:
+            where += " AND came_online_at >= {since}"
+            params["since"] = since
+        if until is not None:
+            where += " AND came_online_at <= {until}"
+            params["until"] = until
+
+        select_sql = f"""
+            SELECT
+                event_id,
+                occurred_at,
+                cp_id,
+                went_offline_at,
+                came_online_at,
+                offline_seconds,
+                prior_pod_id,
+                prior_reason
+            FROM cp_offline_duration
+            {where}
+            ORDER BY came_online_at DESC, event_id DESC
+            LIMIT {{limit}} OFFSET {{offset}}
+        """
+        count_sql = f"""
+            SELECT count() FROM cp_offline_duration
+            {where}
+        """
+        select_params = {**params, "limit": limit, "offset": offset}
+
+        async with self._conn.cursor() as cursor:
+            await cursor.execute(select_sql, select_params)
+            cols = [d[0] for d in cursor.description]
+            rows = await cursor.fetchall()
+            await cursor.execute(count_sql, params)
+            count_rows = await cursor.fetchall()
+        total = int(count_rows[0][0]) if count_rows else 0
+        return [dict(zip(cols, row, strict=True)) for row in rows], total
+
+    async def fetch_latest_meter_per_connector(
+        self,
+        *,
+        cp_id: str,
+    ) -> dict[int, dict[str, Any]]:
+        """Return the latest `Energy.Active.Import.Register` sample per
+        connector for one charger.
+
+        Used to inline a live-meter readout on `/charge-points/{cp_id}`:
+        the detail page wants "what does the meter say right now" without
+        a second request to `/meter-values`. Returns a mapping keyed by
+        `connector_id`; each value is `{value_wh, occurred_at}`.
+
+        Storage form is the proto enum name (`MEASURAND_ENERGY_ACTIVE_
+        IMPORT_REGISTER`) — same convention as `fetch_transaction_
+        telemetry`. Bounded scan via the cp_id partition key.
+        """
+        assert self._conn is not None  # narrowed by start()
+
+        sql = """
+            SELECT
+                connector_id,
+                argMax(toFloat64OrNull(sv.value), occurred_at) AS value_wh,
+                max(occurred_at) AS occurred_at
+            FROM cp_meter
+            ARRAY JOIN sampled_values AS sv
+            WHERE cp_id = {cp_id}
+              AND sv.measurand = 'MEASURAND_ENERGY_ACTIVE_IMPORT_REGISTER'
+            GROUP BY connector_id
+        """
+        params: dict[str, Any] = {"cp_id": cp_id}
+
+        async with self._conn.cursor() as cursor:
+            await cursor.execute(sql, params)
+            cols = [d[0] for d in cursor.description]
+            rows = await cursor.fetchall()
+
+        out: dict[int, dict[str, Any]] = {}
+        for row in rows:
+            record = dict(zip(cols, row, strict=True))
+            connector_id = int(record["connector_id"])
+            # argMax over zero rows would surface as None; the GROUP BY
+            # already excludes that case, but guard for safety.
+            if record["value_wh"] is None:
+                continue
+            out[connector_id] = {
+                "value_wh": record["value_wh"],
+                "occurred_at": record["occurred_at"],
+            }
+        return out
+
+    async def fetch_latest_offline_durations(
+        self,
+        *,
+        cp_ids: list[str],
+    ) -> dict[str, dict[str, Any]]:
+        """Return the most recent offline-duration row per cp_id.
+
+        Used by `/charge-points` list and detail to inline a
+        `last_offline_seconds` + `last_offline_ended_at` summary so a
+        Console operator can see the last outage without a second
+        round-trip. Chargers that have never had an outage observed by
+        the gateway are absent from the result.
+
+        Same shape and IN-list pattern as `fetch_latest_connector_
+        statuses` — one ClickHouse scan with `argMax` keyed on
+        `came_online_at`, partition prune via the cp_id IN list.
+        """
+        assert self._conn is not None  # narrowed by start()
+
+        if not cp_ids:
+            return {}
+
+        placeholders = ", ".join(f"{{cp_id_{i}}}" for i in range(len(cp_ids)))
+        db = self._settings.clickhouse_db
+        sql = f"""
+            SELECT
+                cp_id,
+                argMax(offline_seconds, came_online_at) AS offline_seconds,
+                max(came_online_at) AS last_offline_ended_at
+            FROM {db}.cp_offline_duration
+            WHERE cp_id IN ({placeholders})
+            GROUP BY cp_id
+        """
+        params: dict[str, Any] = {f"cp_id_{i}": cp_id for i, cp_id in enumerate(cp_ids)}
+
+        async with self._conn.cursor() as cursor:
+            await cursor.execute(sql, params)
+            cols = [d[0] for d in cursor.description]
+            rows = await cursor.fetchall()
+
+        out: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            record = dict(zip(cols, row, strict=True))
+            cp_id = record.pop("cp_id")
+            out[cp_id] = record
+        return out
+
     async def fetch_status_history(
         self,
         *,

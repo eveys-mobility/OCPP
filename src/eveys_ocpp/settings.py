@@ -366,6 +366,21 @@ class Settings(BaseSettings):
             "stability": "structural",
         },
     )
+    kafka_topic_cp_offline_duration: str = Field(
+        default="cp.offline_duration",
+        description=(
+            "Per-CP offline-duration events. Emitted on reconnect when the "
+            "gateway finds the marker its prior disconnect left in Redis; "
+            "carries went_offline_at, came_online_at and offline_seconds. "
+            "ClickHouse `cp_offline_duration` is ingested from this topic."
+        ),
+        json_schema_extra={
+            "category": "kafka_topics",
+            "impact": "Renaming detaches every existing consumer.",
+            "secret": False,
+            "stability": "structural",
+        },
+    )
     kafka_topic_cp_meter: str = Field(
         default="cp.meter",
         description=(
