@@ -120,6 +120,12 @@ WS_MESSAGES_OUT_TOTAL: Counter = Counter(
     "OCPP CALLs sent to chargers (CSMS-initiated), grouped by action.",
     labelnames=("action",),
 )
+OCPP_FRAMES_PUBLISH_FAILURES_TOTAL: Counter = Counter(
+    "eveys_ocpp_ocpp_frames_publish_failures_total",
+    "Times the cp.ocpp_frames Kafka publish failed and the frame was "
+    "dropped (best-effort: never blocks the WS path). Labelled by direction.",
+    labelnames=("direction",),
+)
 
 
 # ---- OCPP handlers (cross-cutting) ----------------------------------------
@@ -557,6 +563,7 @@ __all__ = [
     "METER_VALUES_TOTAL",
     "METER_VALUE_QUARANTINED_TOTAL",
     "METER_VALUE_SAMPLES_TOTAL",
+    "OCPP_FRAMES_PUBLISH_FAILURES_TOTAL",
     "OCPP_HANDLER_BUCKETS",
     "OCPP_HANDLER_ERRORS_TOTAL",
     "OCPP_HANDLER_LATENCY_SECONDS",
