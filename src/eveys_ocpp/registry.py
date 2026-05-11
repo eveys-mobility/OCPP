@@ -166,3 +166,19 @@ class Registry:
         with _timed_redis("exists"):
             count = await self._redis.exists(_key(cp_id))
         return int(count) > 0
+
+    async def count_online(self) -> int:
+        """Fleet-wide online count via SCAN MATCH cp:online:*.
+
+        Used by the `/sys/kpis` rollup. SCAN is non-blocking and runs
+        in a single Redis pool round-trip per batch; for a fleet of N
+        chargers it's O(N) but only the index page polls this (30s),
+        so the load is bounded. Avoids holding any cross-pod gauge
+        state since the per-pod `REGISTRY_ONLINE_CHARGERS` metric
+        doesn't aggregate cleanly when the gateway scales horizontally.
+        """
+        total = 0
+        with _timed_redis("scan"):
+            async for _ in self._redis.scan_iter(match="cp:online:*", count=500):
+                total += 1
+        return total
