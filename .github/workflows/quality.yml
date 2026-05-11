@@ -86,7 +86,7 @@ jobs:
   envoy-validate:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       # Generate ephemeral self-signed certs so Envoy's validate-mode
       # can load the TLS listener config. The certs aren't trusted by
       # anything; they exist only to satisfy the file-path validation.
@@ -139,7 +139,7 @@ jobs:
   helm-lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Install Helm
         uses: azure/setup-helm@v4
         with:
