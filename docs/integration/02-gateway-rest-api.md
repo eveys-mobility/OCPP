@@ -387,6 +387,14 @@ Replaces polling on the detail page.
 with `EVEYS_OCPP_SSE_ENABLED=true`; a pod that doesn't serve
 operator UIs need not open the per-pod Kafka consumer the bus uses.
 
+**Auth**. Same bearer-token allowlist as every other `/api/v1/*`
+endpoint, but this one route additionally accepts a query parameter
+`?access_token=<bearer>` because browsers' native `EventSource`
+cannot set custom request headers. The query-param fallback is
+scoped to this exact path only — passing `?access_token=` on any
+other endpoint is ignored (defense-in-depth; URL tokens leak into
+proxy logs, browser history, and `Referer` headers).
+
 **Response**:
 
 ```

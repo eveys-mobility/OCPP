@@ -132,7 +132,13 @@ REST endpoints publish. Console reuses its existing decoders.
 - **Auth bypass.** SSE goes through the same bearer-token middleware
   as the rest of `/api/v1/*`. The middleware runs before the route
   handler; an unauthenticated request 401s without ever opening the
-  stream.
+  stream. SSE additionally accepts ``?access_token=<bearer>`` in the
+  query string because browsers' native ``EventSource`` cannot set
+  custom request headers — this fallback is scoped to the SSE path
+  only (other endpoints ignore the query param) because URL tokens
+  leak through proxy logs, browser history, and ``Referer`` headers.
+  Same secret, same allowlist, just a second delivery channel for
+  the one client that can't use the header form.
 - **Backpressure into the Kafka consumer.** ``put_nowait`` is the
   whole reason the consumer never blocks on a single slow
   subscriber. If every subscriber for a given ``cp_id`` is slow,
