@@ -184,6 +184,63 @@ async def test_openapi_paths_404_when_disabled(app_with_settings: Any) -> None:
 
 
 @pytest.mark.asyncio
+async def test_sse_accepts_access_token_query_param(
+    app_with_settings: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The SSE endpoint accepts `?access_token=` because browsers'
+    native EventSource can't set Authorization headers. Same allowlist
+    as the header form."""
+    from eveys_ocpp.api import sse as sse_module
+
+    monkeypatch.setattr(sse_module, "get_charge_point_pk", AsyncMock(return_value=1))
+
+    client = await app_with_settings(rest_inbound_tokens="sse-secret", sse_enabled=True)
+    # Use a no-bus assertion: the route must AT LEAST clear auth.
+    # 503 is what the endpoint returns when sse_bus isn't wired (test
+    # app doesn't start one) — that's already past the middleware.
+    response = await client.get("/api/v1/charge-points/CP_001/events?access_token=sse-secret")
+    assert response.status_code != 401
+    assert response.json().get("error_code") != "UNAUTHORIZED"
+
+
+@pytest.mark.asyncio
+async def test_sse_rejects_missing_access_token(
+    app_with_settings: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from eveys_ocpp.api import sse as sse_module
+
+    monkeypatch.setattr(sse_module, "get_charge_point_pk", AsyncMock(return_value=1))
+    client = await app_with_settings(rest_inbound_tokens="sse-secret", sse_enabled=True)
+    response = await client.get("/api/v1/charge-points/CP_001/events")
+    assert response.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_sse_rejects_wrong_access_token(
+    app_with_settings: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from eveys_ocpp.api import sse as sse_module
+
+    monkeypatch.setattr(sse_module, "get_charge_point_pk", AsyncMock(return_value=1))
+    client = await app_with_settings(rest_inbound_tokens="sse-secret", sse_enabled=True)
+    response = await client.get("/api/v1/charge-points/CP_001/events?access_token=wrong")
+    assert response.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_non_sse_path_rejects_access_token_query_param(
+    app_with_settings: Any,
+) -> None:
+    """The query-param fallback is SSE-only. Any other endpoint must
+    keep ignoring URL tokens — they leak through proxy logs / referer
+    headers / browser history. Defense-in-depth."""
+    client = await app_with_settings(rest_inbound_tokens="secret")
+
+    response = await client.get("/api/v1/charge-points?access_token=secret")
+    assert response.status_code == 401
+
+
+@pytest.mark.asyncio
 async def test_csv_allowlist_rotation(app_with_settings: Any) -> None:
     """Multi-token allowlist supports rotation."""
     client = await app_with_settings(rest_inbound_tokens="t1,t2,t3")

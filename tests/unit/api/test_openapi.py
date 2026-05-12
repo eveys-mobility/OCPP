@@ -38,6 +38,10 @@ def _make_app(rest_openapi_enabled: bool):  # type: ignore[no-untyped-def]
         rest_openapi_enabled=rest_openapi_enabled,
         rest_inbound_tokens="",
         rest_auth_disabled=True,  # so the test can hit the routes directly
+        # Match the openapi exporter — the SSE route is part of the
+        # contract the Console codes against, so the snapshot test
+        # must build with the same flag.
+        sse_enabled=True,
     )
     return make_app(
         session_factory=None,  # type: ignore[arg-type]

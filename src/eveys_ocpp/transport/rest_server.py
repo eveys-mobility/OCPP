@@ -62,6 +62,18 @@ async def serve_forever(
         ch_client=ch_client,
         drain_controller=drain_controller,
     )
+
+    # SSE bus (ADR-0030). Off by default; when on, one Kafka consumer
+    # per pod fans out per-CP events to the SSE endpoint. The bus
+    # outlives every request and is shut down after the uvicorn loop
+    # exits so in-flight subscribers wake on the None sentinel.
+    sse_bus = None
+    if settings.sse_enabled:
+        from eveys_ocpp.sse_bus import SseBus
+
+        sse_bus = SseBus(settings)
+        await sse_bus.start()
+        app.state.sse_bus = sse_bus
     config = uvicorn.Config(
         app,
         host=settings.rest_host,
@@ -90,6 +102,8 @@ async def serve_forever(
     try:
         await server.serve()
     finally:
+        if sse_bus is not None:
+            await sse_bus.stop()
         log.info("rest_server.stop")
 
 

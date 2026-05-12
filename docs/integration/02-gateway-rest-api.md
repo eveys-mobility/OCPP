@@ -376,6 +376,88 @@ task. Empty string for outages recorded before this field existed
 
 ---
 
+### `GET /api/v1/charge-points/{cp_id}/events`
+
+Server-Sent Events stream of per-CP lifecycle events. Open the
+stream once per detail page; the gateway pushes a framed SSE event
+each time a relevant Kafka envelope keyed on this `cp_id` arrives.
+Replaces polling on the detail page.
+
+**Off by default**. The endpoint is mounted only when the pod runs
+with `EVEYS_OCPP_SSE_ENABLED=true`; a pod that doesn't serve
+operator UIs need not open the per-pod Kafka consumer the bus uses.
+
+**Auth**. Same bearer-token allowlist as every other `/api/v1/*`
+endpoint, but this one route additionally accepts a query parameter
+`?access_token=<bearer>` because browsers' native `EventSource`
+cannot set custom request headers. The query-param fallback is
+scoped to this exact path only — passing `?access_token=` on any
+other endpoint is ignored (defense-in-depth; URL tokens leak into
+proxy logs, browser history, and `Referer` headers).
+
+**Response**:
+
+```
+HTTP/1.1 200 OK
+Content-Type: text/event-stream
+Cache-Control: no-cache
+X-Accel-Buffering: no
+
+: connected
+
+event: tx_started
+data: {"event_id":"evt-...","occurred_at":"2026-05-12T14:00:00+00:00","cp_id":"CP_ACME_42","schema_version":"v1","transaction_id":42,"connector_id":1,"id_tag":"RFID_FAMILY_007","meter_start_wh":1500000,"charger_reported_at":"2026-05-12T13:59:58Z"}
+
+event: meter
+data: {"event_id":"evt-...","occurred_at":"2026-05-12T14:00:30+00:00","cp_id":"CP_ACME_42","schema_version":"v1","connector_id":1,"transaction_id":42,"charger_reported_at":"2026-05-12T14:00:29Z","sampled_values":[{"value":"1504200","measurand":"MEASURAND_ENERGY_ACTIVE_IMPORT_REGISTER","unit":"UNIT_WH","context":"CONTEXT_SAMPLE_PERIODIC","format":null,"phase":null,"location":"LOCATION_OUTLET"}]}
+
+: heartbeat
+
+event: tx_stopped
+data: {"event_id":"evt-...","occurred_at":"2026-05-12T14:30:00+00:00","cp_id":"CP_ACME_42","schema_version":"v1","transaction_id":42,"id_tag":"RFID_FAMILY_007","meter_stop_wh":1600000,"consumed_wh":100000,"stop_reason":"Local","charger_reported_at":"2026-05-12T14:29:58Z"}
+```
+
+Event types (the SSE `event:` field):
+
+| Type | When it fires | Payload shape |
+|---|---|---|
+| `connected` | WS handshake completed | `{subprotocol, pod_id}` |
+| `disconnected` | WS dropped (gateway-side observation) | `{pod_id, reason}` |
+| `offline_duration` | Reconnect closed an outage; carries the gap | `{went_offline_at, came_online_at, offline_seconds, prior_pod_id, prior_reason}` |
+| `boot` | BootNotification accepted | `{vendor, model, firmware_version, serial_number, status}` |
+| `status` | StatusNotification | `{connector_id, status, error_code, info, vendor_id, vendor_error_code, charger_reported_at}` |
+| `meter` | MeterValues | `{connector_id, transaction_id, sampled_values[], charger_reported_at}` |
+| `firmware_status_changed` | FirmwareStatusNotification | `{status}` |
+| `diagnostics_status_changed` | DiagnosticsStatusNotification | `{status}` |
+| `tx_started` | StartTransaction persisted | `{transaction_id, connector_id, id_tag, meter_start_wh, charger_reported_at}` |
+| `tx_stopped` | StopTransaction persisted | `{transaction_id, id_tag, meter_stop_wh, consumed_wh, stop_reason, charger_reported_at}` |
+| `security_event` | SecurityEventNotification | `{type, tech_info, charger_reported_at}` |
+
+Every payload also carries the envelope's common fields:
+`event_id`, `occurred_at`, `cp_id`, `schema_version` — same as the
+Kafka envelope, so a Console session can correlate an SSE event with
+its Kafka record.
+
+**Operational notes**:
+
+- The endpoint sends a comment-line heartbeat (`: heartbeat\n\n`)
+  every `EVEYS_OCPP_SSE_HEARTBEAT_SECONDS` (20s by default) so
+  intermediate proxies don't close an idle stream.
+- A terminal `event: error` with `data: {"reason": "<why>"}` closes
+  the stream gracefully. `reason` is `slow_consumer` when the
+  per-subscriber bounded queue overflowed (the client should reduce
+  the work it does per event before reconnecting) or `server_closed`
+  when the pod is shutting down (the client should reconnect to
+  another pod).
+- One stream per CP. Open a second stream for a second CP. There is
+  no multiplexed shape on v1.
+- Strictly tail-from-now. The endpoint does not replay history; use
+  `/transactions`, `/meter-values`, or `/offline-history` for that.
+- `404 UNKNOWN_CP_ID` for typo'd `cp_id` — same shape as the
+  `/meter-values` 404, returned before the stream opens.
+
+---
+
 ### `GET /api/v1/charge-points/{cp_id}/transactions`
 
 Transactions for a charger. **Postgres-backed**.

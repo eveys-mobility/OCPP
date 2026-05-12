@@ -173,6 +173,9 @@ module = [
     # OCPP wire-form ↔ proto enum translation tables. Touches the
     # generated `events_pb2` symbols by name (same opaqueness).
     "eveys_ocpp._ocpp_enums",
+    # SSE bus reads the same `events_pb2` envelope variants the
+    # handlers / ingestor touch — same untyped-stub story.
+    "eveys_ocpp.sse_bus",
 ]
 disallow_untyped_decorators = false
 disallow_untyped_calls = false

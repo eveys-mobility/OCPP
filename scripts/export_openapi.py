@@ -38,6 +38,10 @@ def _build_spec() -> dict[str, object]:
         # the dev defaults.
         rest_inbound_tokens="dev-token",
         pod_id="export-script",
+        # Include the SSE route in the spec — feature-flag at boot
+        # decides whether a given pod serves it, but the contract
+        # the Console codes against is always present.
+        sse_enabled=True,
     )
     # `make_app` accepts None for every state slot; we don't call any
     # routes, just collect the schema.

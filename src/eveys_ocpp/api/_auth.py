@@ -61,6 +61,26 @@ _AUTH_BYPASS_PATHS = frozenset({"/api/v1/health", "/api/v1/ready"})
 _OPENAPI_BYPASS_PATHS = frozenset({"/api/v1/docs", "/api/v1/redoc", "/api/v1/openapi.json"})
 
 
+def _is_sse_path(path: str) -> bool:
+    """The SSE endpoint is the one route that accepts a
+    `?access_token=` query parameter in addition to a bearer header.
+
+    Browsers' native ``EventSource`` cannot send custom headers, so an
+    operator UI has no way to attach ``Authorization: Bearer …`` —
+    the alternatives are a cookie + same-origin reverse proxy, or a
+    query-param token. We pick the query-param route because it
+    requires no proxy and lets every browser open the stream.
+
+    The path-suffix match is intentionally tight: only
+    ``/api/v1/charge-points/<cp_id>/events`` qualifies. Any other
+    surface treating a query-param token as auth would be a footgun
+    (URLs end up in proxy logs, browser history, referer headers); we
+    keep the relaxation scoped to the one endpoint that can't use the
+    header form.
+    """
+    return path.startswith("/api/v1/charge-points/") and path.endswith("/events")
+
+
 def parse_token_allowlist(raw: str) -> set[str]:
     """Turn a CSV `rest_inbound_tokens` value into a deduped set of
     bearer values. Whitespace and empty entries are dropped."""
@@ -104,10 +124,20 @@ def make_bearer_auth_middleware(
         if openapi_enabled and path in _OPENAPI_BYPASS_PATHS:
             return await call_next(request)
 
+        # Header-form is the canonical path. SSE additionally accepts
+        # a query-param token because browsers' native EventSource
+        # cannot set custom request headers — same allowlist, same
+        # secret, just delivered over the URL. See `_is_sse_path` for
+        # the why and the scope.
         header = request.headers.get("authorization", "")
-        if not header.startswith(_BEARER_PREFIX):
+        if header.startswith(_BEARER_PREFIX):
+            token = header[len(_BEARER_PREFIX) :].strip()
+        elif _is_sse_path(path):
+            token = request.query_params.get("access_token", "").strip()
+            if not token:
+                return _unauthorised(request, reason="missing_access_token_query_param")
+        else:
             return _unauthorised(request, reason="missing_or_malformed_header")
-        token = header[len(_BEARER_PREFIX) :].strip()
         if not token or token not in allowlist:
             return _unauthorised(request, reason="token_not_in_allowlist")
 

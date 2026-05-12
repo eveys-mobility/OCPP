@@ -199,6 +199,14 @@ def make_app(
     app.include_router(admin.router, prefix="/api/v1")
     app.include_router(sys_config.router, prefix="/api/v1")
     app.include_router(sys_kpis.router, prefix="/api/v1")
+    # SSE event stream (ADR-0030). Bus lifecycle is owned by the
+    # caller (transport/rest_server.py) so the route reads it off
+    # `app.state.sse_bus`; None when the feature is off.
+    if settings.sse_enabled:
+        from eveys_ocpp.api import sse
+
+        app.include_router(sse.router, prefix="/api/v1")
+    app.state.sse_bus = None
 
     return app
 
