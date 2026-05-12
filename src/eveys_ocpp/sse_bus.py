@@ -393,5 +393,5 @@ def _enum_or_none(enum_descriptor: object, value: int) -> str | None:
     """
     if value == 0:
         return None
-    name: str = enum_descriptor.Name(value)  # type: ignore[attr-defined]
+    name: str = enum_descriptor.Name(value)
     return name
