@@ -238,6 +238,93 @@ class Settings(BaseSettings):
         },
     )
 
+    # ---- SSE event stream (ADR-0030) ------------------------------------
+    sse_enabled: bool = Field(
+        default=False,
+        description=(
+            "Mount the Server-Sent Events endpoint "
+            "`GET /api/v1/charge-points/{cp_id}/events`. Off by default so "
+            "pods that never serve operator UIs don't open the per-pod "
+            "Kafka consumer the SSE bus uses. Flip on for any pod that "
+            "front-ends the Console / operator REST surface."
+        ),
+        json_schema_extra={
+            "category": "rest_server",
+            "impact": (
+                "When True the gateway starts one extra AIOKafkaConsumer "
+                "subscribed to the seven topics keyed by `cp_id`. The "
+                "consumer's group_id is randomized per pod (non-durable, "
+                "auto_offset_reset='latest'): SSE tails from now, never "
+                "replays history. Off pods stay zero-cost."
+            ),
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+    sse_kafka_group_prefix: str = Field(
+        default="eveys-ocpp-sse",
+        description=(
+            "Prefix for the per-pod Kafka consumer-group id used by the "
+            "SSE bus. The full id is `<prefix>-<pod_id>-<random>` so each "
+            "pod gets its own group and no rebalances happen across pods."
+        ),
+        json_schema_extra={
+            "category": "rest_server",
+            "impact": (
+                "Renaming detaches the in-flight SSE consumers on rollout "
+                "and they start at `latest`, which is correct — tail-from-"
+                "now is the spec. Don't share this prefix with the "
+                "ClickHouse ingestor's group; the ingestor needs durable, "
+                "shared offsets."
+            ),
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+    sse_queue_max_size: int = Field(
+        default=256,
+        ge=1,
+        le=10_000,
+        description=(
+            "Bounded queue size per SSE subscriber. When a slow client "
+            "fills its queue, the bus drops that subscriber's stream "
+            "(closes with an `error` event) rather than block the Kafka "
+            "consumer and stall every other subscriber on the pod."
+        ),
+        json_schema_extra={
+            "category": "rest_server",
+            "impact": (
+                "Smaller queue → faster drop of slow clients, less RAM. "
+                "Larger queue → more tolerance for brief operator-side "
+                "pauses (browser tab backgrounding, GC). 256 holds "
+                "~10s of MeterValues at the busiest realistic CP rate."
+            ),
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+    sse_heartbeat_seconds: float = Field(
+        default=20.0,
+        gt=0.0,
+        le=300.0,
+        description=(
+            "Idle-stream heartbeat interval. The SSE endpoint emits a "
+            "comment line (`:\\n\\n`) at this cadence so intermediate "
+            "proxies don't close an idle connection."
+        ),
+        json_schema_extra={
+            "category": "rest_server",
+            "impact": (
+                "Lower → more keep-alive traffic, faster proxy-drop "
+                "detection. Higher → less traffic, longer time-to-detect "
+                "a dead intermediate. Envoy's idle timeout is 1h by "
+                "default; the 20s default sits well inside it."
+            ),
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+
     # ---- Kafka producer (ADR-0019) --------------------------------------
     kafka_brokers: str = Field(
         default="localhost:9092",

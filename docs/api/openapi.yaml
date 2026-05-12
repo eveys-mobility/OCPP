@@ -2626,6 +2626,42 @@ paths:
       summary: Set Credential Route
       tags:
       - credentials
+  /api/v1/charge-points/{cp_id}/events:
+    get:
+      operationId: stream_charge_point_events_api_v1_charge_points__cp_id__events_get
+      parameters:
+      - in: path
+        name: cp_id
+        required: true
+        schema:
+          title: Cp Id
+          type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+            text/event-stream: {}
+          description: 'Open SSE stream. Each event has the shape `event: <type>\ndata:
+            <json>\n\n`. Event types: `connected`, `disconnected`, `offline_duration`,
+            `boot`, `status`, `meter`, `firmware_status_changed`, `diagnostics_status_changed`,
+            `tx_started`, `tx_stopped`, `security_event`. The stream sends a comment-line
+            heartbeat every `sse_heartbeat_seconds` so intermediate proxies keep the
+            connection open. A terminal `error` event signals a slow-consumer drop
+            or a server shutdown; the client should reconnect.'
+        '404':
+          description: Unknown cp_id.
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+        '503':
+          description: SSE not enabled on this gateway pod.
+      summary: Server-Sent Events stream of per-CP lifecycle events
+      tags:
+      - sse
   /api/v1/charge-points/{cp_id}/meter-values:
     get:
       operationId: list_meter_values_api_v1_charge_points__cp_id__meter_values_get
