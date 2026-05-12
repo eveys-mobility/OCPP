@@ -148,4 +148,9 @@ def fake_cp(settings: Settings, fake_session_factory: Any) -> MagicMock:
     cp.event_producer = None
     cp.backend_client = None
     cp.authorize_cache = None
+    # Match the real EveysChargePoint.ocpp_version property — the
+    # OCPP library only accepts ocpp1.6 today, so every fake_cp
+    # carries that. Tests that exercise 2.0.1-specific paths set
+    # this attribute explicitly.
+    cp.ocpp_version = "ocpp1.6"
     return cp

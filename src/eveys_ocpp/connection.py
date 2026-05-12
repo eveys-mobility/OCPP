@@ -85,6 +85,17 @@ class EveysChargePoint(Cpv16):
         self.authorize_cache = authorize_cache
         self.rate_limiter = rate_limiter
 
+    @property
+    def ocpp_version(self) -> str:
+        """Subprotocol the charger negotiated on the WS handshake
+        (``ocpp1.6`` today). Read by the BootNotification handler to
+        persist the value on the charger row so the Console can show
+        it without guessing. Falls back to ``ocpp1.6`` if the
+        websocket lib didn't surface a subprotocol — only happens in
+        unit tests with a fake connection."""
+        sub = getattr(self._connection, "subprotocol", None)
+        return str(sub) if sub else "ocpp1.6"
+
     # ---- handler delegation -------------------------------------------------
     # Each handler module exports a `handle(...)` coroutine. We thin-wrap
     # them here so the decorator metadata sits on this class (where the

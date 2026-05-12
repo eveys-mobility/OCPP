@@ -88,6 +88,7 @@ def _to_response(cp: dict[str, Any]) -> dict[str, Any]:
         "model": cp["model"],
         "firmware_version": cp["firmware_version"],
         "serial_number": cp["serial_number"],
+        "ocpp_version": cp.get("ocpp_version"),
         "last_boot_at": _isoformat(cp["last_boot_at"]),
         "last_heartbeat_at": _isoformat(cp["last_heartbeat_at"]),
         "last_status": cp["last_status"],
