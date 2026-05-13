@@ -718,21 +718,31 @@ class ClickHouseReadClient:
         # matches the returned total exactly. ClickHouse `greatest` /
         # `least` are nullable-safe over the window bounds (both
         # always set on this call path).
+        #
+        # `from_ts` / `to_ts` are explicitly cast to `DateTime64(3, 'UTC')`
+        # at every use site. The asynch driver renders Python `datetime`
+        # objects into the SQL as bare `'YYYY-MM-DD HH:MM:SS'` literals;
+        # against `DateTime64(3, 'UTC')` columns, that mismatch produces
+        # a server-side `Code 386 — no supertype for DateTime64 and String`
+        # error inside `greatest()` / `least()`. The other read methods
+        # (status-history etc.) get away without the cast because they
+        # only use `=` / `>=` / `<=` where ClickHouse coerces; the
+        # `greatest` / `least` paths in this aggregation don't.
         sql = """
             SELECT
-                greatest(went_offline_at, {from_ts}) AS clipped_offline_at,
-                least(came_online_at, {to_ts})       AS clipped_online_at,
+                greatest(went_offline_at, toDateTime64({from_ts}, 3, 'UTC')) AS clipped_offline_at,
+                least(came_online_at, toDateTime64({to_ts}, 3, 'UTC')) AS clipped_online_at,
                 toInt64(dateDiff(
                     'second',
-                    greatest(went_offline_at, {from_ts}),
-                    least(came_online_at, {to_ts})
-                ))                                   AS clipped_seconds,
-                offline_seconds                      AS original_offline_seconds,
+                    greatest(went_offline_at, toDateTime64({from_ts}, 3, 'UTC')),
+                    least(came_online_at, toDateTime64({to_ts}, 3, 'UTC'))
+                )) AS clipped_seconds,
+                offline_seconds AS original_offline_seconds,
                 prior_reason
             FROM cp_offline_duration
             WHERE cp_id = {cp_id}
-              AND came_online_at >= {from_ts}
-              AND went_offline_at <= {to_ts}
+              AND came_online_at >= toDateTime64({from_ts}, 3, 'UTC')
+              AND went_offline_at <= toDateTime64({to_ts}, 3, 'UTC')
             ORDER BY clipped_offline_at
         """
         params: dict[str, Any] = {
