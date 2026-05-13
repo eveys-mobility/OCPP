@@ -44,6 +44,13 @@ class ChargePoint(Base):
     model: Mapped[str | None] = mapped_column(String(128))
     firmware_version: Mapped[str | None] = mapped_column(String(64))
     serial_number: Mapped[str | None] = mapped_column(String(64))
+    # OCPP subprotocol the charger negotiated on its WS handshake
+    # (`ocpp1.6` today, `ocpp2.0.1` when that profile lands). Set by
+    # the BootNotification handler — the WS upgrade has already
+    # succeeded by then so the subprotocol is known. Operators read
+    # this on the Console detail page so they don't have to guess
+    # which OCPP surface a charger speaks.
+    ocpp_version: Mapped[str | None] = mapped_column(String(16))
 
     last_boot_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

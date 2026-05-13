@@ -147,6 +147,15 @@ class ChargePoint(BaseModel):
     model: str | None = None
     firmware_version: str | None = None
     serial_number: str | None = None
+    ocpp_version: str | None = Field(
+        default=None,
+        description=(
+            "OCPP subprotocol the charger negotiated on its WS upgrade. "
+            "``ocpp1.6`` today; will be ``ocpp2.0.1`` per-row when the "
+            "2.0.1 profile lands. Null for rows that pre-date this "
+            "field and haven't booted since the column was added."
+        ),
+    )
     last_status: str | None = Field(
         default=None,
         description=(

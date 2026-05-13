@@ -190,6 +190,7 @@ async def _handle_inner(
             firmware_version=firmware_version,
             serial_number=charge_point_serial_number,
             boot_at=received_at,
+            ocpp_version=cp.ocpp_version,
         )
 
     # Backend round-trip (E3-5). If no backend is wired (W1/dev), accept

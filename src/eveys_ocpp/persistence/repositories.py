@@ -40,32 +40,44 @@ async def upsert_charge_point_boot(
     firmware_version: str | None,
     serial_number: str | None,
     boot_at: datetime,
+    ocpp_version: str | None = None,
 ) -> ChargePoint:
     """Insert-or-update a charger row on BootNotification.
 
     Implements upsert via Postgres `ON CONFLICT (cp_id) DO UPDATE`. This is
     the idempotency anchor for BootNotification (AGENTS rule 3): replays
     update the row instead of inserting duplicates.
+
+    ``ocpp_version`` is the subprotocol the charger negotiated on its
+    WS upgrade — captured here because BootNotification is the first
+    handler we run after the upgrade. Optional for back-compat with
+    callers (older tests) that don't pass it; the existing value is
+    preserved when None.
     """
+    insert_values: dict[str, object] = {
+        "cp_id": cp_id,
+        "vendor": vendor,
+        "model": model,
+        "firmware_version": firmware_version,
+        "serial_number": serial_number,
+        "last_boot_at": boot_at,
+    }
+    update_values: dict[str, object] = {
+        "vendor": vendor,
+        "model": model,
+        "firmware_version": firmware_version,
+        "serial_number": serial_number,
+        "last_boot_at": boot_at,
+    }
+    if ocpp_version is not None:
+        insert_values["ocpp_version"] = ocpp_version
+        update_values["ocpp_version"] = ocpp_version
     stmt = (
         pg_insert(ChargePoint)
-        .values(
-            cp_id=cp_id,
-            vendor=vendor,
-            model=model,
-            firmware_version=firmware_version,
-            serial_number=serial_number,
-            last_boot_at=boot_at,
-        )
+        .values(**insert_values)
         .on_conflict_do_update(
             index_elements=[ChargePoint.cp_id],
-            set_={
-                "vendor": vendor,
-                "model": model,
-                "firmware_version": firmware_version,
-                "serial_number": serial_number,
-                "last_boot_at": boot_at,
-            },
+            set_=update_values,
         )
         .returning(ChargePoint)
     )
@@ -886,6 +898,7 @@ def _charge_point_to_dict(cp: ChargePoint) -> dict[str, Any]:
         "model": cp.model,
         "firmware_version": cp.firmware_version,
         "serial_number": cp.serial_number,
+        "ocpp_version": cp.ocpp_version,
         "last_boot_at": cp.last_boot_at,
         "last_heartbeat_at": cp.last_heartbeat_at,
         "last_status": cp.last_status,

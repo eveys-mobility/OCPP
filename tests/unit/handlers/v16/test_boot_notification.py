@@ -54,6 +54,12 @@ async def test_persists_charger_metadata(fake_cp: Any, monkeypatch: pytest.Monke
     assert kwargs["model"] == "X1"
     assert kwargs["firmware_version"] == "1.0.0"
     assert kwargs["serial_number"] == "SN001"
+    # The OCPP subprotocol negotiated on the WS upgrade is captured
+    # here too so the Console can show "OCPP 1.6 / 2.0.1" on the
+    # detail page without guessing. fake_cp's connection reports
+    # 1.6 (the only subprotocol the gateway accepts today); when
+    # 2.0.1 lands the same field flips per-row.
+    assert kwargs["ocpp_version"] == "ocpp1.6"
 
 
 @pytest.mark.asyncio

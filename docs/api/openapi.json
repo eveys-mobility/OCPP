@@ -175,6 +175,18 @@
             ],
             "title": "Model"
           },
+          "ocpp_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "OCPP subprotocol the charger negotiated on its WS upgrade. ``ocpp1.6`` today; will be ``ocpp2.0.1`` per-row when the 2.0.1 profile lands. Null for rows that pre-date this field and haven't booted since the column was added.",
+            "title": "Ocpp Version"
+          },
           "online": {
             "description": "True iff some pod currently holds the charger's WS.",
             "title": "Online",
@@ -369,6 +381,18 @@
               }
             ],
             "title": "Model"
+          },
+          "ocpp_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "OCPP subprotocol the charger negotiated on its WS upgrade. ``ocpp1.6`` today; will be ``ocpp2.0.1`` per-row when the 2.0.1 profile lands. Null for rows that pre-date this field and haven't booted since the column was added.",
+            "title": "Ocpp Version"
           },
           "online": {
             "description": "True iff some pod currently holds the charger's WS.",
