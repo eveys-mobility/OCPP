@@ -271,3 +271,91 @@ async def test_fetch_frames_by_transaction_uses_asynch_placeholder_shape() -> No
     assert "transaction_id = 12345" in rendered
     assert "LIMIT 1000" in rendered
     assert "%(" not in rendered
+
+
+@pytest.mark.asyncio
+async def test_fetch_uptime_for_cp_uses_asynch_placeholder_shape() -> None:
+    """Uptime aggregation. cp_id + window required; the SQL clips
+    interval edges to the window bounds inline so summing clipped
+    seconds matches the route's response total exactly."""
+    client, cursor = _client_with_fake_cursor()
+    cursor.fetchall = AsyncMock(return_value=[])
+    cursor.description = [
+        ("clipped_offline_at",),
+        ("clipped_online_at",),
+        ("clipped_seconds",),
+        ("original_offline_seconds",),
+        ("prior_reason",),
+    ]
+
+    await client.fetch_uptime_for_cp(
+        cp_id="CP_42",
+        window_from=datetime(2026, 4, 1, tzinfo=UTC),
+        window_to=datetime(2026, 5, 1, tzinfo=UTC),
+    )
+
+    sql, params = cursor.execute.await_args.args
+    rendered = _substitute(sql, params)
+    assert "'CP_42'" in rendered
+    assert "greatest(went_offline_at" in rendered
+    assert "least(came_online_at" in rendered
+    assert "dateDiff" in rendered
+    # asynch placeholder shape, not DB-API.
+    assert "%(" not in rendered
+
+
+@pytest.mark.asyncio
+async def test_fetch_uptime_for_cp_sums_clipped_seconds() -> None:
+    """Two rows the consumer would see — totals + intervals list
+    line up. Zero-second rows (interval entirely outside window)
+    are dropped."""
+    client, cursor = _client_with_fake_cursor()
+    cursor.description = [
+        ("clipped_offline_at",),
+        ("clipped_online_at",),
+        ("clipped_seconds",),
+        ("original_offline_seconds",),
+        ("prior_reason",),
+    ]
+    cursor.fetchall = AsyncMock(
+        return_value=[
+            (
+                datetime(2026, 4, 5, 10, 0, tzinfo=UTC),
+                datetime(2026, 4, 5, 10, 30, tzinfo=UTC),
+                1800,
+                1800,
+                "clean",
+            ),
+            (
+                datetime(2026, 4, 10, 12, 0, tzinfo=UTC),
+                datetime(2026, 4, 10, 12, 5, tzinfo=UTC),
+                300,
+                300,
+                "error",
+            ),
+            # Degenerate zero-second row (edge case) — skipped.
+            (
+                datetime(2026, 4, 15, 0, 0, tzinfo=UTC),
+                datetime(2026, 4, 15, 0, 0, tzinfo=UTC),
+                0,
+                0,
+                "",
+            ),
+        ]
+    )
+
+    total, intervals = await client.fetch_uptime_for_cp(
+        cp_id="CP_42",
+        window_from=datetime(2026, 4, 1, tzinfo=UTC),
+        window_to=datetime(2026, 5, 1, tzinfo=UTC),
+    )
+
+    assert total == 2100
+    assert len(intervals) == 2
+    assert intervals[0]["offline_seconds"] == 1800
+    assert intervals[1]["offline_seconds"] == 300
+    assert intervals[0]["prior_reason"] == "clean"
+    # Empty-string prior_reason becomes None in the projected row.
+    # (No interval with empty reason survives here — the zero-second
+    # one was dropped — so this assertion would belong in the route
+    # test where the response shape is asserted end-to-end.)
