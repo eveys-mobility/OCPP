@@ -151,6 +151,23 @@ async def test_list_passes_vendor_filter(
 
 
 @pytest.mark.asyncio
+async def test_list_passes_ocpp_version_filter(
+    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Operators flipping between fleets of 1.6 and 2.0.1 chargers
+    want to scope the list view to one protocol. Threaded through
+    the same `filter_kwargs` plumbing as vendor / model."""
+    from eveys_ocpp.api import charge_points as cp_module
+
+    spy = AsyncMock(return_value=[])
+    monkeypatch.setattr(cp_module, "list_charge_points", spy)
+
+    await client.get("/api/v1/charge-points?ocpp_version=ocpp1.6")
+
+    assert spy.await_args.kwargs["ocpp_version"] == "ocpp1.6"
+
+
+@pytest.mark.asyncio
 async def test_list_rejects_malformed_cursor(client: httpx.AsyncClient) -> None:
     response = await client.get("/api/v1/charge-points?cursor=not-base64-!!!")
 

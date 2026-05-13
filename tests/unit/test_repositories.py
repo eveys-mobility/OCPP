@@ -527,3 +527,19 @@ def test_charging_profile_fields_handles_missing_schedule() -> None:
     assert cols["recurrency_kind"] is None
     assert cols["min_charging_rate"] is None
     assert cols["schedule_duration"] is None
+
+
+def test_charge_points_filter_conditions_includes_ocpp_version_filter() -> None:
+    """Wiring check for the new fleet-list filter (#218 follow-up).
+
+    Operators flipping between fleets of 1.6 and 2.0.1 chargers want
+    to scope the list view to one protocol. The route layer passes
+    `ocpp_version` through `filter_kwargs`; the conditions helper
+    must render it as a SQL equality predicate so both
+    `list_charge_points` and `count_charge_points` honour it."""
+    conditions = repositories._charge_points_filter_conditions(
+        vendor=None,
+        ocpp_version="ocpp1.6",
+    )
+    rendered = [str(c) for c in conditions]
+    assert any("ocpp_version" in r for r in rendered), rendered

@@ -66,6 +66,7 @@ async def test_charge_points_filters_forwarded_to_repo(
         "/api/v1/charge-points"
         "?model=X1"
         "&firmware_version=1.0.0"
+        "&ocpp_version=ocpp1.6"
         "&last_status=Charging"
         "&last_firmware_status=Installed"
         "&last_diagnostics_status=Uploaded"
@@ -84,6 +85,7 @@ async def test_charge_points_filters_forwarded_to_repo(
     kwargs = list_mock.await_args.kwargs
     assert kwargs["model"] == "X1"
     assert kwargs["firmware_version"] == "1.0.0"
+    assert kwargs["ocpp_version"] == "ocpp1.6"
     assert kwargs["last_status"] == "Charging"
     assert kwargs["last_firmware_status"] == "Installed"
     assert kwargs["last_diagnostics_status"] == "Uploaded"
@@ -110,12 +112,14 @@ async def test_charge_points_filters_in_offset_mode_reach_count(
     monkeypatch.setattr(cp_module, "count_charge_points", count_mock)
 
     response = await client.get(
-        "/api/v1/charge-points?page=1&page_size=10&model=X1&last_status=Charging"
+        "/api/v1/charge-points?page=1&page_size=10"
+        "&model=X1&last_status=Charging&ocpp_version=ocpp1.6"
     )
     assert response.status_code == 200
     kwargs = count_mock.await_args.kwargs
     assert kwargs["model"] == "X1"
     assert kwargs["last_status"] == "Charging"
+    assert kwargs["ocpp_version"] == "ocpp1.6"
 
 
 @pytest.mark.asyncio
