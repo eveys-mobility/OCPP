@@ -225,12 +225,12 @@ def test_apply_pending_applies_only_unapplied_migrations(
 
     applied = migrate.apply_pending(host="ch", port=8123, db="eveys_ocpp")
 
-    assert applied == [3, 4, 5, 6]
+    assert applied == [3, 4, 5, 6, 7]
 
     # Expected sequence: CREATE DATABASE → SELECT applied → for each
-    # of [3, 4, 5, 6]: CREATE TABLE + INSERT tracking row. Exactly
-    # 2 + (4 * 2) = 10 SQL calls.
-    assert len(sqls_executed) == 10
+    # pending migration: CREATE TABLE + INSERT tracking row. Exactly
+    # 2 + (N * 2) calls where N is the number of pending migrations.
+    assert len(sqls_executed) == 2 + (5 * 2)
 
     # The very first call is the CREATE DATABASE (db=None).
     assert sqls_executed[0][0] is None
@@ -247,13 +247,14 @@ def test_apply_pending_applies_only_unapplied_migrations(
         assert sql_db == "eveys_ocpp"
     create_calls = [s for (_db, s) in sqls_executed[2:] if "CREATE TABLE" in s]
     insert_calls = [s for (_db, s) in sqls_executed[2:] if "INSERT INTO schema_migrations" in s]
-    assert len(create_calls) == 4
-    assert len(insert_calls) == 4
+    assert len(create_calls) == 5
+    assert len(insert_calls) == 5
     # Tracking inserts carry the right (version, name) pairs.
     assert "(3, 'create_cp_status')" in insert_calls[0]
     assert "(4, 'create_cp_boot')" in insert_calls[1]
     assert "(5, 'create_tx_started')" in insert_calls[2]
     assert "(6, 'create_cp_offline_duration')" in insert_calls[3]
+    assert "(7, 'create_cp_ocpp_frames')" in insert_calls[4]
 
 
 def test_apply_pending_is_a_noop_when_everything_already_applied(
@@ -263,8 +264,9 @@ def test_apply_pending_is_a_noop_when_everything_already_applied(
     only does the CREATE DATABASE + SELECT, no new INSERTs or
     CREATE TABLEs."""
     sqls_executed: list[str] = []
-    # All 6 versions already applied.
-    response_body = b"1\n2\n3\n4\n5\n6\n"
+    # All applied versions present — including the new 0007 from
+    # this PR.
+    response_body = b"1\n2\n3\n4\n5\n6\n7\n"
 
     def fake_urlopen(req: object, timeout: int = 0) -> _FakeResponse:
         sql = req.data.decode()  # type: ignore[attr-defined]

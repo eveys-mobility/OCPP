@@ -46,6 +46,7 @@ from eveys_ocpp.api._schemas import (
     ErrorEnvelope,
     FleetStatusResponse,
     MeterValuesResponse,
+    OcppFramesByCpResponse,
     OfflineHistoryResponse,
     StatusHistoryResponse,
 )
@@ -266,6 +267,79 @@ async def list_fleet_status_history(
     return {
         "events": [_status_to_response(r) for r in rows],
         "request_id": request.state.request_id,
+    }
+
+
+@router.get(
+    "/charge-points/{cp_id}/frames",
+    summary="ClickHouse-backed OCPP frame audit for a charge point (both directions)",
+    responses={
+        200: {"model": OcppFramesByCpResponse},
+        400: {"model": ErrorEnvelope, "description": "Bad from/to or window too large."},
+        404: {"model": ErrorEnvelope, "description": "Unknown cp_id."},
+    },
+)
+async def list_frames_by_cp(
+    request: Request,
+    cp_id: str,
+    from_: str = Query(alias="from"),
+    to: str = Query(...),
+    direction: str | None = Query(default=None),
+    action: str | None = Query(default=None),
+    limit: int | None = Query(default=None, ge=1, le=10_000),
+) -> dict[str, Any]:
+    """Verbatim OCPP frame trail for one charger. Each row is the
+    exact JSON the gateway received (``direction=inbound``) or wrote
+    on the wire (``direction=outbound``).
+
+    Optional ``direction`` scopes to one side; optional ``action``
+    filters on the OCPP action name (``BootNotification``,
+    ``MeterValues``, …). Same 7-day window cap as the meter +
+    status routes."""
+    settings = request.app.state.settings
+    page_size = clamp_limit(
+        limit,
+        default=settings.rest_default_page_size,
+        maximum=settings.rest_max_page_size,
+    )
+
+    started_from = _parse_iso8601(from_, field_name="from")
+    started_to = _parse_iso8601(to, field_name="to")
+    _validate_window(started_from, started_to)
+
+    await _ensure_cp_exists(request, cp_id)
+
+    rows = await _ch_client(request).fetch_frames_by_cp(
+        cp_id=cp_id,
+        started_from=started_from,
+        started_to=started_to,
+        direction=direction,
+        action=action,
+        limit=page_size,
+    )
+
+    return {
+        "cp_id": cp_id,
+        "frames": [_frame_to_response(r) for r in rows],
+        "request_id": request.state.request_id,
+    }
+
+
+def _frame_to_response(row: dict[str, Any]) -> dict[str, Any]:
+    """Project a ClickHouse `cp_ocpp_frames` row into the API shape.
+    Empty strings normalised to None for nullable-feeling fields so
+    consumers don't have to special-case both forms."""
+    return {
+        "event_id": row["event_id"],
+        "occurred_at": _isoformat(row["occurred_at"]),
+        "cp_id": row["cp_id"],
+        "direction": row["direction"],
+        "action": row["action"] or "",
+        "message_type": row["message_type"],
+        "message_id": row["message_id"] or "",
+        "ocpp_version": row["ocpp_version"] or "",
+        "transaction_id": row.get("transaction_id"),
+        "raw_payload": row["raw_payload"],
     }
 
 

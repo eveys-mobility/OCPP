@@ -38,6 +38,7 @@ Entrypoint: ``python -m eveys_ocpp.clickhouse.ingestor``.
 from __future__ import annotations
 
 import asyncio
+import json
 import signal
 import sys
 from collections.abc import Iterable
@@ -172,6 +173,60 @@ def _row_cp_offline_duration(env: events_pb2.EventEnvelope) -> dict[str, Any]:
     }
 
 
+def _extract_transaction_id(raw_payload: str) -> int | None:
+    """Pull ``transactionId`` out of an OCPP frame's JSON when present.
+
+    OCPP-J frames are a 4-element JSON array:
+        [messageTypeId, messageId, action, payload]   # CALL
+        [messageTypeId, messageId, payload]           # CALLRESULT / CALLERROR
+
+    The ``transactionId`` field shows up inside the payload object on
+    a small set of message types (StartTransaction.conf,
+    StopTransaction.req, MeterValues.req, RemoteStartTransaction.req
+    when the central system pins the id, …). It's the same key name
+    everywhere it appears, so a shallow dict lookup suffices — no
+    need to know which action we're parsing.
+
+    Returns ``None`` for: unparseable JSON, unexpected frame shape, no
+    ``transactionId`` key, or a value that isn't coercible to int.
+    Built to never raise; the ingestor must not crash on a malformed
+    frame, just store the row without the tx index hint.
+    """
+    if not raw_payload:
+        return None
+    try:
+        frame = json.loads(raw_payload)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(frame, list) or len(frame) < 3:
+        return None
+    # Payload is the last element regardless of CALL vs RESULT/ERROR.
+    body = frame[-1]
+    if not isinstance(body, dict):
+        return None
+    value = body.get("transactionId")
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _row_cp_ocpp_frame(env: events_pb2.EventEnvelope) -> dict[str, Any]:
+    payload = env.cp_ocpp_frame
+    return {
+        **_envelope_meta(env),
+        "direction": payload.direction,
+        "raw_payload": payload.raw_payload,
+        "message_id": payload.message_id,
+        "action": payload.action,
+        "message_type": payload.message_type,
+        "ocpp_version": payload.ocpp_version,
+        "transaction_id": _extract_transaction_id(payload.raw_payload),
+    }
+
+
 # `oneof` field name → (table, extractor). The protobuf-generated
 # `WhichOneof("payload")` returns the field name of the set variant.
 _DISPATCH: dict[str, tuple[str, Any]] = {
@@ -180,6 +235,7 @@ _DISPATCH: dict[str, tuple[str, Any]] = {
     "cp_boot": ("cp_boot", _row_cp_boot),
     "tx_started": ("tx_started", _row_tx_started),
     "cp_offline_duration": ("cp_offline_duration", _row_cp_offline_duration),
+    "cp_ocpp_frame": ("cp_ocpp_frames", _row_cp_ocpp_frame),
     # Note: cp_connected is intentionally not ingested — that variant
     # is a registry-presence event, not telemetry. If a future ADR
     # decides we want it in CH, add a row here.
@@ -221,6 +277,7 @@ class ClickHouseIngestor:
             self._settings.kafka_topic_cp_boot,
             self._settings.kafka_topic_tx_started,
             self._settings.kafka_topic_cp_offline_duration,
+            self._settings.kafka_topic_cp_ocpp_frames,
         )
         consumer = AIOKafkaConsumer(
             *topics,

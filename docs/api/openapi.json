@@ -1028,6 +1028,130 @@
         "title": "MeterValuesResponse",
         "type": "object"
       },
+      "OcppFrame": {
+        "description": "One row of the `cp_ocpp_frames` audit table \u2014 a single OCPP\nframe in either direction, captured verbatim. ``raw_payload`` is\nthe JSON the gateway received or wrote on the wire.",
+        "properties": {
+          "action": {
+            "description": "OCPP action name. Empty for CALLRESULT / CALLERROR.",
+            "title": "Action",
+            "type": "string"
+          },
+          "cp_id": {
+            "title": "Cp Id",
+            "type": "string"
+          },
+          "direction": {
+            "description": "\"inbound\" (CP\u2192gateway) or \"outbound\" (gateway\u2192CP).",
+            "title": "Direction",
+            "type": "string"
+          },
+          "event_id": {
+            "title": "Event Id",
+            "type": "string"
+          },
+          "message_id": {
+            "title": "Message Id",
+            "type": "string"
+          },
+          "message_type": {
+            "description": "2 = CALL, 3 = CALLRESULT, 4 = CALLERROR.",
+            "title": "Message Type",
+            "type": "integer"
+          },
+          "occurred_at": {
+            "title": "Occurred At",
+            "type": "string"
+          },
+          "ocpp_version": {
+            "title": "Ocpp Version",
+            "type": "string"
+          },
+          "raw_payload": {
+            "description": "The exact JSON bytes on the wire.",
+            "title": "Raw Payload",
+            "type": "string"
+          },
+          "transaction_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Extracted from the frame payload when present (Start/Stop Transaction, MeterValues, \u2026). Null for frames that don't carry a transactionId.",
+            "title": "Transaction Id"
+          }
+        },
+        "required": [
+          "event_id",
+          "occurred_at",
+          "cp_id",
+          "direction",
+          "action",
+          "message_type",
+          "message_id",
+          "ocpp_version",
+          "raw_payload"
+        ],
+        "title": "OcppFrame",
+        "type": "object"
+      },
+      "OcppFramesByCpResponse": {
+        "description": "`GET /api/v1/charge-points/{cp_id}/frames?from=\u2026&to=\u2026`.",
+        "properties": {
+          "cp_id": {
+            "title": "Cp Id",
+            "type": "string"
+          },
+          "frames": {
+            "items": {
+              "$ref": "#/components/schemas/OcppFrame"
+            },
+            "title": "Frames",
+            "type": "array"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "cp_id",
+          "frames",
+          "request_id"
+        ],
+        "title": "OcppFramesByCpResponse",
+        "type": "object"
+      },
+      "OcppFramesByTransactionResponse": {
+        "description": "`GET /api/v1/transactions/{transaction_id}/frames`. No window\nrequired \u2014 transactions are already bounded.",
+        "properties": {
+          "frames": {
+            "items": {
+              "$ref": "#/components/schemas/OcppFrame"
+            },
+            "title": "Frames",
+            "type": "array"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          },
+          "transaction_id": {
+            "title": "Transaction Id",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "transaction_id",
+          "frames",
+          "request_id"
+        ],
+        "title": "OcppFramesByTransactionResponse",
+        "type": "object"
+      },
       "OfflineDurationEvent": {
         "description": "One observed offline window for a charger.\n\nAnchored on `came_online_at` (the reconnect that closed the\nwindow). `offline_seconds` is precomputed gateway-side.",
         "properties": {
@@ -4001,6 +4125,140 @@
         ]
       }
     },
+    "/api/v1/charge-points/{cp_id}/frames": {
+      "get": {
+        "description": "Verbatim OCPP frame trail for one charger. Each row is the\nexact JSON the gateway received (``direction=inbound``) or wrote\non the wire (``direction=outbound``).\n\nOptional ``direction`` scopes to one side; optional ``action``\nfilters on the OCPP action name (``BootNotification``,\n``MeterValues``, \u2026). Same 7-day window cap as the meter +\nstatus routes.",
+        "operationId": "list_frames_by_cp_api_v1_charge_points__cp_id__frames_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cp_id",
+            "required": true,
+            "schema": {
+              "title": "Cp Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "from",
+            "required": true,
+            "schema": {
+              "title": "From",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "to",
+            "required": true,
+            "schema": {
+              "title": "To",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "direction",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Direction"
+            }
+          },
+          {
+            "in": "query",
+            "name": "action",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Action"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 10000,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OcppFramesByCpResponse",
+                  "additionalProperties": true,
+                  "title": "Response List Frames By Cp Api V1 Charge Points  Cp Id  Frames Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Bad from/to or window too large."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Unknown cp_id."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "ClickHouse-backed OCPP frame audit for a charge point (both directions)",
+        "tags": [
+          "timeseries"
+        ]
+      }
+    },
     "/api/v1/charge-points/{cp_id}/meter-values": {
       "get": {
         "operationId": "list_meter_values_api_v1_charge_points__cp_id__meter_values_get",
@@ -5640,6 +5898,80 @@
           }
         },
         "summary": "Single-transaction detail",
+        "tags": [
+          "transactions"
+        ]
+      }
+    },
+    "/api/v1/transactions/{transaction_id}/frames": {
+      "get": {
+        "description": "Every OCPP frame stamped with the given ``transaction_id`` \u2014\nboth directions, ordered by ``occurred_at``. No time window\nrequired: transactions are already bounded.\n\n404 when the transaction_id doesn't exist in the OLTP store. An\nexisting transaction with zero frames returns ``frames: []`` (a\nfresh tx that hasn't received MeterValues yet).",
+        "operationId": "get_transaction_frames_route_api_v1_transactions__transaction_id__frames_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "transaction_id",
+            "required": true,
+            "schema": {
+              "title": "Transaction Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 10000,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OcppFramesByTransactionResponse",
+                  "additionalProperties": true,
+                  "title": "Response Get Transaction Frames Route Api V1 Transactions  Transaction Id  Frames Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Unknown transaction_id."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "OCPP frame audit trail for one transaction",
         "tags": [
           "transactions"
         ]

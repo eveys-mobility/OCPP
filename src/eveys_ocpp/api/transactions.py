@@ -35,6 +35,7 @@ from eveys_ocpp.api._pagination import (
 )
 from eveys_ocpp.api._schemas import (
     ErrorEnvelope,
+    OcppFramesByTransactionResponse,
     TransactionDetail,
     TransactionListResponse,
 )
@@ -338,6 +339,80 @@ async def get_transaction_route(request: Request, transaction_id: int) -> dict[s
     response["telemetry"] = await _telemetry_for(request, tx)
     response["request_id"] = request.state.request_id
     return response
+
+
+@router.get(
+    "/transactions/{transaction_id}/frames",
+    summary="OCPP frame audit trail for one transaction",
+    responses={
+        200: {"model": OcppFramesByTransactionResponse},
+        404: {"model": ErrorEnvelope, "description": "Unknown transaction_id."},
+    },
+)
+async def get_transaction_frames_route(
+    request: Request,
+    transaction_id: int,
+    limit: int | None = Query(default=None, ge=1, le=10_000),
+) -> dict[str, Any]:
+    """Every OCPP frame stamped with the given ``transaction_id`` —
+    both directions, ordered by ``occurred_at``. No time window
+    required: transactions are already bounded.
+
+    404 when the transaction_id doesn't exist in the OLTP store. An
+    existing transaction with zero frames returns ``frames: []`` (a
+    fresh tx that hasn't received MeterValues yet)."""
+    async with session_scope(request.app.state.session_factory) as session:
+        tx = await get_transaction_by_id(session, transaction_id=transaction_id)
+    if tx is None:
+        raise ApiError(
+            status_code=404,
+            error_code=ERR_UNKNOWN_TRANSACTION_ID,
+            message=f"unknown transaction_id: {transaction_id}",
+        )
+
+    settings = request.app.state.settings
+    page_size = clamp_limit(
+        limit,
+        default=settings.rest_default_page_size,
+        maximum=settings.rest_max_page_size,
+    )
+
+    ch_client = getattr(request.app.state, "ch_client", None)
+    if ch_client is None:
+        # Same posture as get_transaction_route's telemetry: tests and
+        # compose-smoke run without ClickHouse — surface frames=[]
+        # instead of 500ing.
+        rows: list[dict[str, Any]] = []
+    else:
+        rows = await ch_client.fetch_frames_by_transaction(
+            transaction_id=transaction_id,
+            limit=page_size,
+        )
+
+    return {
+        "transaction_id": transaction_id,
+        "frames": [_frame_to_response(r) for r in rows],
+        "request_id": request.state.request_id,
+    }
+
+
+def _frame_to_response(row: dict[str, Any]) -> dict[str, Any]:
+    """Project a `cp_ocpp_frames` row into the API shape. Mirrors the
+    same helper in `api/timeseries.py`; duplicated here so the two
+    routers stay independent (the import direction would otherwise
+    be backwards)."""
+    return {
+        "event_id": row["event_id"],
+        "occurred_at": _isoformat(row["occurred_at"]),
+        "cp_id": row["cp_id"],
+        "direction": row["direction"],
+        "action": row["action"] or "",
+        "message_type": row["message_type"],
+        "message_id": row["message_id"] or "",
+        "ocpp_version": row["ocpp_version"] or "",
+        "transaction_id": row.get("transaction_id"),
+        "raw_payload": row["raw_payload"],
+    }
 
 
 async def _telemetry_for(request: Request, tx: dict[str, Any]) -> dict[str, Any] | None:

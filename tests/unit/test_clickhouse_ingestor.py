@@ -20,9 +20,11 @@ from eveys_ocpp.clickhouse.ingestor import (
     _DISPATCH,
     ClickHouseIngestor,
     _envelope_meta,
+    _extract_transaction_id,
     _parse_occurred_at,
     _row_cp_boot,
     _row_cp_meter,
+    _row_cp_ocpp_frame,
     _row_cp_status,
     _row_tx_started,
 )
@@ -185,16 +187,91 @@ def test_dispatch_table_covers_every_persisted_oneof() -> None:
     """The dispatch table maps every `oneof payload` variant we
     persist. `cp_connected` is intentionally missing (not telemetry —
     see ingestor.py module docstring)."""
-    persisted = {"cp_meter", "cp_status", "cp_boot", "tx_started", "cp_offline_duration"}
+    persisted = {
+        "cp_meter",
+        "cp_status",
+        "cp_boot",
+        "tx_started",
+        "cp_offline_duration",
+        "cp_ocpp_frame",
+    }
     assert set(_DISPATCH.keys()) == persisted
 
 
 def test_dispatch_uses_table_names_matching_ddl() -> None:
     """The (table, extractor) pair points at the table name in
     src/eveys_ocpp/clickhouse/ddl/, not the proto field name."""
-    expected_tables = {"cp_meter", "cp_status", "cp_boot", "tx_started", "cp_offline_duration"}
+    expected_tables = {
+        "cp_meter",
+        "cp_status",
+        "cp_boot",
+        "tx_started",
+        "cp_offline_duration",
+        "cp_ocpp_frames",
+    }
     actual_tables = {table for (table, _extractor) in _DISPATCH.values()}
     assert actual_tables == expected_tables
+
+
+# ---- cp.ocpp_frames row extractor + transaction_id parser ------------------
+
+
+def test_row_cp_ocpp_frame_serializes_envelope_fields() -> None:
+    """Plain pass-through for direction/action/message_type/etc. The
+    only field that requires gateway-side computation is
+    transaction_id, which the parser extracts from raw_payload below."""
+    env = _envelope(
+        cp_ocpp_frame=events_pb2.CpOcppFrame(
+            direction="inbound",
+            raw_payload='[2,"abc","Heartbeat",{}]',
+            message_id="abc",
+            action="Heartbeat",
+            message_type=2,
+            ocpp_version="ocpp1.6",
+        )
+    )
+    row = _row_cp_ocpp_frame(env)
+    assert row["direction"] == "inbound"
+    assert row["action"] == "Heartbeat"
+    assert row["message_type"] == 2
+    assert row["ocpp_version"] == "ocpp1.6"
+    # Heartbeat carries no transactionId, so the parser yields None.
+    assert row["transaction_id"] is None
+
+
+def test_extract_transaction_id_from_call_with_transaction_id() -> None:
+    """MeterValues.req carries `transactionId` at the top of the
+    payload object. Tx audit queries hinge on this extraction."""
+    raw = '[2,"call-id","MeterValues",{"connectorId":1,"transactionId":12345,"meterValue":[]}]'
+    assert _extract_transaction_id(raw) == 12345
+
+
+def test_extract_transaction_id_from_callresult() -> None:
+    """StartTransaction.conf is the canonical 'we just got a tx_id'
+    frame — outbound, MessageTypeId=3, transactionId in the payload."""
+    raw = '[3,"call-id",{"transactionId":42,"idTagInfo":{"status":"Accepted"}}]'
+    assert _extract_transaction_id(raw) == 42
+
+
+def test_extract_transaction_id_absent_returns_none() -> None:
+    """Most frame kinds (BootNotification, Heartbeat, StatusNotification)
+    don't carry a transactionId. The ingestor must store the row
+    anyway with the column set to NULL."""
+    raw = '[2,"call-id","Heartbeat",{}]'
+    assert _extract_transaction_id(raw) is None
+
+
+def test_extract_transaction_id_handles_unparseable_payload() -> None:
+    """Never raise — a malformed inbound frame must not crash the
+    ingestor. The frame still gets stored; only the tx index hint
+    is lost."""
+    assert _extract_transaction_id("not json at all") is None
+    assert _extract_transaction_id("") is None
+    assert _extract_transaction_id('{"shape":"wrong"}') is None
+    assert _extract_transaction_id('[2,"too","short"]') is None
+    assert _extract_transaction_id('[2,"id","Action","not-a-dict-payload"]') is None
+    # transactionId present but unparseable as int.
+    assert _extract_transaction_id('[2,"id","X",{"transactionId":"not-int"}]') is None
 
 
 # ---- Parse-failure guards in _process_record ------------------------------
@@ -310,6 +387,7 @@ async def test_start_constructs_kafka_consumer_with_at_least_once_kwargs(
         kafka_topic_cp_boot="cp.boot",
         kafka_topic_tx_started="tx.started",
         kafka_topic_cp_offline_duration="cp.offline_duration",
+        kafka_topic_cp_ocpp_frames="cp.ocpp_frames",
         clickhouse_ingestor_group="test-group",
     )
     ingestor = ClickHouseIngestor(settings)
@@ -323,6 +401,7 @@ async def test_start_constructs_kafka_consumer_with_at_least_once_kwargs(
         "cp.boot",
         "tx.started",
         "cp.offline_duration",
+        "cp.ocpp_frames",
     }
     # at-least-once: manual commit only after a successful INSERT.
     assert captured_kwargs["enable_auto_commit"] is False

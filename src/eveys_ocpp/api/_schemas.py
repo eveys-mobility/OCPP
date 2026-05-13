@@ -568,6 +568,47 @@ class FleetStatusResponse(BaseModel):
     request_id: str
 
 
+class OcppFrame(BaseModel):
+    """One row of the `cp_ocpp_frames` audit table — a single OCPP
+    frame in either direction, captured verbatim. ``raw_payload`` is
+    the JSON the gateway received or wrote on the wire."""
+
+    event_id: str
+    occurred_at: str
+    cp_id: str
+    direction: str = Field(description='"inbound" (CP→gateway) or "outbound" (gateway→CP).')
+    action: str = Field(description="OCPP action name. Empty for CALLRESULT / CALLERROR.")
+    message_type: int = Field(description="2 = CALL, 3 = CALLRESULT, 4 = CALLERROR.")
+    message_id: str
+    ocpp_version: str
+    transaction_id: int | None = Field(
+        default=None,
+        description=(
+            "Extracted from the frame payload when present (Start/Stop"
+            " Transaction, MeterValues, …). Null for frames that don't"
+            " carry a transactionId."
+        ),
+    )
+    raw_payload: str = Field(description="The exact JSON bytes on the wire.")
+
+
+class OcppFramesByCpResponse(BaseModel):
+    """`GET /api/v1/charge-points/{cp_id}/frames?from=…&to=…`."""
+
+    cp_id: str
+    frames: list[OcppFrame]
+    request_id: str
+
+
+class OcppFramesByTransactionResponse(BaseModel):
+    """`GET /api/v1/transactions/{transaction_id}/frames`. No window
+    required — transactions are already bounded."""
+
+    transaction_id: int
+    frames: list[OcppFrame]
+    request_id: str
+
+
 class OfflineDurationEvent(BaseModel):
     """One observed offline window for a charger.
 
@@ -670,6 +711,9 @@ __all__ = [
     "LatestMeter",
     "MeterValueSample",
     "MeterValuesResponse",
+    "OcppFrame",
+    "OcppFramesByCpResponse",
+    "OcppFramesByTransactionResponse",
     "OfflineDurationEvent",
     "OfflineHistoryResponse",
     "PaginationBlock",
