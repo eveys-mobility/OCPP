@@ -912,6 +912,7 @@ def _charge_points_filter_conditions(
     vendor: str | None,
     model: str | None = None,
     firmware_version: str | None = None,
+    ocpp_version: str | None = None,
     last_status: str | None = None,
     last_firmware_status: str | None = None,
     last_diagnostics_status: str | None = None,
@@ -944,6 +945,12 @@ def _charge_points_filter_conditions(
         conditions.append(ChargePoint.model == model)
     if firmware_version is not None:
         conditions.append(ChargePoint.firmware_version == firmware_version)
+    if ocpp_version is not None:
+        # `ocpp_version` is a closed set today (`ocpp1.6`); exact-match
+        # is the right filter shape. Future 2.0.1 rollouts will produce
+        # `ocpp2.0.1` and operators will want to see both groups
+        # cleanly partitioned.
+        conditions.append(ChargePoint.ocpp_version == ocpp_version)
     if last_status is not None:
         conditions.append(ChargePoint.last_status == last_status)
     if last_firmware_status is not None:
@@ -997,6 +1004,7 @@ async def list_charge_points(
     vendor: str | None = None,
     model: str | None = None,
     firmware_version: str | None = None,
+    ocpp_version: str | None = None,
     last_status: str | None = None,
     last_firmware_status: str | None = None,
     last_diagnostics_status: str | None = None,
@@ -1038,6 +1046,7 @@ async def list_charge_points(
         vendor=vendor,
         model=model,
         firmware_version=firmware_version,
+        ocpp_version=ocpp_version,
         last_status=last_status,
         last_firmware_status=last_firmware_status,
         last_diagnostics_status=last_diagnostics_status,
@@ -1070,6 +1079,7 @@ async def count_charge_points(
     vendor: str | None = None,
     model: str | None = None,
     firmware_version: str | None = None,
+    ocpp_version: str | None = None,
     last_status: str | None = None,
     last_firmware_status: str | None = None,
     last_diagnostics_status: str | None = None,
@@ -1093,6 +1103,7 @@ async def count_charge_points(
         vendor=vendor,
         model=model,
         firmware_version=firmware_version,
+        ocpp_version=ocpp_version,
         last_status=last_status,
         last_firmware_status=last_firmware_status,
         last_diagnostics_status=last_diagnostics_status,

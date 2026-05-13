@@ -2031,6 +2031,22 @@
           },
           {
             "in": "query",
+            "name": "ocpp_version",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Ocpp Version"
+            }
+          },
+          {
+            "in": "query",
             "name": "last_status",
             "required": false,
             "schema": {
