@@ -19,7 +19,7 @@ lives at `clickhouse/read_client.py`.
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Query, Request
 
@@ -44,6 +44,7 @@ from eveys_ocpp.api._pagination import (
 )
 from eveys_ocpp.api._schemas import (
     ErrorEnvelope,
+    FleetStatusResponse,
     MeterValuesResponse,
     OfflineHistoryResponse,
     StatusHistoryResponse,
@@ -214,6 +215,56 @@ async def list_status_history(
 
     return {
         "status_history": [_status_to_response(r) for r in rows],
+        "request_id": request.state.request_id,
+    }
+
+
+@router.get(
+    "/status-history",
+    summary="Fleet-wide StatusNotification history (e.g. all Faulted statuses this week)",
+    responses={
+        200: {"model": FleetStatusResponse},
+        400: {"model": ErrorEnvelope, "description": "Bad from/to or window too large."},
+    },
+)
+async def list_fleet_status_history(
+    request: Request,
+    from_: str = Query(alias="from"),
+    to: str = Query(...),
+    status: Annotated[list[str] | None, Query()] = None,
+    cp_id: Annotated[list[str] | None, Query()] = None,
+    limit: int | None = Query(default=None, ge=1, le=10_000),
+) -> dict[str, Any]:
+    """Cross-charger variant of the per-cp ``status-history`` route.
+
+    Common use: an operator filtering for ``status=Faulted`` over the
+    last week to surface every charger that flipped to a fault state.
+
+    ``status`` and ``cp_id`` are both repeatable query params: e.g.
+    ``?status=Faulted&status=Unavailable`` to get either, or
+    ``?cp_id=A&cp_id=B`` to restrict to two chargers without paying
+    the cost of one round-trip per cp_id."""
+    settings = request.app.state.settings
+    page_size = clamp_limit(
+        limit,
+        default=settings.rest_default_page_size,
+        maximum=settings.rest_max_page_size,
+    )
+
+    started_from = _parse_iso8601(from_, field_name="from")
+    started_to = _parse_iso8601(to, field_name="to")
+    _validate_window(started_from, started_to)
+
+    rows = await _ch_client(request).fetch_fleet_status_history(
+        started_from=started_from,
+        started_to=started_to,
+        statuses=status,
+        cp_ids=cp_id,
+        limit=page_size,
+    )
+
+    return {
+        "events": [_status_to_response(r) for r in rows],
         "request_id": request.state.request_id,
     }
 

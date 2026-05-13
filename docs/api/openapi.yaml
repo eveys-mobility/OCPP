@@ -492,6 +492,73 @@ components:
       - request_id
       title: ErrorEnvelope
       type: object
+    FleetStatusEvent:
+      description: 'Fleet-wide status event — same shape as :class:`StatusEvent`
+
+        plus the cp_id, since the fleet endpoint returns rows from
+
+        multiple chargers in one response.'
+      properties:
+        connector_id:
+          title: Connector Id
+          type: integer
+        cp_id:
+          title: Cp Id
+          type: string
+        error_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Error Code
+        info:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Info
+        status:
+          title: Status
+          type: string
+        timestamp:
+          title: Timestamp
+          type: string
+        vendor_error_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Vendor Error Code
+        vendor_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Vendor Id
+      required:
+      - timestamp
+      - connector_id
+      - status
+      - cp_id
+      title: FleetStatusEvent
+      type: object
+    FleetStatusResponse:
+      description: '`GET /api/v1/charge-points/status?from=…&to=…&status=…`.
+
+
+        Fleet-wide variant of :class:`StatusHistoryResponse`. Common use:
+
+        "all Faulted statuses this week".'
+      properties:
+        events:
+          items:
+            $ref: '#/components/schemas/FleetStatusEvent'
+          title: Events
+          type: array
+        request_id:
+          title: Request Id
+          type: string
+      required:
+      - events
+      - request_id
+      title: FleetStatusResponse
+      type: object
     HTTPValidationError:
       properties:
         detail:
@@ -3354,6 +3421,93 @@ paths:
       summary: Readiness probe (auth-exempt)
       tags:
       - health
+  /api/v1/status-history:
+    get:
+      description: 'Cross-charger variant of the per-cp ``status-history`` route.
+
+
+        Common use: an operator filtering for ``status=Faulted`` over the
+
+        last week to surface every charger that flipped to a fault state.
+
+
+        ``status`` and ``cp_id`` are both repeatable query params: e.g.
+
+        ``?status=Faulted&status=Unavailable`` to get either, or
+
+        ``?cp_id=A&cp_id=B`` to restrict to two chargers without paying
+
+        the cost of one round-trip per cp_id.'
+      operationId: list_fleet_status_history_api_v1_status_history_get
+      parameters:
+      - in: query
+        name: from
+        required: true
+        schema:
+          title: From
+          type: string
+      - in: query
+        name: to
+        required: true
+        schema:
+          title: To
+          type: string
+      - in: query
+        name: status
+        required: false
+        schema:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Status
+      - in: query
+        name: cp_id
+        required: false
+        schema:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Cp Id
+      - in: query
+        name: limit
+        required: false
+        schema:
+          anyOf:
+          - maximum: 10000
+            minimum: 1
+            type: integer
+          - type: 'null'
+          title: Limit
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FleetStatusResponse'
+                additionalProperties: true
+                title: Response List Fleet Status History Api V1 Status History Get
+                type: object
+          description: Successful Response
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+          description: Bad from/to or window too large.
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Fleet-wide StatusNotification history (e.g. all Faulted statuses this
+        week)
+      tags:
+      - timeseries
   /api/v1/sys/config:
     get:
       operationId: get_sys_config_api_v1_sys_config_get
