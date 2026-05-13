@@ -550,6 +550,24 @@ class StatusHistoryResponse(BaseModel):
     request_id: str
 
 
+class FleetStatusEvent(StatusEvent):
+    """Fleet-wide status event — same shape as :class:`StatusEvent`
+    plus the cp_id, since the fleet endpoint returns rows from
+    multiple chargers in one response."""
+
+    cp_id: str
+
+
+class FleetStatusResponse(BaseModel):
+    """`GET /api/v1/charge-points/status?from=…&to=…&status=…`.
+
+    Fleet-wide variant of :class:`StatusHistoryResponse`. Common use:
+    "all Faulted statuses this week"."""
+
+    events: list[FleetStatusEvent]
+    request_id: str
+
+
 class OfflineDurationEvent(BaseModel):
     """One observed offline window for a charger.
 
@@ -645,6 +663,8 @@ __all__ = [
     "CommandAcceptedResponse",
     "ConnectorStatus",
     "ErrorEnvelope",
+    "FleetStatusEvent",
+    "FleetStatusResponse",
     "HealthComponents",
     "HealthResponse",
     "LatestMeter",

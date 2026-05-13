@@ -528,3 +528,68 @@ class ClickHouseReadClient:
             cols = [d[0] for d in cursor.description]
             rows = await cursor.fetchall()
         return [dict(zip(cols, row, strict=True)) for row in rows]
+
+    async def fetch_fleet_status_history(
+        self,
+        *,
+        started_from: datetime,
+        started_to: datetime,
+        statuses: list[str] | None,
+        cp_ids: list[str] | None,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        """Return StatusNotification transitions across the fleet inside
+        [from, to], optionally filtered by status value and/or a small
+        list of cp_ids.
+
+        Fleet-wide variant of :meth:`fetch_status_history`. Same row
+        shape and ordering; just drops the single-cp filter. The
+        partition prune on ``occurred_at`` keeps the scan bounded to
+        the months that overlap the window.
+
+        Common use: "all Faulted statuses this week" — pass
+        ``statuses=["Faulted"]`` and a 7-day window.
+        """
+        assert self._conn is not None  # narrowed by start()
+
+        sql = """
+            SELECT
+                event_id,
+                occurred_at,
+                cp_id,
+                connector_id,
+                status,
+                error_code,
+                info,
+                vendor_id,
+                vendor_error_code,
+                charger_reported_at
+            FROM cp_status
+            WHERE occurred_at >= {from_ts}
+              AND occurred_at <= {to_ts}
+        """
+        params: dict[str, Any] = {
+            "from_ts": started_from,
+            "to_ts": started_to,
+        }
+        if statuses:
+            # asynch's str.format escaping doesn't handle list literals
+            # natively, so render the IN clause's element placeholders
+            # by name and bind each value individually.
+            placeholders = ", ".join(f"{{status_{i}}}" for i in range(len(statuses)))
+            sql += f" AND status IN ({placeholders})"
+            for i, s in enumerate(statuses):
+                params[f"status_{i}"] = s
+        if cp_ids:
+            placeholders = ", ".join(f"{{cp_{i}}}" for i in range(len(cp_ids)))
+            sql += f" AND cp_id IN ({placeholders})"
+            for i, c in enumerate(cp_ids):
+                params[f"cp_{i}"] = c
+        sql += " ORDER BY occurred_at, event_id LIMIT {limit}"
+        params["limit"] = limit
+
+        async with self._conn.cursor() as cursor:
+            await cursor.execute(sql, params)
+            cols = [d[0] for d in cursor.description]
+            rows = await cursor.fetchall()
+        return [dict(zip(cols, row, strict=True)) for row in rows]

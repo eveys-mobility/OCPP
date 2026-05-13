@@ -334,3 +334,88 @@ async def test_status_history_window_too_large(client: httpx.AsyncClient) -> Non
     )
     assert response.status_code == 400
     assert response.json()["error_code"] == "WINDOW_TOO_LARGE"
+
+
+# ---- fleet status-history --------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_fleet_status_returns_events_from_multiple_cps(
+    client: httpx.AsyncClient,
+    fake_ch_client: MagicMock,
+) -> None:
+    row_a = _status_row(status="Faulted") | {"cp_id": "CP_A"}
+    row_b = _status_row(status="Faulted") | {"cp_id": "CP_B"}
+    fake_ch_client.fetch_fleet_status_history = AsyncMock(return_value=[row_a, row_b])
+
+    response = await client.get(
+        "/api/v1/status-history"
+        "?from=2026-05-06T00:00:00%2B00:00&to=2026-05-06T23:59:59%2B00:00"
+        "&status=Faulted"
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert {row["cp_id"] for row in body["events"]} == {"CP_A", "CP_B"}
+    assert all(row["status"] == "Faulted" for row in body["events"])
+
+
+@pytest.mark.asyncio
+async def test_fleet_status_passes_status_and_cp_filters_through(
+    client: httpx.AsyncClient,
+    fake_ch_client: MagicMock,
+) -> None:
+    spy = AsyncMock(return_value=[])
+    fake_ch_client.fetch_fleet_status_history = spy
+
+    response = await client.get(
+        "/api/v1/status-history"
+        "?from=2026-05-06T00:00:00%2B00:00&to=2026-05-06T23:59:59%2B00:00"
+        "&status=Faulted&status=Unavailable"
+        "&cp_id=CP_001&cp_id=CP_002"
+        "&limit=50"
+    )
+
+    assert response.status_code == 200
+    kwargs = spy.await_args.kwargs
+    assert kwargs["statuses"] == ["Faulted", "Unavailable"]
+    assert kwargs["cp_ids"] == ["CP_001", "CP_002"]
+    assert kwargs["limit"] == 50
+
+
+@pytest.mark.asyncio
+async def test_fleet_status_no_filters_returns_all(
+    client: httpx.AsyncClient,
+    fake_ch_client: MagicMock,
+) -> None:
+    """No `status` / `cp_id` means no SQL filter — the client method
+    receives None for both and the route doesn't 400 on missing
+    filters (only `from`/`to` are required)."""
+    spy = AsyncMock(return_value=[_status_row()])
+    fake_ch_client.fetch_fleet_status_history = spy
+
+    response = await client.get(
+        "/api/v1/status-history?from=2026-05-06T00:00:00%2B00:00&to=2026-05-06T23:59:59%2B00:00"
+    )
+
+    assert response.status_code == 200
+    kwargs = spy.await_args.kwargs
+    assert kwargs["statuses"] is None
+    assert kwargs["cp_ids"] is None
+
+
+@pytest.mark.asyncio
+async def test_fleet_status_window_too_large(client: httpx.AsyncClient) -> None:
+    response = await client.get(
+        "/api/v1/status-history?from=2026-04-01T00:00:00%2B00:00&to=2026-05-06T00:00:00%2B00:00"
+    )
+    assert response.status_code == 400
+    assert response.json()["error_code"] == "WINDOW_TOO_LARGE"
+
+
+@pytest.mark.asyncio
+async def test_fleet_status_bad_window_orientation(client: httpx.AsyncClient) -> None:
+    response = await client.get(
+        "/api/v1/status-history?from=2026-05-06T23:59:59%2B00:00&to=2026-05-06T00:00:00%2B00:00"
+    )
+    assert response.status_code == 400

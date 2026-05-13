@@ -141,3 +141,69 @@ async def test_fetch_latest_connector_statuses_uses_asynch_placeholder_shape() -
     assert "'CP_A'" in rendered
     assert "'CP_B'" in rendered
     assert "%(" not in rendered
+
+
+@pytest.mark.asyncio
+async def test_fetch_fleet_status_history_no_optional_filters() -> None:
+    """With status + cp_ids both None the SQL has neither IN clause —
+    a fleet-wide unfiltered scan over the time window."""
+    client, cursor = _client_with_fake_cursor()
+
+    await client.fetch_fleet_status_history(
+        started_from=datetime(2026, 5, 1, tzinfo=UTC),
+        started_to=datetime(2026, 5, 8, tzinfo=UTC),
+        statuses=None,
+        cp_ids=None,
+        limit=500,
+    )
+
+    sql, params = cursor.execute.await_args.args
+    rendered = _substitute(sql, params)
+    assert "AND status IN" not in rendered
+    assert "AND cp_id IN" not in rendered
+    assert "%(" not in rendered
+
+
+@pytest.mark.asyncio
+async def test_fetch_fleet_status_history_status_in_clause() -> None:
+    """`statuses=["Faulted", "Unavailable"]` expands into an `IN`
+    clause with bound parameters — no string concatenation of user
+    input into SQL."""
+    client, cursor = _client_with_fake_cursor()
+
+    await client.fetch_fleet_status_history(
+        started_from=datetime(2026, 5, 1, tzinfo=UTC),
+        started_to=datetime(2026, 5, 8, tzinfo=UTC),
+        statuses=["Faulted", "Unavailable"],
+        cp_ids=None,
+        limit=1000,
+    )
+
+    sql, params = cursor.execute.await_args.args
+    rendered = _substitute(sql, params)
+    assert "'Faulted'" in rendered
+    assert "'Unavailable'" in rendered
+    assert "AND status IN" in rendered
+    assert "AND cp_id IN" not in rendered
+    # asynch's placeholder shape, not DB-API.
+    assert "%(" not in rendered
+
+
+@pytest.mark.asyncio
+async def test_fetch_fleet_status_history_cp_ids_in_clause() -> None:
+    client, cursor = _client_with_fake_cursor()
+
+    await client.fetch_fleet_status_history(
+        started_from=datetime(2026, 5, 1, tzinfo=UTC),
+        started_to=datetime(2026, 5, 8, tzinfo=UTC),
+        statuses=None,
+        cp_ids=["CP_A", "CP_B"],
+        limit=500,
+    )
+
+    sql, params = cursor.execute.await_args.args
+    rendered = _substitute(sql, params)
+    assert "'CP_A'" in rendered
+    assert "'CP_B'" in rendered
+    assert "AND cp_id IN" in rendered
+    assert "%(" not in rendered
