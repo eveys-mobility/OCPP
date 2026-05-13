@@ -300,6 +300,14 @@ async def test_fetch_uptime_for_cp_uses_asynch_placeholder_shape() -> None:
     assert "greatest(went_offline_at" in rendered
     assert "least(came_online_at" in rendered
     assert "dateDiff" in rendered
+    # Regression: `cp_offline_duration` columns are `DateTime64(3, 'UTC')`.
+    # asynch renders Python datetimes as bare `'YYYY-MM-DD HH:MM:SS'`
+    # literals; inside `greatest()` / `least()` ClickHouse refuses to
+    # find a supertype between `DateTime64` and `String` and 500s with
+    # Code 386. Every use of `from_ts` / `to_ts` must wrap with
+    # `toDateTime64(..., 3, 'UTC')`.
+    assert "toDateTime64(" in rendered
+    assert "3, 'UTC')" in rendered
     # asynch placeholder shape, not DB-API.
     assert "%(" not in rendered
 
