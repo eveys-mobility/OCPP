@@ -602,6 +602,42 @@ class Settings(BaseSettings):
             "stability": "structural",
         },
     )
+    kafka_topic_cp_ocpp_frames: str = Field(
+        default="cp.ocpp_frames",
+        description=(
+            "Every OCPP frame on the WS, both directions, keyed by "
+            "`cp_id`. Inbound (CP → gateway) frames are published just "
+            "after `unpack()` succeeds; outbound (gateway → CP) frames "
+            "are published just before they hit the WebSocket. The raw "
+            "JSON the wire actually carried is included verbatim. "
+            "Best-effort: publish failures are logged and counted but "
+            "never block the WS path. Volume is high — the Console's "
+            "NDJSON event log is the intended consumer, not the "
+            "ClickHouse Kafka-engine table."
+        ),
+        json_schema_extra={
+            "category": "kafka_topics",
+            "impact": "Renaming detaches every existing consumer.",
+            "secret": False,
+            "stability": "structural",
+        },
+    )
+    kafka_publish_ocpp_frames: bool = Field(
+        default=True,
+        description=(
+            "Master switch for the cp.ocpp_frames publish. Disable to "
+            "stop publishing raw frames without rebuilding (e.g. during "
+            "an incident where the topic is overwhelming a downstream "
+            "consumer). The existing digest topics — cp.boot, "
+            "cp.status, cp.meter, tx.started — are unaffected."
+        ),
+        json_schema_extra={
+            "category": "kafka_topics",
+            "impact": "Disables the audit log; downstream gaps until re-enabled.",
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
 
     # ---- Redis (online registry + pub/sub bus, ADR-0016) ----------------
     redis_url: str = Field(

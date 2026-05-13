@@ -33,6 +33,7 @@ from eveys_ocpp.handlers.v16 import (
 )
 from eveys_ocpp.metrics import registry as metrics_registry
 from eveys_ocpp.observability import get_logger
+from eveys_ocpp.ocpp_frames import publish_inbound, publish_outbound
 
 log = get_logger(__name__)
 
@@ -210,17 +211,33 @@ class EveysChargePoint(Cpv16):
         """
         action = "_invalid"
         is_call = False
+        message_type_id = 0
+        message_id: str | None = None
         try:
             msg = unpack(raw_msg)
+            message_type_id = int(msg.message_type_id)
             is_call = msg.message_type_id == MessageType.Call
             # CALLRESULT / CALLERROR don't carry an action; bucket
             # them under "_response" to keep cardinality bounded.
             action = msg.action if is_call else "_response"
+            message_id = getattr(msg, "unique_id", None)
         except Exception:
             # Library logs + ignores malformed frames; we mirror by
             # tagging _invalid so the count stays visible.
             pass
         metrics_registry.WS_MESSAGES_IN_TOTAL.labels(action=action).inc()
+
+        # Audit publish: every inbound frame, both CALLs and responses.
+        # Best-effort; failures never block the WS path.
+        await publish_inbound(
+            producer=self.event_producer,
+            settings=self.settings,
+            cp_id=self.id,
+            raw_msg=raw_msg,
+            message_type_id=message_type_id,
+            action=action if is_call else "",
+            message_id=message_id,
+        )
 
         # Hot-checked via the runtime-override layer so an admin can
         # flip the rate limiter without a pod restart. Default is
@@ -256,6 +273,15 @@ class EveysChargePoint(Cpv16):
         """
         action = type(payload).__name__
         metrics_registry.WS_MESSAGES_OUT_TOTAL.labels(action=action).inc()
+        # Audit publish before the library writes to the WS, so the
+        # recorded frame is what the charger is about to see.
+        await publish_outbound(
+            producer=self.event_producer,
+            settings=self.settings,
+            cp_id=self.id,
+            payload=payload,
+            unique_id=unique_id,
+        )
         return await super().call(
             payload,
             suppress=suppress,

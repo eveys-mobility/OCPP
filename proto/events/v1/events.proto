@@ -19,6 +19,7 @@
 //   cp.diagnostics_status → CpDiagnosticsStatusChanged (DiagnosticsStatusNotification arrived)
 //   cp.csr_submitted      → CpCsrSubmitted            (SignCertificate arrived — Security Whitepaper §4.13)
 //   cp.credential_rotated → CpCredentialRotated       (operator rotated/unprovisioned a charger's Basic Auth — TC_073)
+//   cp.ocpp_frames        → CpOcppFrame               (every OCPP frame on the WS, both directions)
 //   tx.started            → TxStarted                 (StartTransaction arrived)
 //   tx.stopped            → TxStopped                 (StopTransaction arrived + persisted)
 //
@@ -75,6 +76,7 @@ message EventEnvelope {
     CpCsrSubmitted cp_csr_submitted = 110;
     CpCredentialRotated cp_credential_rotated = 111;
     CpOfflineDuration cp_offline_duration = 112;
+    CpOcppFrame cp_ocpp_frame = 113;
   }
 }
 
@@ -466,4 +468,46 @@ message CpOfflineDuration {
   // Reason recorded with the prior disconnect: "clean" / "error" /
   // "" if the marker pre-dated this field.
   string prior_reason = 5;
+}
+
+// -----------------------------------------------------------------------------
+// cp.ocpp_frames — every OCPP frame on the WS, both directions
+// -----------------------------------------------------------------------------
+//
+// Audit-grade. The gateway publishes a record per OCPP frame as soon
+// as it observes it — inbound frames just after `unpack()` succeeds,
+// outbound frames just before they hit the WebSocket. The raw JSON
+// string the wire actually carried is included verbatim so downstream
+// consumers can replay or diff without re-encoding.
+//
+// Volume: high. At the steady state we already see (~333 MeterValues
+// per second across 10k chargers) the inbound stream alone is hot,
+// and outbound RemoteStart/Reset/etc add a much smaller tail. We
+// route this topic to the Console's NDJSON store rather than to the
+// ClickHouse Kafka-engine table — the access pattern is "tail by
+// cp_id over a time range", which the Console handles directly.
+//
+// Best-effort: the publish is wrapped in try/except. A Kafka outage
+// must not break the WS path. Loss is counted in a Prometheus metric
+// (`eveys_ocpp_ocpp_frames_publish_failures_total`).
+
+message CpOcppFrame {
+  // "inbound"  — CP → gateway frame as received on our WS.
+  // "outbound" — gateway → CP frame as written to the WS.
+  string direction = 1;
+  // The raw JSON-serialised OCPP frame as it appears on the wire,
+  // verbatim. Inbound: the string we just received. Outbound: the
+  // string we are about to send.
+  string raw_payload = 2;
+  // OCPP message id (the unique-id of the CALL; on RESULT/ERROR
+  // this is the id of the CALL being answered). Empty when unknown.
+  string message_id = 3;
+  // OCPP action name for CALLs (BootNotification, MeterValues,
+  // RemoteStartTransaction, …). Empty for CALLRESULT / CALLERROR.
+  string action = 4;
+  // OCPP MessageTypeId. 2 = CALL, 3 = CALLRESULT, 4 = CALLERROR.
+  // 0 when unparseable.
+  int32 message_type = 5;
+  // 'ocpp1.6' today; future-proofs the topic for 2.0.1.
+  string ocpp_version = 6;
 }

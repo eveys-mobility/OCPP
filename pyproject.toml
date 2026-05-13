@@ -176,6 +176,9 @@ module = [
     # SSE bus reads the same `events_pb2` envelope variants the
     # handlers / ingestor touch — same untyped-stub story.
     "eveys_ocpp.sse_bus",
+    # cp.ocpp_frames emitter builds CpOcppFrame envelopes — same
+    # untyped-stub story.
+    "eveys_ocpp.ocpp_frames",
 ]
 disallow_untyped_decorators = false
 disallow_untyped_calls = false
