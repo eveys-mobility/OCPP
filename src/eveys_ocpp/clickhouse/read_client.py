@@ -686,3 +686,87 @@ class ClickHouseReadClient:
             cols = [d[0] for d in cursor.description]
             rows = await cursor.fetchall()
         return [dict(zip(cols, row, strict=True)) for row in rows]
+
+    async def fetch_uptime_for_cp(
+        self,
+        *,
+        cp_id: str,
+        window_from: datetime,
+        window_to: datetime,
+    ) -> tuple[int, list[dict[str, Any]]]:
+        """Compute total offline seconds for ``cp_id`` clipped to the
+        ``[window_from, window_to]`` window, plus the individual
+        intervals contributing to it.
+
+        Returns ``(offline_seconds_total, intervals)``. Each interval
+        in the list has ``went_offline_at`` / ``came_online_at`` /
+        ``offline_seconds`` clipped to the window edges, so summing
+        ``intervals[].offline_seconds`` equals the total.
+
+        Excludes any in-flight outage — a charger that's currently
+        offline has no ``came_online_at`` row in this table yet, so
+        the gateway can't know its duration. The caller is expected
+        to surface the charger's live ``online`` flag separately.
+
+        Single round-trip. The order key ``(cp_id, occurred_at)``
+        already prunes by cp_id; partition prune on ``came_online_at``
+        scopes the byte read to the months overlapping the window.
+        """
+        assert self._conn is not None
+
+        # Interval clipping is computed inline so summing intervals[]
+        # matches the returned total exactly. ClickHouse `greatest` /
+        # `least` are nullable-safe over the window bounds (both
+        # always set on this call path).
+        sql = """
+            SELECT
+                greatest(went_offline_at, {from_ts}) AS clipped_offline_at,
+                least(came_online_at, {to_ts})       AS clipped_online_at,
+                toInt64(dateDiff(
+                    'second',
+                    greatest(went_offline_at, {from_ts}),
+                    least(came_online_at, {to_ts})
+                ))                                   AS clipped_seconds,
+                offline_seconds                      AS original_offline_seconds,
+                prior_reason
+            FROM cp_offline_duration
+            WHERE cp_id = {cp_id}
+              AND came_online_at >= {from_ts}
+              AND went_offline_at <= {to_ts}
+            ORDER BY clipped_offline_at
+        """
+        params: dict[str, Any] = {
+            "cp_id": cp_id,
+            "from_ts": window_from,
+            "to_ts": window_to,
+        }
+
+        async with self._conn.cursor() as cursor:
+            await cursor.execute(sql, params)
+            cols = [d[0] for d in cursor.description]
+            raw = await cursor.fetchall()
+
+        intervals: list[dict[str, Any]] = []
+        total = 0
+        for row in raw:
+            entry = dict(zip(cols, row, strict=True))
+            seconds = int(entry["clipped_seconds"])
+            if seconds <= 0:
+                # Edge: interval started before window opened and ended
+                # before it. The IN-window filter above doesn't catch
+                # this perfectly because we filter on came_online_at >=
+                # from_ts; a row where both ends fall inside but the
+                # clip math is degenerate (came_online_at == went_offline_at)
+                # would still be returned. Skip — zero contribution
+                # adds no information.
+                continue
+            intervals.append(
+                {
+                    "went_offline_at": entry["clipped_offline_at"],
+                    "came_online_at": entry["clipped_online_at"],
+                    "offline_seconds": seconds,
+                    "prior_reason": entry["prior_reason"] or None,
+                }
+            )
+            total += seconds
+        return total, intervals

@@ -49,6 +49,7 @@ from eveys_ocpp.api._schemas import (
     OcppFramesByCpResponse,
     OfflineHistoryResponse,
     StatusHistoryResponse,
+    UptimeResponse,
 )
 from eveys_ocpp.persistence.db import session_scope
 from eveys_ocpp.persistence.repositories import get_charge_point_pk
@@ -56,6 +57,12 @@ from eveys_ocpp.persistence.repositories import get_charge_point_pk
 router = APIRouter(tags=["timeseries"])
 
 _MAX_WINDOW = timedelta(days=7)
+# Uptime is an aggregation, not a time-series stream — operators
+# routinely want quarterly / monthly answers, and a single aggregate
+# row out of ClickHouse is cheap even over 90 days. Loosen the
+# window cap accordingly while keeping a hard upper bound so a
+# typo can't fan the scan out across all partitions.
+_UPTIME_MAX_WINDOW = timedelta(days=90)
 
 
 def _isoformat(value: datetime | None) -> str | None:
@@ -479,6 +486,88 @@ def _offline_to_response(row: dict[str, Any]) -> dict[str, Any]:
         "offline_seconds": int(row["offline_seconds"]),
         "prior_pod_id": row["prior_pod_id"] or None,
         "prior_reason": row["prior_reason"] or None,
+    }
+
+
+@router.get(
+    "/charge-points/{cp_id}/uptime",
+    summary="Uptime % for a charge point over a date range",
+    responses={
+        200: {"model": UptimeResponse},
+        400: {"model": ErrorEnvelope, "description": "Bad from/to or window too large."},
+        404: {"model": ErrorEnvelope, "description": "Unknown cp_id."},
+    },
+)
+async def get_uptime_for_cp(
+    request: Request,
+    cp_id: str,
+    from_: str = Query(alias="from"),
+    to: str = Query(...),
+) -> dict[str, Any]:
+    """Computed from completed offline intervals in
+    ``cp_offline_duration``. Intervals overlapping the
+    ``[from, to]`` window are clipped at the boundaries and summed.
+
+    Returns ``uptime_pct``, the total offline + online seconds inside
+    the window, and the contributing intervals. **In-flight outages
+    are not counted** — a charger that's currently offline has no
+    ``came_online_at`` row yet. The detail route's ``online`` flag
+    is the right place to read live state from.
+
+    The window cap is 90 days (vs 7 for the time-series streams) —
+    aggregations are cheap and operators want quarterly answers."""
+    started_from = _parse_iso8601(from_, field_name="from")
+    started_to = _parse_iso8601(to, field_name="to")
+    if started_to < started_from:
+        raise ApiError(
+            status_code=400,
+            error_code=ERR_BAD_REQUEST,
+            message="`to` must be >= `from`",
+        )
+    if started_to - started_from > _UPTIME_MAX_WINDOW:
+        raise ApiError(
+            status_code=400,
+            error_code=ERR_WINDOW_TOO_LARGE,
+            message=f"window cannot exceed {_UPTIME_MAX_WINDOW.days} days",
+        )
+
+    await _ensure_cp_exists(request, cp_id)
+
+    offline_total, raw_intervals = await _ch_client(request).fetch_uptime_for_cp(
+        cp_id=cp_id,
+        window_from=started_from,
+        window_to=started_to,
+    )
+
+    window_seconds = int((started_to - started_from).total_seconds())
+    # Clamp: floating-point or row-edge weirdness shouldn't surface
+    # offline > window. The clip math in fetch_uptime_for_cp already
+    # bounds each interval, but belt-and-braces.
+    offline_total = max(0, min(offline_total, window_seconds))
+    online_total = window_seconds - offline_total
+    uptime_pct = (online_total / window_seconds * 100.0) if window_seconds > 0 else 100.0
+
+    return {
+        "cp_id": cp_id,
+        "uptime_pct": round(uptime_pct, 4),
+        "offline_seconds_total": offline_total,
+        "online_seconds_total": online_total,
+        "intervals": [_uptime_interval_to_response(i) for i in raw_intervals],
+        "window": {
+            "from": _isoformat(started_from),
+            "to": _isoformat(started_to),
+            "seconds": window_seconds,
+        },
+        "request_id": request.state.request_id,
+    }
+
+
+def _uptime_interval_to_response(interval: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "went_offline_at": _isoformat(interval["went_offline_at"]),
+        "came_online_at": _isoformat(interval["came_online_at"]),
+        "offline_seconds": int(interval["offline_seconds"]),
+        "prior_reason": interval.get("prior_reason") or None,
     }
 
 

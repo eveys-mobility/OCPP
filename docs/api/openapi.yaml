@@ -1381,6 +1381,110 @@ components:
           type: object
       title: UpdateBody
       type: object
+    UptimeInterval:
+      description: 'One offline interval contributing to the uptime calculation.
+
+
+        Timestamps and ``offline_seconds`` are **clipped to the query
+
+        window** — an interval that started before ``from`` or extended
+
+        past ``to`` gets trimmed at the boundary, so summing
+
+        ``intervals[].offline_seconds`` always equals
+
+        ``offline_seconds_total``.'
+      properties:
+        came_online_at:
+          title: Came Online At
+          type: string
+        offline_seconds:
+          title: Offline Seconds
+          type: integer
+        prior_reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Prior Reason
+        went_offline_at:
+          title: Went Offline At
+          type: string
+      required:
+      - went_offline_at
+      - came_online_at
+      - offline_seconds
+      title: UptimeInterval
+      type: object
+    UptimeResponse:
+      description: '`GET /api/v1/charge-points/{cp_id}/uptime?from=…&to=…`.
+
+
+        Uptime % computed from completed offline intervals on
+
+        ``cp_offline_duration``. Excludes any in-flight outage — a
+
+        charger that''s currently offline contributes nothing here until
+
+        it reconnects. Callers should surface the charger''s live
+
+        ``online`` flag (from the detail route) alongside.
+
+
+        ``uptime_pct = (window_seconds - offline_seconds_total) /
+
+        window_seconds * 100`` clamped to [0, 100].'
+      properties:
+        cp_id:
+          title: Cp Id
+          type: string
+        intervals:
+          items:
+            $ref: '#/components/schemas/UptimeInterval'
+          title: Intervals
+          type: array
+        offline_seconds_total:
+          title: Offline Seconds Total
+          type: integer
+        online_seconds_total:
+          title: Online Seconds Total
+          type: integer
+        request_id:
+          title: Request Id
+          type: string
+        uptime_pct:
+          maximum: 100.0
+          minimum: 0.0
+          title: Uptime Pct
+          type: number
+        window:
+          $ref: '#/components/schemas/UptimeWindow'
+      required:
+      - cp_id
+      - uptime_pct
+      - offline_seconds_total
+      - online_seconds_total
+      - intervals
+      - window
+      - request_id
+      title: UptimeResponse
+      type: object
+    UptimeWindow:
+      properties:
+        from:
+          title: From
+          type: string
+        seconds:
+          title: Seconds
+          type: integer
+        to:
+          title: To
+          type: string
+      required:
+      - from
+      - to
+      - seconds
+      title: UptimeWindow
+      type: object
     ValidationError:
       properties:
         ctx:
@@ -3592,6 +3696,81 @@ paths:
       summary: List transactions for a charge point (cursor-paginated)
       tags:
       - transactions
+  /api/v1/charge-points/{cp_id}/uptime:
+    get:
+      description: 'Computed from completed offline intervals in
+
+        ``cp_offline_duration``. Intervals overlapping the
+
+        ``[from, to]`` window are clipped at the boundaries and summed.
+
+
+        Returns ``uptime_pct``, the total offline + online seconds inside
+
+        the window, and the contributing intervals. **In-flight outages
+
+        are not counted** — a charger that''s currently offline has no
+
+        ``came_online_at`` row yet. The detail route''s ``online`` flag
+
+        is the right place to read live state from.
+
+
+        The window cap is 90 days (vs 7 for the time-series streams) —
+
+        aggregations are cheap and operators want quarterly answers.'
+      operationId: get_uptime_for_cp_api_v1_charge_points__cp_id__uptime_get
+      parameters:
+      - in: path
+        name: cp_id
+        required: true
+        schema:
+          title: Cp Id
+          type: string
+      - in: query
+        name: from
+        required: true
+        schema:
+          title: From
+          type: string
+      - in: query
+        name: to
+        required: true
+        schema:
+          title: To
+          type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UptimeResponse'
+                additionalProperties: true
+                title: Response Get Uptime For Cp Api V1 Charge Points  Cp Id  Uptime
+                  Get
+                type: object
+          description: Successful Response
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+          description: Bad from/to or window too large.
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+          description: Unknown cp_id.
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Uptime % for a charge point over a date range
+      tags:
+      - timeseries
   /api/v1/health:
     get:
       operationId: health_api_v1_health_get

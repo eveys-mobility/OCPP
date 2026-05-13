@@ -518,4 +518,134 @@ async def test_frames_by_cp_unknown_cp_404(
         "?from=2026-05-06T00:00:00%2B00:00&to=2026-05-06T23:59:59%2B00:00"
     )
     assert response.status_code == 404
+
+
+# ---- uptime ---------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_uptime_returns_100_percent_when_no_outages(
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+    fake_ch_client: MagicMock,
+) -> None:
+    """No offline intervals → uptime_pct = 100, offline = 0,
+    intervals = []."""
+    from eveys_ocpp.api import timeseries as ts_module
+
+    monkeypatch.setattr(ts_module, "get_charge_point_pk", AsyncMock(return_value=1))
+    fake_ch_client.fetch_uptime_for_cp = AsyncMock(return_value=(0, []))
+
+    response = await client.get(
+        "/api/v1/charge-points/CP_001/uptime"
+        "?from=2026-05-06T00:00:00%2B00:00&to=2026-05-06T23:59:59%2B00:00"
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["uptime_pct"] == 100.0
+    assert body["offline_seconds_total"] == 0
+    assert body["intervals"] == []
+    # Window block confirms what was queried.
+    assert body["window"]["seconds"] == 86399  # 23h59m59s
+    assert body["cp_id"] == "CP_001"
+
+
+@pytest.mark.asyncio
+async def test_uptime_subtracts_offline_seconds_from_window(
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+    fake_ch_client: MagicMock,
+) -> None:
+    """One 1-hour outage inside a 24-hour window → uptime ≈ 95.83%.
+    Intervals carry through with clipped timestamps."""
+    from eveys_ocpp.api import timeseries as ts_module
+
+    monkeypatch.setattr(ts_module, "get_charge_point_pk", AsyncMock(return_value=1))
+    fake_ch_client.fetch_uptime_for_cp = AsyncMock(
+        return_value=(
+            3600,
+            [
+                {
+                    "went_offline_at": datetime(2026, 5, 6, 10, 0, tzinfo=UTC),
+                    "came_online_at": datetime(2026, 5, 6, 11, 0, tzinfo=UTC),
+                    "offline_seconds": 3600,
+                    "prior_reason": "clean",
+                }
+            ],
+        )
+    )
+
+    response = await client.get(
+        "/api/v1/charge-points/CP_001/uptime"
+        "?from=2026-05-06T00:00:00%2B00:00&to=2026-05-07T00:00:00%2B00:00"
+    )
+
+    body = response.json()
+    assert body["offline_seconds_total"] == 3600
+    assert body["online_seconds_total"] == 86400 - 3600
+    # 95.8333…, rounded to 4 decimals.
+    assert abs(body["uptime_pct"] - 95.8333) < 0.001
+    assert body["intervals"][0]["offline_seconds"] == 3600
+    assert body["intervals"][0]["prior_reason"] == "clean"
+
+
+@pytest.mark.asyncio
+async def test_uptime_clamps_total_to_window(
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+    fake_ch_client: MagicMock,
+) -> None:
+    """If the aggregator returns more offline seconds than the
+    window (shouldn't happen — the clip math guards it — but
+    floating-point edges, row boundaries) the route clamps to
+    avoid negative uptime%."""
+    from eveys_ocpp.api import timeseries as ts_module
+
+    monkeypatch.setattr(ts_module, "get_charge_point_pk", AsyncMock(return_value=1))
+    # 999_999 > one-day window of 86400. Route should clamp to 86400.
+    fake_ch_client.fetch_uptime_for_cp = AsyncMock(return_value=(999_999, []))
+
+    response = await client.get(
+        "/api/v1/charge-points/CP_001/uptime"
+        "?from=2026-05-06T00:00:00%2B00:00&to=2026-05-07T00:00:00%2B00:00"
+    )
+    body = response.json()
+    assert body["offline_seconds_total"] == 86400
+    assert body["uptime_pct"] == 0.0
+
+
+@pytest.mark.asyncio
+async def test_uptime_window_too_large_400(client: httpx.AsyncClient) -> None:
+    """Cap is 90 days for uptime (vs 7 for streams). 91 days → 400."""
+    response = await client.get(
+        "/api/v1/charge-points/CP_001/uptime"
+        "?from=2026-01-01T00:00:00%2B00:00&to=2026-04-02T00:00:00%2B00:00"
+    )
+    assert response.status_code == 400
+    assert response.json()["error_code"] == "WINDOW_TOO_LARGE"
+
+
+@pytest.mark.asyncio
+async def test_uptime_inverted_window_400(client: httpx.AsyncClient) -> None:
+    response = await client.get(
+        "/api/v1/charge-points/CP_001/uptime"
+        "?from=2026-05-07T00:00:00%2B00:00&to=2026-05-06T00:00:00%2B00:00"
+    )
+    assert response.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_uptime_unknown_cp_404(
+    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from eveys_ocpp.api import timeseries as ts_module
+
+    monkeypatch.setattr(ts_module, "get_charge_point_pk", AsyncMock(return_value=None))
+
+    response = await client.get(
+        "/api/v1/charge-points/UNKNOWN/uptime"
+        "?from=2026-05-06T00:00:00%2B00:00&to=2026-05-07T00:00:00%2B00:00"
+    )
+    assert response.status_code == 404
     assert response.json()["error_code"] == "UNKNOWN_CP_ID"

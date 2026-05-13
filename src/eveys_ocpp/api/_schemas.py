@@ -609,6 +609,48 @@ class OcppFramesByTransactionResponse(BaseModel):
     request_id: str
 
 
+class UptimeInterval(BaseModel):
+    """One offline interval contributing to the uptime calculation.
+
+    Timestamps and ``offline_seconds`` are **clipped to the query
+    window** — an interval that started before ``from`` or extended
+    past ``to`` gets trimmed at the boundary, so summing
+    ``intervals[].offline_seconds`` always equals
+    ``offline_seconds_total``."""
+
+    went_offline_at: str
+    came_online_at: str
+    offline_seconds: int
+    prior_reason: str | None = None
+
+
+class UptimeWindow(BaseModel):
+    from_: str = Field(alias="from")
+    to: str
+    seconds: int
+
+
+class UptimeResponse(BaseModel):
+    """`GET /api/v1/charge-points/{cp_id}/uptime?from=…&to=…`.
+
+    Uptime % computed from completed offline intervals on
+    ``cp_offline_duration``. Excludes any in-flight outage — a
+    charger that's currently offline contributes nothing here until
+    it reconnects. Callers should surface the charger's live
+    ``online`` flag (from the detail route) alongside.
+
+    ``uptime_pct = (window_seconds - offline_seconds_total) /
+    window_seconds * 100`` clamped to [0, 100]."""
+
+    cp_id: str
+    uptime_pct: float = Field(ge=0.0, le=100.0)
+    offline_seconds_total: int
+    online_seconds_total: int
+    intervals: list[UptimeInterval]
+    window: UptimeWindow
+    request_id: str
+
+
 class OfflineDurationEvent(BaseModel):
     """One observed offline window for a charger.
 
@@ -730,4 +772,7 @@ __all__ = [
     "TransactionDetail",
     "TransactionListResponse",
     "TransactionTelemetry",
+    "UptimeInterval",
+    "UptimeResponse",
+    "UptimeWindow",
 ]
