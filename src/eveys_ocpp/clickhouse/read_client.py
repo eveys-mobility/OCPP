@@ -593,3 +593,96 @@ class ClickHouseReadClient:
             cols = [d[0] for d in cursor.description]
             rows = await cursor.fetchall()
         return [dict(zip(cols, row, strict=True)) for row in rows]
+
+    async def fetch_frames_by_cp(
+        self,
+        *,
+        cp_id: str,
+        started_from: datetime,
+        started_to: datetime,
+        direction: str | None,
+        action: str | None,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        """Per-cp OCPP frame audit inside [from, to]. Both
+        directions by default; pass ``direction`` to scope to
+        ``inbound`` (CP→gateway) or ``outbound`` (gateway→CP)."""
+        assert self._conn is not None
+
+        sql = """
+            SELECT
+                event_id,
+                occurred_at,
+                cp_id,
+                direction,
+                action,
+                message_type,
+                message_id,
+                ocpp_version,
+                transaction_id,
+                raw_payload
+            FROM cp_ocpp_frames
+            WHERE cp_id = {cp_id}
+              AND occurred_at >= {from_ts}
+              AND occurred_at <= {to_ts}
+        """
+        params: dict[str, Any] = {
+            "cp_id": cp_id,
+            "from_ts": started_from,
+            "to_ts": started_to,
+        }
+        if direction is not None:
+            sql += " AND direction = {direction}"
+            params["direction"] = direction
+        if action is not None:
+            sql += " AND action = {action}"
+            params["action"] = action
+        sql += " ORDER BY occurred_at, event_id LIMIT {limit}"
+        params["limit"] = limit
+
+        async with self._conn.cursor() as cursor:
+            await cursor.execute(sql, params)
+            cols = [d[0] for d in cursor.description]
+            rows = await cursor.fetchall()
+        return [dict(zip(cols, row, strict=True)) for row in rows]
+
+    async def fetch_frames_by_transaction(
+        self,
+        *,
+        transaction_id: int,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        """All frames tagged with ``transaction_id``. No time window —
+        transactions are already bounded (typically minutes to hours),
+        so the lookup is cheap if the skip-index on transaction_id
+        prunes most parts. Used by "show me the frame trace for tx
+        12345" workflows."""
+        assert self._conn is not None
+
+        sql = """
+            SELECT
+                event_id,
+                occurred_at,
+                cp_id,
+                direction,
+                action,
+                message_type,
+                message_id,
+                ocpp_version,
+                transaction_id,
+                raw_payload
+            FROM cp_ocpp_frames
+            WHERE transaction_id = {transaction_id}
+            ORDER BY occurred_at, event_id
+            LIMIT {limit}
+        """
+        params: dict[str, Any] = {
+            "transaction_id": transaction_id,
+            "limit": limit,
+        }
+
+        async with self._conn.cursor() as cursor:
+            await cursor.execute(sql, params)
+            cols = [d[0] for d in cursor.description]
+            rows = await cursor.fetchall()
+        return [dict(zip(cols, row, strict=True)) for row in rows]

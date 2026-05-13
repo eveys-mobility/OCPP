@@ -419,3 +419,103 @@ async def test_fleet_status_bad_window_orientation(client: httpx.AsyncClient) ->
         "/api/v1/status-history?from=2026-05-06T23:59:59%2B00:00&to=2026-05-06T00:00:00%2B00:00"
     )
     assert response.status_code == 400
+
+
+# ---- frames-by-cp ----------------------------------------------------------
+
+
+def _frame_row(
+    cp_id: str = "CP_001",
+    direction: str = "inbound",
+    action: str = "MeterValues",
+    transaction_id: int | None = 12345,
+) -> dict[str, Any]:
+    return {
+        "event_id": "evt-0003",
+        "occurred_at": datetime(2026, 5, 6, 14, 0, tzinfo=UTC),
+        "cp_id": cp_id,
+        "direction": direction,
+        "action": action,
+        "message_type": 2,
+        "message_id": "call-abc",
+        "ocpp_version": "ocpp1.6",
+        "transaction_id": transaction_id,
+        "raw_payload": '[2,"call-abc","MeterValues",{"transactionId":12345}]',
+    }
+
+
+@pytest.mark.asyncio
+async def test_frames_by_cp_returns_full_shape(
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+    fake_ch_client: MagicMock,
+) -> None:
+    from eveys_ocpp.api import timeseries as ts_module
+
+    monkeypatch.setattr(ts_module, "get_charge_point_pk", AsyncMock(return_value=1))
+    fake_ch_client.fetch_frames_by_cp = AsyncMock(return_value=[_frame_row()])
+
+    response = await client.get(
+        "/api/v1/charge-points/CP_001/frames"
+        "?from=2026-05-06T00:00:00%2B00:00&to=2026-05-06T23:59:59%2B00:00"
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["cp_id"] == "CP_001"
+    row = body["frames"][0]
+    assert row["direction"] == "inbound"
+    assert row["action"] == "MeterValues"
+    assert row["transaction_id"] == 12345
+    assert row["raw_payload"].startswith("[2,")
+
+
+@pytest.mark.asyncio
+async def test_frames_by_cp_passes_optional_filters_through(
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+    fake_ch_client: MagicMock,
+) -> None:
+    from eveys_ocpp.api import timeseries as ts_module
+
+    monkeypatch.setattr(ts_module, "get_charge_point_pk", AsyncMock(return_value=1))
+    spy = AsyncMock(return_value=[])
+    fake_ch_client.fetch_frames_by_cp = spy
+
+    await client.get(
+        "/api/v1/charge-points/CP_001/frames"
+        "?from=2026-05-06T00:00:00%2B00:00&to=2026-05-06T23:59:59%2B00:00"
+        "&direction=outbound&action=BootNotification&limit=50"
+    )
+
+    kwargs = spy.await_args.kwargs
+    assert kwargs["direction"] == "outbound"
+    assert kwargs["action"] == "BootNotification"
+    assert kwargs["limit"] == 50
+
+
+@pytest.mark.asyncio
+async def test_frames_by_cp_window_too_large(client: httpx.AsyncClient) -> None:
+    response = await client.get(
+        "/api/v1/charge-points/CP_001/frames"
+        "?from=2026-04-01T00:00:00%2B00:00&to=2026-05-06T00:00:00%2B00:00"
+    )
+    assert response.status_code == 400
+    assert response.json()["error_code"] == "WINDOW_TOO_LARGE"
+
+
+@pytest.mark.asyncio
+async def test_frames_by_cp_unknown_cp_404(
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from eveys_ocpp.api import timeseries as ts_module
+
+    monkeypatch.setattr(ts_module, "get_charge_point_pk", AsyncMock(return_value=None))
+
+    response = await client.get(
+        "/api/v1/charge-points/UNKNOWN/frames"
+        "?from=2026-05-06T00:00:00%2B00:00&to=2026-05-06T23:59:59%2B00:00"
+    )
+    assert response.status_code == 404
+    assert response.json()["error_code"] == "UNKNOWN_CP_ID"

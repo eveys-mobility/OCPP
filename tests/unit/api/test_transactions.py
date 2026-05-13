@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
@@ -354,3 +354,80 @@ async def test_list_responses_have_no_telemetry_field(
     body = response.json()
     for row in body["transactions"]:
         assert "telemetry" not in row
+
+
+# ---- /transactions/{id}/frames --------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_transaction_frames_unknown_tx_404(
+    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from eveys_ocpp.api import transactions as tx_module
+
+    monkeypatch.setattr(tx_module, "get_transaction_by_id", AsyncMock(return_value=None))
+
+    response = await client.get("/api/v1/transactions/999/frames")
+
+    assert response.status_code == 404
+    assert response.json()["error_code"] == "UNKNOWN_TRANSACTION_ID"
+
+
+@pytest.mark.asyncio
+async def test_get_transaction_frames_returns_frames_for_known_tx(
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+    fake_ch_client: MagicMock,
+) -> None:
+    """Existing tx + ClickHouse rows → 200 with the projected frames.
+    ``transaction_id`` in the row body is preserved."""
+    from eveys_ocpp.api import transactions as tx_module
+
+    monkeypatch.setattr(
+        tx_module, "get_transaction_by_id", AsyncMock(return_value=_tx_row(transaction_id=42))
+    )
+    fake_ch_client.fetch_frames_by_transaction = AsyncMock(
+        return_value=[
+            {
+                "event_id": "evt-x",
+                "occurred_at": datetime(2026, 5, 6, 14, 0, tzinfo=UTC),
+                "cp_id": "CP_001",
+                "direction": "inbound",
+                "action": "MeterValues",
+                "message_type": 2,
+                "message_id": "call-x",
+                "ocpp_version": "ocpp1.6",
+                "transaction_id": 42,
+                "raw_payload": '[2,"call-x","MeterValues",{"transactionId":42}]',
+            }
+        ]
+    )
+
+    response = await client.get("/api/v1/transactions/42/frames")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["transaction_id"] == 42
+    assert body["frames"][0]["action"] == "MeterValues"
+    assert body["frames"][0]["transaction_id"] == 42
+
+
+@pytest.mark.asyncio
+async def test_get_transaction_frames_passes_limit_through(
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+    fake_ch_client: MagicMock,
+) -> None:
+    from eveys_ocpp.api import transactions as tx_module
+
+    monkeypatch.setattr(
+        tx_module, "get_transaction_by_id", AsyncMock(return_value=_tx_row(transaction_id=42))
+    )
+    spy = AsyncMock(return_value=[])
+    fake_ch_client.fetch_frames_by_transaction = spy
+
+    await client.get("/api/v1/transactions/42/frames?limit=10")
+
+    kwargs = spy.await_args.kwargs
+    assert kwargs["transaction_id"] == 42
+    assert kwargs["limit"] == 10

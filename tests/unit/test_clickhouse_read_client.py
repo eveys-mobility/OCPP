@@ -207,3 +207,67 @@ async def test_fetch_fleet_status_history_cp_ids_in_clause() -> None:
     assert "'CP_B'" in rendered
     assert "AND cp_id IN" in rendered
     assert "%(" not in rendered
+
+
+@pytest.mark.asyncio
+async def test_fetch_frames_by_cp_uses_asynch_placeholder_shape() -> None:
+    """Per-cp frame audit lookup. cp_id + time window required;
+    direction + action are optional filters that expand into extra
+    AND clauses with bound parameters."""
+    client, cursor = _client_with_fake_cursor()
+
+    await client.fetch_frames_by_cp(
+        cp_id="CP_42",
+        started_from=datetime(2026, 5, 1, tzinfo=UTC),
+        started_to=datetime(2026, 5, 8, tzinfo=UTC),
+        direction="inbound",
+        action="MeterValues",
+        limit=500,
+    )
+
+    sql, params = cursor.execute.await_args.args
+    rendered = _substitute(sql, params)
+    assert "'CP_42'" in rendered
+    assert "direction = 'inbound'" in rendered
+    assert "action = 'MeterValues'" in rendered
+    assert "LIMIT 500" in rendered
+    # asynch placeholder shape (`{name}`), not DB-API (`%(name)s`).
+    assert "%(" not in rendered
+
+
+@pytest.mark.asyncio
+async def test_fetch_frames_by_cp_skips_optional_filters_when_none() -> None:
+    """Without direction or action, the SQL has neither extra AND
+    clause — the route handler must not synthesise empty-string
+    filters that would silently match every row."""
+    client, cursor = _client_with_fake_cursor()
+
+    await client.fetch_frames_by_cp(
+        cp_id="CP_42",
+        started_from=datetime(2026, 5, 1, tzinfo=UTC),
+        started_to=datetime(2026, 5, 8, tzinfo=UTC),
+        direction=None,
+        action=None,
+        limit=200,
+    )
+
+    sql, params = cursor.execute.await_args.args
+    rendered = _substitute(sql, params)
+    assert "AND direction =" not in rendered
+    assert "AND action =" not in rendered
+
+
+@pytest.mark.asyncio
+async def test_fetch_frames_by_transaction_uses_asynch_placeholder_shape() -> None:
+    """No time window required — transactions are bounded already.
+    The skip-index on transaction_id prunes parts so the scan stays
+    cheap even across long retention windows."""
+    client, cursor = _client_with_fake_cursor()
+
+    await client.fetch_frames_by_transaction(transaction_id=12345, limit=1000)
+
+    sql, params = cursor.execute.await_args.args
+    rendered = _substitute(sql, params)
+    assert "transaction_id = 12345" in rendered
+    assert "LIMIT 1000" in rendered
+    assert "%(" not in rendered
