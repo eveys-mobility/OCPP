@@ -53,6 +53,11 @@ from eveys_ocpp.persistence.repositories import (
 
 router = APIRouter(tags=["transactions"])
 
+# Sort + direction enums for `GET /transactions`. The Console UI is the
+# only intended consumer today; expand here when a new use case lands.
+_TX_SORT_VALUES = {"id", "started_at", "stopped_at", "consumed_wh"}
+_TX_DIR_VALUES = {"asc", "desc"}
+
 
 def _isoformat(value: datetime | None) -> str | None:
     return value.isoformat() if value is not None else None
@@ -237,7 +242,7 @@ async def list_transactions_route(
         200: {"model": TransactionListResponse},
         400: {
             "model": ErrorEnvelope,
-            "description": "Bad cursor or unparseable from/to timestamp.",
+            "description": "Bad cursor, sort/dir, or unparseable from/to timestamp.",
         },
     },
 )
@@ -258,9 +263,37 @@ async def list_transactions_global_route(
     stopped_before: str | None = Query(default=None),
     min_consumed_wh: int | None = Query(default=None, ge=0),
     max_consumed_wh: int | None = Query(default=None, ge=0),
+    sort: str | None = Query(default=None),
+    dir: str | None = Query(default=None),
 ) -> dict[str, Any]:
     settings = request.app.state.settings
     reject_mixed_pagination(cursor=cursor, page=page)
+
+    if sort is not None and sort not in _TX_SORT_VALUES:
+        raise ApiError(
+            status_code=400,
+            error_code=ERR_BAD_REQUEST,
+            message=f"unknown sort: {sort!r}; expected one of {sorted(_TX_SORT_VALUES)}",
+        )
+    if dir is not None and dir not in _TX_DIR_VALUES:
+        raise ApiError(
+            status_code=400,
+            error_code=ERR_BAD_REQUEST,
+            message=f"unknown dir: {dir!r}; expected 'asc' or 'desc'",
+        )
+    # Cursor pagination is only keyset-stable when sorting on the
+    # surrogate id. For any other sort the route requires offset
+    # (page) mode — otherwise `next_cursor` would skip rows whose
+    # sort_value tied with the last row on the previous page.
+    if sort is not None and sort != "id" and cursor is not None:
+        raise ApiError(
+            status_code=400,
+            error_code=ERR_BAD_REQUEST,
+            message=(
+                "cursor pagination is not supported with a non-default sort; "
+                "use `page` + `page_size` instead"
+            ),
+        )
 
     filter_kwargs: dict[str, Any] = {
         "cp_id": cp_id,
@@ -274,6 +307,8 @@ async def list_transactions_global_route(
         "stopped_to": _parse_iso8601(stopped_before, field_name="stopped_before"),
         "min_consumed_wh": min_consumed_wh,
         "max_consumed_wh": max_consumed_wh,
+        "sort": sort,
+        "direction": dir or "desc",
     }
 
     if page is not None:
@@ -283,6 +318,10 @@ async def list_transactions_global_route(
             maximum=settings.rest_max_page_size,
         )
         offset = offset_for_page(page, effective_size)
+        # `count_transactions` doesn't care about ordering — strip the
+        # sort kwargs before the count call to avoid forwarding kwargs
+        # that aren't in its signature.
+        count_kwargs = {k: v for k, v in filter_kwargs.items() if k not in {"sort", "direction"}}
         async with session_scope(request.app.state.session_factory) as session:
             rows = await list_transactions(
                 session,
@@ -291,7 +330,7 @@ async def list_transactions_global_route(
                 offset=offset,
                 **filter_kwargs,
             )
-            total = await count_transactions(session, **filter_kwargs)
+            total = await count_transactions(session, **count_kwargs)
         return {
             "transactions": [_transaction_to_response(tx) for tx in rows],
             "pagination": pagination_block(page=page, page_size=effective_size, total=total),

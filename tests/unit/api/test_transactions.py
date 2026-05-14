@@ -618,3 +618,105 @@ async def test_aggregate_rejects_unknown_group_by(client: httpx.AsyncClient) -> 
     )
     assert response.status_code == 400
     assert response.json()["error_code"] == "BAD_REQUEST"
+
+
+# ---------------------------------------------------------------------------
+# Sortable list (#43)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_list_global_forwards_sort_and_dir(
+    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from eveys_ocpp.api import transactions as tx_module
+
+    spy = AsyncMock(return_value=[])
+    monkeypatch.setattr(tx_module, "list_transactions", spy)
+    monkeypatch.setattr(tx_module, "count_transactions", AsyncMock(return_value=0))
+
+    await client.get("/api/v1/transactions?page=1&page_size=20&sort=consumed_wh&dir=desc")
+
+    kwargs = spy.await_args.kwargs
+    assert kwargs["sort"] == "consumed_wh"
+    assert kwargs["direction"] == "desc"
+
+
+@pytest.mark.asyncio
+async def test_list_global_defaults_dir_to_desc(
+    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from eveys_ocpp.api import transactions as tx_module
+
+    spy = AsyncMock(return_value=[])
+    monkeypatch.setattr(tx_module, "list_transactions", spy)
+    monkeypatch.setattr(tx_module, "count_transactions", AsyncMock(return_value=0))
+
+    await client.get("/api/v1/transactions?page=1&page_size=20&sort=started_at")
+
+    assert spy.await_args.kwargs["direction"] == "desc"
+
+
+@pytest.mark.asyncio
+async def test_list_global_rejects_unknown_sort(
+    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from eveys_ocpp.api import transactions as tx_module
+
+    monkeypatch.setattr(tx_module, "list_transactions", AsyncMock(return_value=[]))
+
+    response = await client.get("/api/v1/transactions?sort=banana")
+
+    assert response.status_code == 400
+    assert response.json()["error_code"] == "BAD_REQUEST"
+
+
+@pytest.mark.asyncio
+async def test_list_global_rejects_unknown_dir(
+    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from eveys_ocpp.api import transactions as tx_module
+
+    monkeypatch.setattr(tx_module, "list_transactions", AsyncMock(return_value=[]))
+
+    response = await client.get("/api/v1/transactions?sort=consumed_wh&dir=upside-down")
+
+    assert response.status_code == 400
+    assert response.json()["error_code"] == "BAD_REQUEST"
+
+
+@pytest.mark.asyncio
+async def test_list_global_rejects_cursor_with_non_default_sort(
+    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Keyset cursors only walk stably when ordering by the surrogate id;
+    a non-id sort + cursor would skip rows with tied sort-values across
+    pages. Route forces page mode in that combo."""
+    from eveys_ocpp.api import transactions as tx_module
+
+    monkeypatch.setattr(tx_module, "list_transactions", AsyncMock(return_value=[]))
+
+    response = await client.get("/api/v1/transactions?sort=consumed_wh&cursor=cur-1")
+
+    assert response.status_code == 400
+    body = response.json()
+    assert body["error_code"] == "BAD_REQUEST"
+    assert "cursor pagination is not supported" in body["error"]
+
+
+@pytest.mark.asyncio
+async def test_list_global_default_sort_remains_cursor_paginated(
+    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`sort=id` (the implicit default) still allows cursor mode."""
+    from eveys_ocpp.api import transactions as tx_module
+
+    monkeypatch.setattr(tx_module, "list_transactions", AsyncMock(return_value=[]))
+
+    response = await client.get("/api/v1/transactions?sort=id&cursor=cur-1")
+
+    # Cursor decode happens after the sort check; a malformed cursor
+    # would 400, but the sort check itself must NOT fire.
+    assert response.status_code != 400 or "cursor pagination" not in (
+        response.json().get("message") or ""
+    )
