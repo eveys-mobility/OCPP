@@ -651,6 +651,42 @@ class UptimeResponse(BaseModel):
     request_id: str
 
 
+class TransactionsAggregateBucket(BaseModel):
+    """One (bucket, group) entry in the analytics response.
+
+    `group` is omitted when the query used `group_by=none`. Otherwise
+    it carries the cp_id or id_tag the row was split on. Aggregates
+    only count completed sessions: active (open) transactions can't
+    contribute energy or duration totals."""
+
+    bucket_at: str
+    group: str | None = None
+    session_count: int
+    consumed_wh_total: int
+    duration_seconds_total: int
+
+
+class TransactionsAggregateWindow(BaseModel):
+    from_: str = Field(alias="from")
+    to: str
+    seconds: int
+    bucket: str
+    group_by: str
+
+
+class TransactionsAggregateResponse(BaseModel):
+    """`GET /api/v1/transactions/aggregate?from=…&to=…&bucket=…&group_by=…`.
+
+    Bucketed analytics over `transactions`. Excludes active sessions
+    (no `stopped_reported_at` → no contribution to energy or duration).
+    Window cap is 90 days — aggregations are cheap; operators want
+    quarterly views."""
+
+    buckets: list[TransactionsAggregateBucket]
+    window: TransactionsAggregateWindow
+    request_id: str
+
+
 class OfflineDurationEvent(BaseModel):
     """One observed offline window for a charger.
 
@@ -772,6 +808,9 @@ __all__ = [
     "TransactionDetail",
     "TransactionListResponse",
     "TransactionTelemetry",
+    "TransactionsAggregateBucket",
+    "TransactionsAggregateResponse",
+    "TransactionsAggregateWindow",
     "UptimeInterval",
     "UptimeResponse",
     "UptimeWindow",

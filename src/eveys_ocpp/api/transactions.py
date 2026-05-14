@@ -14,7 +14,7 @@ Per the contract `docs/integration/02-gateway-rest-api.md`:
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from fastapi import APIRouter, Query, Request
@@ -23,6 +23,7 @@ from eveys_ocpp.api._errors import (
     ERR_BAD_REQUEST,
     ERR_UNKNOWN_CP_ID,
     ERR_UNKNOWN_TRANSACTION_ID,
+    ERR_WINDOW_TOO_LARGE,
     ApiError,
 )
 from eveys_ocpp.api._pagination import (
@@ -38,9 +39,11 @@ from eveys_ocpp.api._schemas import (
     OcppFramesByTransactionResponse,
     TransactionDetail,
     TransactionListResponse,
+    TransactionsAggregateResponse,
 )
 from eveys_ocpp.persistence.db import session_scope
 from eveys_ocpp.persistence.repositories import (
+    aggregate_transactions,
     count_transactions,
     count_transactions_by_cp,
     get_transaction_by_id,
@@ -316,6 +319,105 @@ async def list_transactions_global_route(
         "next_cursor": next_cursor,
         "request_id": request.state.request_id,
     }
+
+
+_AGGREGATE_MAX_WINDOW = timedelta(days=90)
+_BUCKETS = {"hour", "day"}
+_GROUP_BY = {"none", "cp_id", "id_tag"}
+
+
+@router.get(
+    "/transactions/aggregate",
+    summary="Bucketed analytics over completed transactions",
+    responses={
+        200: {"model": TransactionsAggregateResponse},
+        400: {
+            "model": ErrorEnvelope,
+            "description": "Bad from/to, unknown bucket / group_by, or window too large.",
+        },
+    },
+)
+async def aggregate_transactions_route(
+    request: Request,
+    from_: str = Query(alias="from"),
+    to: str = Query(...),
+    bucket: str = Query(default="day"),
+    group_by: str = Query(default="none"),
+) -> dict[str, Any]:
+    """Bucketed energy + duration totals over completed sessions.
+
+    Window cap is 90 days; the aggregation is one SQL pass over
+    ``transactions`` with ``date_trunc`` for the time bucket and
+    optional ``cp_id`` / ``id_tag`` split. Active sessions are
+    excluded (no ``stopped_reported_at`` → no totals to add).
+
+    Buckets are UTC. The optional ``group`` field is set on every
+    row when ``group_by != 'none'`` and omitted otherwise."""
+    started_from = _parse_iso8601(from_, field_name="from")
+    started_to = _parse_iso8601(to, field_name="to")
+    if started_from is None or started_to is None:
+        raise ApiError(
+            status_code=400,
+            error_code=ERR_BAD_REQUEST,
+            message="`from` and `to` are required",
+        )
+    if started_to < started_from:
+        raise ApiError(
+            status_code=400,
+            error_code=ERR_BAD_REQUEST,
+            message="`to` must be >= `from`",
+        )
+    if started_to - started_from > _AGGREGATE_MAX_WINDOW:
+        raise ApiError(
+            status_code=400,
+            error_code=ERR_WINDOW_TOO_LARGE,
+            message=f"window cannot exceed {_AGGREGATE_MAX_WINDOW.days} days",
+        )
+    if bucket not in _BUCKETS:
+        raise ApiError(
+            status_code=400,
+            error_code=ERR_BAD_REQUEST,
+            message=f"unknown bucket: {bucket!r}",
+        )
+    if group_by not in _GROUP_BY:
+        raise ApiError(
+            status_code=400,
+            error_code=ERR_BAD_REQUEST,
+            message=f"unknown group_by: {group_by!r}",
+        )
+
+    async with session_scope(request.app.state.session_factory) as session:
+        rows = await aggregate_transactions(
+            session,
+            window_from=started_from,
+            window_to=started_to,
+            bucket=bucket,
+            group_by=group_by,
+        )
+
+    return {
+        "buckets": [_aggregate_to_response(r) for r in rows],
+        "window": {
+            "from": _isoformat(started_from),
+            "to": _isoformat(started_to),
+            "seconds": int((started_to - started_from).total_seconds()),
+            "bucket": bucket,
+            "group_by": group_by,
+        },
+        "request_id": request.state.request_id,
+    }
+
+
+def _aggregate_to_response(row: dict[str, Any]) -> dict[str, Any]:
+    out: dict[str, Any] = {
+        "bucket_at": _isoformat(row["bucket_at"]),
+        "session_count": int(row["session_count"]),
+        "consumed_wh_total": int(row["consumed_wh_total"]),
+        "duration_seconds_total": int(row["duration_seconds_total"]),
+    }
+    if "group" in row:
+        out["group"] = row["group"]
+    return out
 
 
 @router.get(

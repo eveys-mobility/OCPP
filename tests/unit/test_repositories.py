@@ -543,3 +543,95 @@ def test_charge_points_filter_conditions_includes_ocpp_version_filter() -> None:
     )
     rendered = [str(c) for c in conditions]
     assert any("ocpp_version" in r for r in rendered), rendered
+
+
+# ---------------------------------------------------------------------------
+# aggregate_transactions (B1 of eveys-console#192)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_aggregate_transactions_rejects_unknown_bucket() -> None:
+    session = AsyncMock()
+    with pytest.raises(ValueError, match="unsupported bucket"):
+        await repositories.aggregate_transactions(
+            session,
+            window_from=datetime(2026, 5, 1, tzinfo=UTC),
+            window_to=datetime(2026, 5, 10, tzinfo=UTC),
+            bucket="quarter",
+            group_by="none",
+        )
+
+
+@pytest.mark.asyncio
+async def test_aggregate_transactions_rejects_unknown_group_by() -> None:
+    session = AsyncMock()
+    with pytest.raises(ValueError, match="unsupported group_by"):
+        await repositories.aggregate_transactions(
+            session,
+            window_from=datetime(2026, 5, 1, tzinfo=UTC),
+            window_to=datetime(2026, 5, 10, tzinfo=UTC),
+            bucket="day",
+            group_by="charger_make",
+        )
+
+
+@pytest.mark.asyncio
+async def test_aggregate_transactions_emits_group_when_split_by_cp_id() -> None:
+    """Verifies the project shape — `group` is populated when `group_by`
+    is non-trivial. The mock returns `mappings()` as the structural
+    contract; the helper has to copy `group_value` into the `group` key."""
+    rows_mapping = [
+        {
+            "bucket_at": datetime(2026, 5, 5, tzinfo=UTC),
+            "session_count": 1,
+            "consumed_wh_total": 1_000,
+            "duration_seconds_total": 60,
+            "group_value": "CP_BERLIN_017",
+        },
+    ]
+    result_obj = MagicMock()
+    result_obj.mappings.return_value.all.return_value = rows_mapping
+    session = AsyncMock()
+    session.execute = AsyncMock(return_value=result_obj)
+
+    out = await repositories.aggregate_transactions(
+        session,
+        window_from=datetime(2026, 5, 1, tzinfo=UTC),
+        window_to=datetime(2026, 5, 10, tzinfo=UTC),
+        bucket="day",
+        group_by="cp_id",
+    )
+
+    assert len(out) == 1
+    assert out[0]["group"] == "CP_BERLIN_017"
+    assert out[0]["session_count"] == 1
+    assert out[0]["consumed_wh_total"] == 1_000
+    assert out[0]["duration_seconds_total"] == 60
+
+
+@pytest.mark.asyncio
+async def test_aggregate_transactions_omits_group_when_group_by_none() -> None:
+    rows_mapping = [
+        {
+            "bucket_at": datetime(2026, 5, 5, tzinfo=UTC),
+            "session_count": 5,
+            "consumed_wh_total": 12_345,
+            "duration_seconds_total": 600,
+        },
+    ]
+    result_obj = MagicMock()
+    result_obj.mappings.return_value.all.return_value = rows_mapping
+    session = AsyncMock()
+    session.execute = AsyncMock(return_value=result_obj)
+
+    out = await repositories.aggregate_transactions(
+        session,
+        window_from=datetime(2026, 5, 1, tzinfo=UTC),
+        window_to=datetime(2026, 5, 10, tzinfo=UTC),
+        bucket="day",
+        group_by="none",
+    )
+
+    assert len(out) == 1
+    assert "group" not in out[0]

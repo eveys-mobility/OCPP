@@ -431,3 +431,156 @@ async def test_get_transaction_frames_passes_limit_through(
     kwargs = spy.await_args.kwargs
     assert kwargs["transaction_id"] == 42
     assert kwargs["limit"] == 10
+
+
+# ---------------------------------------------------------------------------
+# Aggregate analytics endpoint (B1 of eveys-console#192)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_aggregate_returns_empty_buckets_when_repo_empty(
+    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from eveys_ocpp.api import transactions as tx_module
+
+    monkeypatch.setattr(tx_module, "aggregate_transactions", AsyncMock(return_value=[]))
+
+    response = await client.get(
+        "/api/v1/transactions/aggregate?from=2026-05-01T00:00:00Z&to=2026-05-10T00:00:00Z"
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["buckets"] == []
+    assert body["window"]["bucket"] == "day"
+    assert body["window"]["group_by"] == "none"
+
+
+@pytest.mark.asyncio
+async def test_aggregate_forwards_filter_args_to_repo(
+    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from eveys_ocpp.api import transactions as tx_module
+
+    spy = AsyncMock(return_value=[])
+    monkeypatch.setattr(tx_module, "aggregate_transactions", spy)
+
+    await client.get(
+        "/api/v1/transactions/aggregate"
+        "?from=2026-05-01T00:00:00Z&to=2026-05-10T00:00:00Z"
+        "&bucket=hour&group_by=cp_id"
+    )
+
+    kwargs = spy.await_args.kwargs
+    assert kwargs["bucket"] == "hour"
+    assert kwargs["group_by"] == "cp_id"
+    assert kwargs["window_from"] == datetime(2026, 5, 1, tzinfo=UTC)
+    assert kwargs["window_to"] == datetime(2026, 5, 10, tzinfo=UTC)
+
+
+@pytest.mark.asyncio
+async def test_aggregate_shapes_single_row(
+    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from eveys_ocpp.api import transactions as tx_module
+
+    repo_rows = [
+        {
+            "bucket_at": datetime(2026, 5, 5, tzinfo=UTC),
+            "session_count": 3,
+            "consumed_wh_total": 12_500,
+            "duration_seconds_total": 7_200,
+        }
+    ]
+    monkeypatch.setattr(tx_module, "aggregate_transactions", AsyncMock(return_value=repo_rows))
+
+    response = await client.get(
+        "/api/v1/transactions/aggregate?from=2026-05-01T00:00:00Z&to=2026-05-10T00:00:00Z"
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["buckets"]) == 1
+    one = body["buckets"][0]
+    assert one["session_count"] == 3
+    assert one["consumed_wh_total"] == 12_500
+    assert one["duration_seconds_total"] == 7_200
+    # `group` is omitted from each row when group_by=none.
+    assert "group" not in one
+
+
+@pytest.mark.asyncio
+async def test_aggregate_group_rows_include_group_field(
+    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from eveys_ocpp.api import transactions as tx_module
+
+    repo_rows = [
+        {
+            "bucket_at": datetime(2026, 5, 5, tzinfo=UTC),
+            "group": "CP_BERLIN_017",
+            "session_count": 1,
+            "consumed_wh_total": 5_000,
+            "duration_seconds_total": 1_800,
+        },
+        {
+            "bucket_at": datetime(2026, 5, 5, tzinfo=UTC),
+            "group": "CP_BERLIN_022",
+            "session_count": 2,
+            "consumed_wh_total": 10_000,
+            "duration_seconds_total": 3_600,
+        },
+    ]
+    monkeypatch.setattr(tx_module, "aggregate_transactions", AsyncMock(return_value=repo_rows))
+
+    response = await client.get(
+        "/api/v1/transactions/aggregate"
+        "?from=2026-05-01T00:00:00Z&to=2026-05-10T00:00:00Z"
+        "&group_by=cp_id"
+    )
+
+    body = response.json()
+    groups = {b["group"]: b for b in body["buckets"]}
+    assert groups["CP_BERLIN_017"]["session_count"] == 1
+    assert groups["CP_BERLIN_022"]["session_count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_aggregate_rejects_window_over_90_days(client: httpx.AsyncClient) -> None:
+    response = await client.get(
+        "/api/v1/transactions/aggregate?from=2025-01-01T00:00:00Z&to=2026-05-10T00:00:00Z"
+    )
+    assert response.status_code == 400
+    assert response.json()["error_code"] == "WINDOW_TOO_LARGE"
+
+
+@pytest.mark.asyncio
+async def test_aggregate_rejects_inverted_window(client: httpx.AsyncClient) -> None:
+    response = await client.get(
+        "/api/v1/transactions/aggregate?from=2026-05-10T00:00:00Z&to=2026-05-01T00:00:00Z"
+    )
+    assert response.status_code == 400
+    assert response.json()["error_code"] == "BAD_REQUEST"
+
+
+@pytest.mark.asyncio
+async def test_aggregate_rejects_unknown_bucket(client: httpx.AsyncClient) -> None:
+    response = await client.get(
+        "/api/v1/transactions/aggregate"
+        "?from=2026-05-01T00:00:00Z&to=2026-05-10T00:00:00Z"
+        "&bucket=banana"
+    )
+    assert response.status_code == 400
+    assert response.json()["error_code"] == "BAD_REQUEST"
+
+
+@pytest.mark.asyncio
+async def test_aggregate_rejects_unknown_group_by(client: httpx.AsyncClient) -> None:
+    response = await client.get(
+        "/api/v1/transactions/aggregate"
+        "?from=2026-05-01T00:00:00Z&to=2026-05-10T00:00:00Z"
+        "&group_by=color"
+    )
+    assert response.status_code == 400
+    assert response.json()["error_code"] == "BAD_REQUEST"
