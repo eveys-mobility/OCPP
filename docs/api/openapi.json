@@ -2217,6 +2217,30 @@
         ]
       }
     },
+    "/api/v1/admin/restart": {
+      "post": {
+        "description": "Self-exit so a config change that needs a fresh boot can be applied\nfrom the Console UI instead of via SSH.\n\nAuth is the same admin-token allowlist that gates the rest of\n`/api/v1/admin/*`; no separate gate. Operators who want stricter access\nlayer in a reverse-proxy ACL on this exact path.",
+        "operationId": "restart_api_v1_admin_restart_post",
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Restart Api V1 Admin Restart Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Terminate this process so the supervisor respawns it (config-reload helper)",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/api/v1/charge-points": {
       "get": {
         "operationId": "list_charge_points_route_api_v1_charge_points_get",

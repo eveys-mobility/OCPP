@@ -36,7 +36,7 @@ from typing import Any
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 
-from eveys_ocpp.api._errors import ERR_BAD_REQUEST, ApiError
+from eveys_ocpp.api._errors import ERR_BAD_REQUEST, ERR_SERVICE_UNAVAILABLE, ApiError
 from eveys_ocpp.observability import apply_log_level, get_logger
 from eveys_ocpp.runtime_overrides import (
     OverrideNotAllowedError,
@@ -147,3 +147,117 @@ async def delete_override(request: Request, key: str) -> dict[str, Any]:
         "scope": "per-pod",
         "request_id": request.state.request_id,
     }
+
+
+# ---------------------------------------------------------------------------
+# Restart
+# ---------------------------------------------------------------------------
+#
+# `POST /api/v1/admin/restart` lets the Console UI drive a process-restart for
+# config keys that aren't on the runtime-overrides allowlist (kafka topic
+# name, port, JWT secret). The endpoint:
+#
+#   - returns 202 immediately so the operator's browser sees a clean reply,
+#   - schedules a SIGTERM on this PID ~500ms later (uvicorn handles SIGTERM
+#     by walking the existing shutdown protocol in `shutdown.py`),
+#   - is gated behind `admin_restart_enabled` (default False) so the endpoint
+#     is dormant unless an operator explicitly turns it on,
+#   - debounces: a second call inside `admin_restart_debounce_seconds`
+#     returns 202 but does NOT schedule another exit. Guards against
+#     double-clicks and the Console UI's overlay racing the button.
+#
+# The process actually coming back is the supervisor's job (compose's
+# `restart: unless-stopped`, k8s Deployment, systemd). This endpoint just
+# trips the trigger.
+
+
+# Module-level so the debounce survives across calls within the same pod.
+# `None` means "no restart scheduled yet on this pod".
+_last_restart_scheduled_at: float | None = None
+
+# Hold a reference to the scheduled exit task so the event loop's weakref
+# doesn't GC it before it fires (ruff RUF006 — without this, the task can
+# be reaped between the route returning and the 500ms sleep elapsing,
+# leaving the process running instead of restarting).
+_pending_exit_task: Any = None
+
+
+async def _delayed_sigterm(delay_seconds: float) -> None:
+    """Sleep, then SIGTERM ourselves.
+
+    The sleep gives the 202 response time to flush all the way back to the
+    operator's browser before the process starts tearing down. SIGTERM is
+    what uvicorn wants to see for a graceful shutdown; the gateway's
+    `shutdown.py` is wired to that signal already, so chargers get a clean
+    WS close on the way out instead of a TCP reset.
+    """
+    import asyncio
+    import os
+    import signal
+
+    await asyncio.sleep(delay_seconds)
+    os.kill(os.getpid(), signal.SIGTERM)
+
+
+@router.post(
+    "/admin/restart",
+    summary="Terminate this process so the supervisor respawns it (config-reload helper)",
+    status_code=202,
+)
+async def restart(request: Request) -> dict[str, Any]:
+    """Self-exit so a config change that needs a fresh boot can be applied
+    from the Console UI instead of via SSH.
+
+    Auth is the same admin-token allowlist that gates the rest of
+    `/api/v1/admin/*`; no separate gate. Operators who want stricter access
+    layer in a reverse-proxy ACL on this exact path."""
+    import asyncio
+    import time
+
+    global _last_restart_scheduled_at
+
+    settings = request.app.state.settings
+    if not settings.admin_restart_enabled:
+        raise ApiError(
+            status_code=503,
+            error_code=ERR_SERVICE_UNAVAILABLE,
+            message=(
+                "admin restart is disabled — set EVEYS_OCPP_ADMIN_RESTART_ENABLED=true to enable"
+            ),
+        )
+
+    now = time.monotonic()
+    debounce = settings.admin_restart_debounce_seconds
+    if _last_restart_scheduled_at is not None and (now - _last_restart_scheduled_at) < debounce:
+        # In-flight restart already armed. Return 202 with the
+        # already-scheduled status so the caller doesn't see a spurious
+        # failure, but DON'T queue a second SIGTERM.
+        log.info("admin.restart.debounced", since_seconds=now - _last_restart_scheduled_at)
+        return {
+            "status": "already_scheduled",
+            "exits_in_ms": 0,
+            "scope": "per-pod",
+            "request_id": request.state.request_id,
+        }
+
+    global _pending_exit_task
+    _last_restart_scheduled_at = now
+    log.warning("admin.restart.scheduled", exits_in_ms=500, pid=__import__("os").getpid())
+    _pending_exit_task = asyncio.create_task(_delayed_sigterm(0.5))
+
+    return {
+        "status": "scheduled",
+        "exits_in_ms": 500,
+        "scope": "per-pod",
+        "request_id": request.state.request_id,
+    }
+
+
+def _reset_restart_debounce_for_tests() -> None:
+    """Vitest-equivalent reset hook — pytest fixtures clear the module-level
+    debounce + pending-task reference between cases so consecutive tests
+    don't see each other's 'already_scheduled' state. Do NOT call this in
+    production code."""
+    global _last_restart_scheduled_at, _pending_exit_task
+    _last_restart_scheduled_at = None
+    _pending_exit_task = None
