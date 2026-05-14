@@ -1348,6 +1348,105 @@ async def count_transactions_by_cp(
     return int(result.scalar_one() or 0)
 
 
+async def aggregate_transactions(
+    session: AsyncSession,
+    *,
+    window_from: datetime,
+    window_to: datetime,
+    bucket: str,
+    group_by: str,
+) -> list[dict[str, Any]]:
+    """Bucketed analytics over completed transactions.
+
+    Aggregates ``transactions`` rows whose ``stopped_reported_at`` falls
+    inside ``[window_from, window_to]`` — active sessions are
+    intentionally excluded because they have no ``meter_stop_wh`` /
+    ``stopped_reported_at`` yet, so they'd contribute zero to both
+    energy and duration totals and make the bucket counts misleading.
+
+    Arguments:
+
+    - ``bucket``: ``'hour'`` or ``'day'``. Buckets are computed
+      server-side with PostgreSQL ``date_trunc`` so DST and timezone
+      conversions are consistent regardless of the caller's locale.
+      All bucket timestamps are emitted in UTC.
+    - ``group_by``: ``'none'`` | ``'cp_id'`` | ``'id_tag'``. When
+      ``'none'``, the response has one row per bucket. Otherwise rows
+      are split across the group dimension; (bucket, group) is the
+      primary key of the result.
+
+    Returns a list of dicts with ``bucket_at`` (datetime), ``group``
+    (optional str — only set when ``group_by != 'none'``),
+    ``session_count`` (int), ``consumed_wh_total`` (int),
+    ``duration_seconds_total`` (int).
+    """
+    if bucket == "hour":
+        bucket_expr = func.date_trunc("hour", Transaction.stopped_reported_at)
+    elif bucket == "day":
+        bucket_expr = func.date_trunc("day", Transaction.stopped_reported_at)
+    else:
+        # The caller validates the enum; getting here would be a bug.
+        raise ValueError(f"unsupported bucket: {bucket!r}")
+
+    consumed_expr = Transaction.meter_stop_wh - Transaction.meter_start_wh
+    duration_expr = func.extract(
+        "epoch",
+        Transaction.stopped_reported_at - Transaction.started_reported_at,
+    )
+
+    select_cols: list[Any] = [
+        bucket_expr.label("bucket_at"),
+        func.count().label("session_count"),
+        func.coalesce(func.sum(consumed_expr), 0).label("consumed_wh_total"),
+        func.coalesce(func.sum(duration_expr), 0).label("duration_seconds_total"),
+    ]
+    group_cols: list[Any] = [bucket_expr]
+
+    if group_by == "cp_id":
+        # Join `charge_points` to expose the OCPP-visible cp_id string
+        # in the response; the FK on the transaction is to the
+        # surrogate `id`, which is meaningless externally.
+        stmt = select(*select_cols, ChargePoint.cp_id.label("group_value")).join(
+            ChargePoint, Transaction.charge_point_id == ChargePoint.id
+        )
+        group_cols.append(ChargePoint.cp_id)
+    elif group_by == "id_tag":
+        stmt = select(*select_cols, Transaction.id_tag.label("group_value"))
+        group_cols.append(Transaction.id_tag)
+    elif group_by == "none":
+        stmt = select(*select_cols)
+    else:
+        raise ValueError(f"unsupported group_by: {group_by!r}")
+
+    stmt = (
+        stmt.where(
+            Transaction.stopped_reported_at.is_not(None),
+            Transaction.stopped_reported_at >= window_from,
+            Transaction.stopped_reported_at <= window_to,
+        )
+        .group_by(*group_cols)
+        .order_by(bucket_expr)
+    )
+    if group_by != "none":
+        stmt = stmt.order_by(*group_cols[1:])
+
+    result = await session.execute(stmt)
+    rows = result.mappings().all()
+
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        entry: dict[str, Any] = {
+            "bucket_at": row["bucket_at"],
+            "session_count": int(row["session_count"]),
+            "consumed_wh_total": int(row["consumed_wh_total"]),
+            "duration_seconds_total": int(row["duration_seconds_total"]),
+        }
+        if group_by != "none":
+            entry["group"] = row["group_value"]
+        out.append(entry)
+    return out
+
+
 def _transactions_filter_conditions(
     *,
     cp_id: str | None,

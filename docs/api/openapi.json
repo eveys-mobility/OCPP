@@ -1934,6 +1934,105 @@
         "title": "TransactionTelemetry",
         "type": "object"
       },
+      "TransactionsAggregateBucket": {
+        "description": "One bucket \u00d7 group entry in the analytics response.\n\n`group` is omitted when the query used `group_by=none`. Otherwise\nit carries the cp_id or id_tag the row was split on. Aggregates\nonly count completed sessions \u2014 active (open) transactions can't\ncontribute energy or duration totals.",
+        "properties": {
+          "bucket_at": {
+            "title": "Bucket At",
+            "type": "string"
+          },
+          "consumed_wh_total": {
+            "title": "Consumed Wh Total",
+            "type": "integer"
+          },
+          "duration_seconds_total": {
+            "title": "Duration Seconds Total",
+            "type": "integer"
+          },
+          "group": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Group"
+          },
+          "session_count": {
+            "title": "Session Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "bucket_at",
+          "session_count",
+          "consumed_wh_total",
+          "duration_seconds_total"
+        ],
+        "title": "TransactionsAggregateBucket",
+        "type": "object"
+      },
+      "TransactionsAggregateResponse": {
+        "description": "`GET /api/v1/transactions/aggregate?from=\u2026&to=\u2026&bucket=\u2026&group_by=\u2026`.\n\nBucketed analytics over `transactions`. Excludes active sessions\n(no `stopped_reported_at` \u2192 no contribution to energy or duration).\nWindow cap is 90 days \u2014 aggregations are cheap; operators want\nquarterly views.",
+        "properties": {
+          "buckets": {
+            "items": {
+              "$ref": "#/components/schemas/TransactionsAggregateBucket"
+            },
+            "title": "Buckets",
+            "type": "array"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          },
+          "window": {
+            "$ref": "#/components/schemas/TransactionsAggregateWindow"
+          }
+        },
+        "required": [
+          "buckets",
+          "window",
+          "request_id"
+        ],
+        "title": "TransactionsAggregateResponse",
+        "type": "object"
+      },
+      "TransactionsAggregateWindow": {
+        "properties": {
+          "bucket": {
+            "title": "Bucket",
+            "type": "string"
+          },
+          "from": {
+            "title": "From",
+            "type": "string"
+          },
+          "group_by": {
+            "title": "Group By",
+            "type": "string"
+          },
+          "seconds": {
+            "title": "Seconds",
+            "type": "integer"
+          },
+          "to": {
+            "title": "To",
+            "type": "string"
+          }
+        },
+        "required": [
+          "from",
+          "to",
+          "seconds",
+          "bucket",
+          "group_by"
+        ],
+        "title": "TransactionsAggregateWindow",
+        "type": "object"
+      },
       "UpdateBody": {
         "description": "PATCH body. The keys in `updates` must be allowlisted; the\nvalues are coerced per the allowlist's `coerce` callable.",
         "properties": {
@@ -6057,6 +6156,91 @@
           }
         },
         "summary": "List transactions (cursor-paginated, global)",
+        "tags": [
+          "transactions"
+        ]
+      }
+    },
+    "/api/v1/transactions/aggregate": {
+      "get": {
+        "description": "Bucketed energy + duration totals over completed sessions.\n\nWindow cap is 90 days; the aggregation is one SQL pass over\n``transactions`` with ``date_trunc`` for the time bucket and\noptional ``cp_id`` / ``id_tag`` split. Active sessions are\nexcluded (no ``stopped_reported_at`` \u2192 no totals to add).\n\nBuckets are UTC. The optional ``group`` field is set on every\nrow when ``group_by != 'none'`` and omitted otherwise.",
+        "operationId": "aggregate_transactions_route_api_v1_transactions_aggregate_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "from",
+            "required": true,
+            "schema": {
+              "title": "From",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "to",
+            "required": true,
+            "schema": {
+              "title": "To",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "bucket",
+            "required": false,
+            "schema": {
+              "default": "day",
+              "title": "Bucket",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "group_by",
+            "required": false,
+            "schema": {
+              "default": "none",
+              "title": "Group By",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TransactionsAggregateResponse",
+                  "additionalProperties": true,
+                  "title": "Response Aggregate Transactions Route Api V1 Transactions Aggregate Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Bad from/to, unknown bucket / group_by, or window too large."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Bucketed analytics over completed transactions",
         "tags": [
           "transactions"
         ]
