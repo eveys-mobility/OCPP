@@ -237,6 +237,51 @@ class Settings(BaseSettings):
             "stability": "tunable",
         },
     )
+    admin_restart_enabled: bool = Field(
+        default=False,
+        description=(
+            "Allow `POST /api/v1/admin/restart` to terminate the "
+            "process so the container's restart policy respawns it. "
+            "Default False — even with the admin token, the endpoint "
+            "returns 503 until an operator opts in by setting this. "
+            "Operators wire this to the Console UI's restart button "
+            "when they want config-key changes that need a process "
+            "restart (Kafka topic, port, JWT secret) to be drivable "
+            "from the browser instead of via SSH."
+        ),
+        json_schema_extra={
+            "category": "rest_server",
+            "impact": (
+                "When True, a token-bearing caller can shut the "
+                "gateway down at will. Cluster impact depends on the "
+                "supervisor: under Docker Compose with restart: "
+                "unless-stopped the process comes back within seconds; "
+                "under k8s the Deployment respawns the pod. In-flight "
+                "chargers see a clean WS close via the existing drain "
+                "in `shutdown.py` before the process exits. "
+                "A 500ms gap between the 202 response and the actual "
+                "SIGTERM gives the Console UI's overlay time to start "
+                "polling `/api/v1/health`."
+            ),
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+    admin_restart_debounce_seconds: float = Field(
+        default=5.0,
+        description=(
+            "Minimum gap between accepted restart requests. A second "
+            "POST inside this window returns 202 but does NOT schedule "
+            "another exit — guards against double-clicks and the "
+            "Console UI's overlay racing the operator's button."
+        ),
+        json_schema_extra={
+            "category": "rest_server",
+            "impact": "Per-pod, in-memory. Not persisted across restarts.",
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
 
     # ---- SSE event stream (ADR-0030) ------------------------------------
     sse_enabled: bool = Field(
