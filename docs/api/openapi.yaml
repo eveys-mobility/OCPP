@@ -1370,14 +1370,14 @@ components:
       title: TransactionTelemetry
       type: object
     TransactionsAggregateBucket:
-      description: 'One bucket × group entry in the analytics response.
+      description: 'One (bucket, group) entry in the analytics response.
 
 
         `group` is omitted when the query used `group_by=none`. Otherwise
 
         it carries the cp_id or id_tag the row was split on. Aggregates
 
-        only count completed sessions — active (open) transactions can''t
+        only count completed sessions: active (open) transactions can''t
 
         contribute energy or duration totals.'
       properties:

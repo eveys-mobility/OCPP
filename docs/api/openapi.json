@@ -1935,7 +1935,7 @@
         "type": "object"
       },
       "TransactionsAggregateBucket": {
-        "description": "One bucket \u00d7 group entry in the analytics response.\n\n`group` is omitted when the query used `group_by=none`. Otherwise\nit carries the cp_id or id_tag the row was split on. Aggregates\nonly count completed sessions \u2014 active (open) transactions can't\ncontribute energy or duration totals.",
+        "description": "One (bucket, group) entry in the analytics response.\n\n`group` is omitted when the query used `group_by=none`. Otherwise\nit carries the cp_id or id_tag the row was split on. Aggregates\nonly count completed sessions: active (open) transactions can't\ncontribute energy or duration totals.",
         "properties": {
           "bucket_at": {
             "title": "Bucket At",
