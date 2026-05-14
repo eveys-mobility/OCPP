@@ -35,7 +35,10 @@ docs/
 deploy/compose/
 scripts/
 tests/
-alembic/
-alembic.ini
+# Note: alembic/ + alembic.ini are intentionally INCLUDED in the
+# build context — the runtime image ships them so the compose
+# `migrate-postgres` init-container (and the Helm pre-install hook
+# in the future) can run `python -m alembic upgrade head` without
+# a host bind-mount. See eveys-mobility/OCPP#234.
 AGENTS.md
 CLAUDE.md

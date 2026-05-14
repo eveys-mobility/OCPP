@@ -132,6 +132,60 @@ services:
       retries: 6
       start_period: 10s
 
+  # ---- migration init-containers (eveys-mobility/OCPP#234) ------------------
+  #
+  # Each is a one-shot service that applies pending schema migrations
+  # then exits 0. The `ocpp` and `clickhouse-ingestor` services
+  # `depends_on: { condition: service_completed_successfully }` so a
+  # fresh stack — or a stack pulling an image with a new migration —
+  # is guaranteed to be at-HEAD before any consumer starts.
+  #
+  # `restart: "no"` is intentional. If a migration fails the stack
+  # halts loudly with a non-zero exit; the alternative (silent
+  # crashloop) is the failure mode #234 was filed to prevent. Inspect
+  # `docker compose logs migrate-postgres migrate-clickhouse` to
+  # diagnose.
+  #
+  # The Helm chart equivalent (pre-install/pre-upgrade hook or init
+  # container on the gateway Deployment) is separate work — see
+  # #234's "Helm chart equivalent" decision point.
+  migrate-postgres:
+    image: eveys-ocpp:dev
+    container_name: eveys-ocpp-migrate-postgres
+    # Alembic is async-friendly (see alembic/env.py); run via
+    # `python -m alembic` against the image's bundled WORKDIR /build,
+    # which now ships alembic.ini + alembic/ alongside the venv.
+    command: ["-m", "alembic", "upgrade", "head"]
+    environment:
+      # Same DSN the runtime uses; alembic reads it via
+      # eveys_ocpp.settings.get_settings().db_url.
+      EVEYS_OCPP_DB_URL: postgresql+asyncpg://eveys:eveys@postgres:5432/eveys_ocpp
+      EVEYS_OCPP_LOG_JSON: "true"
+      EVEYS_OCPP_LOG_LEVEL: "INFO"
+    restart: "no"
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  migrate-clickhouse:
+    image: eveys-ocpp:dev
+    container_name: eveys-ocpp-migrate-clickhouse
+    # The ClickHouse migrator is HTTP/8123 (not the 9000 native
+    # protocol) — kept stdlib-urllib on purpose, see migrate.py
+    # header. Forward host/port/db verbatim from env so the same
+    # image works under Helm with different addresses.
+    command:
+      - "-m"
+      - "eveys_ocpp.clickhouse.migrate"
+      - "--host=clickhouse"
+      - "--port=8123"
+      - "--db=eveys_ocpp"
+    environment:
+      EVEYS_OCPP_LOG_JSON: "true"
+      EVEYS_OCPP_LOG_LEVEL: "INFO"
+    restart: "no"
+    depends_on:
+      clickhouse: { condition: service_healthy }
+
   ocpp:
     # Built locally from deploy/Dockerfile (distroless multi-stage; ~168 MB).
     # Use `make build-image` (or `docker compose build ocpp`) before
@@ -203,6 +257,11 @@ services:
       redis: { condition: service_healthy }
       kafka: { condition: service_healthy }
       clickhouse: { condition: service_healthy }
+      # Block boot until both migrators report exit 0. Prevents the
+      # "code ships but schema lags" failure mode that bit the
+      # ingestor in #234 — see the comment on the migrate-* services.
+      migrate-postgres: { condition: service_completed_successfully }
+      migrate-clickhouse: { condition: service_completed_successfully }
     # Envoy's first health-check fires the moment it starts and a
     # network-level failure on attempt #1 puts the upstream in a
     # state Envoy doesn't always reschedule from. Adding a
@@ -251,6 +310,10 @@ services:
     depends_on:
       kafka: { condition: service_healthy }
       clickhouse: { condition: service_healthy }
+      # Same migration gate as `ocpp`: don't start the ingestor until
+      # the CH schema is at HEAD. The dead-ingestor case in #234 was
+      # exactly "tables don't exist yet, 10 flush failures, exit 1."
+      migrate-clickhouse: { condition: service_completed_successfully }
 
   # Envoy edge proxy (E5-1, ADR-0007).
   #
