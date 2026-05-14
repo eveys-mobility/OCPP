@@ -340,16 +340,17 @@ class ChargePointListResponse(BaseModel):
 class SocSummary(BaseModel):
     """State-of-charge summary for one transaction.
 
-    `start_pct` is the earliest SoC sample inside the transaction's
-    window; `last_pct` is the most recent. For a stopped transaction,
-    `last_pct` is effectively the SoC at stop. Any field is `null`
-    when the charger never reported SoC."""
+    `start` is the earliest SoC sample inside the transaction's
+    window; `last` is the most recent. `delta = last - start` when
+    both ends are populated, else `null`. For a stopped transaction,
+    `last` is effectively the SoC at stop. Any field is `null` when
+    the charger never reported SoC."""
 
-    start_pct: float | None = None
-    last_pct: float | None = None
-    last_at: str | None = Field(
+    start: float | None = None
+    last: float | None = None
+    delta: float | None = Field(
         default=None,
-        description="ISO 8601 timestamp of the most recent SoC sample.",
+        description="`last - start` when both bounds are populated; null otherwise.",
     )
 
 
@@ -359,12 +360,17 @@ class PhaseSnapshot(BaseModel):
     `argMax(value, occurred_at)` per measurand on the named phase
     (`L1`, `L2`, `L3`). Each field is `null` when the charger never
     reported that measurand on that phase — single-phase chargers
-    populate only one phase, DC chargers may populate none."""
+    populate only one phase, DC chargers may populate none.
+
+    `power_factor` is null today (the ingestor doesn't surface it yet)
+    but is part of the contract so UI consumers can render the column
+    without a schema change later."""
 
     voltage_v: float | None = None
     current_a: float | None = None
     power_w: float | None = None
-    last_at: str | None = Field(
+    power_factor: float | None = None
+    occurred_at: str | None = Field(
         default=None,
         description="ISO 8601 timestamp of the most recent sample on this phase.",
     )
@@ -426,29 +432,28 @@ class TransactionDetail(Transaction):
                 "stop_reason": "Local",
                 "open": False,
                 "telemetry": {
-                    "soc": {
-                        "start_pct": 38.0,
-                        "last_pct": 81.0,
-                        "last_at": "2026-05-07T12:29:58+00:00",
-                    },
+                    "soc": {"start": 38.0, "last": 81.0, "delta": 43.0},
                     "phases": {
                         "L1": {
                             "voltage_v": 231.4,
                             "current_a": 14.8,
                             "power_w": 3417.3,
-                            "last_at": "2026-05-07T12:29:58+00:00",
+                            "power_factor": None,
+                            "occurred_at": "2026-05-07T12:29:58+00:00",
                         },
                         "L2": {
                             "voltage_v": 230.9,
                             "current_a": 14.6,
                             "power_w": 3370.5,
-                            "last_at": "2026-05-07T12:29:58+00:00",
+                            "power_factor": None,
+                            "occurred_at": "2026-05-07T12:29:58+00:00",
                         },
                         "L3": {
                             "voltage_v": 231.1,
                             "current_a": 14.7,
                             "power_w": 3393.0,
-                            "last_at": "2026-05-07T12:29:58+00:00",
+                            "power_factor": None,
+                            "occurred_at": "2026-05-07T12:29:58+00:00",
                         },
                     },
                 },

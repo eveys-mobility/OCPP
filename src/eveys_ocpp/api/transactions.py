@@ -72,7 +72,16 @@ def _parse_iso8601(value: str | None, *, field_name: str) -> datetime | None:
 
 
 def _transaction_to_response(tx: dict[str, Any]) -> dict[str, Any]:
-    """Wire shape — drop the internal surrogate `id`, format datetimes."""
+    """Wire shape — drop the internal surrogate `id`, format datetimes.
+
+    Emits both the precise `*_reported_at` / `*_received_at` pair and the
+    convenience aliases `started_at` / `stopped_at` (pointing at the
+    `_reported_at` value — the charger's wall clock, which is what UIs
+    render). The `open` flag is `True` while `stopped_reported_at` is
+    null so callers don't have to recompute it.
+    """
+    started_reported = _isoformat(tx["started_reported_at"])
+    stopped_reported = _isoformat(tx["stopped_reported_at"])
     return {
         "transaction_id": tx["transaction_id"],
         "cp_id": tx.get("cp_id"),  # filled by route when needed
@@ -81,11 +90,18 @@ def _transaction_to_response(tx: dict[str, Any]) -> dict[str, Any]:
         "meter_start_wh": tx["meter_start_wh"],
         "meter_stop_wh": tx["meter_stop_wh"],
         "consumed_wh": tx["consumed_wh"],
-        "started_reported_at": _isoformat(tx["started_reported_at"]),
+        "started_reported_at": started_reported,
         "started_received_at": _isoformat(tx["started_received_at"]),
-        "stopped_reported_at": _isoformat(tx["stopped_reported_at"]),
+        "stopped_reported_at": stopped_reported,
         "stopped_received_at": _isoformat(tx["stopped_received_at"]),
         "stop_reason": tx["stop_reason"],
+        # Convenience aliases for UI consumers — `started_at` /
+        # `stopped_at` are the charger-reported timestamps a human-
+        # facing view actually wants, and `open` is the boolean form
+        # of "this session hasn't stopped yet."
+        "started_at": started_reported,
+        "stopped_at": stopped_reported,
+        "open": tx["stopped_reported_at"] is None,
     }
 
 
@@ -523,12 +539,35 @@ async def _telemetry_for(request: Request, tx: dict[str, Any]) -> dict[str, Any]
 
     Compose-smoke and unit-test apps run without ClickHouse; surface
     `telemetry: null` in those environments rather than 500ing on a
-    detail call."""
+    detail call.
+
+    Shapes the CH client's internal field names into the wire form
+    consumed by the UI:
+      `soc.start_pct` → `soc.start`, `soc.last_pct` → `soc.last`,
+      plus a derived `soc.delta = last - start`.
+      Per-phase `last_at` → `occurred_at`, plus a null `power_factor`
+      column so the UI's PhaseSnapshot type has every field present.
+    """
     ch_client = getattr(request.app.state, "ch_client", None)
     if ch_client is None:
         return None
-    result: dict[str, Any] = await ch_client.fetch_transaction_telemetry(
+    raw: dict[str, Any] = await ch_client.fetch_transaction_telemetry(
         cp_id=tx["cp_id"],
         transaction_id=tx["transaction_id"],
     )
-    return result
+    raw_soc = raw.get("soc") or {}
+    start = raw_soc.get("start_pct")
+    last = raw_soc.get("last_pct")
+    delta: float | None = (last - start) if start is not None and last is not None else None
+    soc = {"start": start, "last": last, "delta": delta}
+
+    phases: dict[str, dict[str, Any]] = {}
+    for phase, snap in (raw.get("phases") or {}).items():
+        phases[phase] = {
+            "voltage_v": snap.get("voltage_v"),
+            "current_a": snap.get("current_a"),
+            "power_w": snap.get("power_w"),
+            "power_factor": snap.get("power_factor"),
+            "occurred_at": snap.get("last_at"),
+        }
+    return {"soc": soc, "phases": phases}

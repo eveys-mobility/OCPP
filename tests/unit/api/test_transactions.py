@@ -70,6 +70,32 @@ async def test_get_by_id_returns_full_shape(
     assert body["consumed_wh"] == 500_000
     assert isinstance(body["started_reported_at"], str)
     assert body["stop_reason"] == "Local"
+    # UI-facing aliases: `started_at` and `stopped_at` point at the
+    # charger-reported timestamps, and `open` reflects "not stopped yet."
+    assert body["started_at"] == body["started_reported_at"]
+    assert body["stopped_at"] == body["stopped_reported_at"]
+    assert body["open"] is False
+
+
+@pytest.mark.asyncio
+async def test_get_by_id_active_emits_open_true(
+    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A still-running session has null stop fields and `open=true`."""
+    from eveys_ocpp.api import transactions as tx_module
+
+    monkeypatch.setattr(
+        tx_module,
+        "get_transaction_by_id",
+        AsyncMock(return_value=_tx_row(stopped=False)),
+    )
+
+    response = await client.get("/api/v1/transactions/999")
+
+    body = response.json()
+    assert body["stopped_at"] is None
+    assert body["stopped_reported_at"] is None
+    assert body["open"] is True
 
 
 @pytest.mark.asyncio
@@ -286,11 +312,19 @@ async def test_detail_includes_telemetry_block(
 
     assert response.status_code == 200
     body = response.json()
-    assert body["telemetry"]["soc"]["start_pct"] == 38.0
-    assert body["telemetry"]["soc"]["last_pct"] == 81.0
-    assert body["telemetry"]["phases"]["L1"]["voltage_v"] == 231.4
-    assert body["telemetry"]["phases"]["L1"]["current_a"] == 14.8
-    assert body["telemetry"]["phases"]["L1"]["power_w"] == 3417.3
+    # Wire shape uses `start` / `last` / derived `delta` (not the CH
+    # client's internal `start_pct` / `last_pct`).
+    assert body["telemetry"]["soc"]["start"] == 38.0
+    assert body["telemetry"]["soc"]["last"] == 81.0
+    assert body["telemetry"]["soc"]["delta"] == pytest.approx(43.0)
+    phase_l1 = body["telemetry"]["phases"]["L1"]
+    assert phase_l1["voltage_v"] == 231.4
+    assert phase_l1["current_a"] == 14.8
+    assert phase_l1["power_w"] == 3417.3
+    # Each phase carries power_factor (null when not reported) +
+    # occurred_at (mapped from the CH client's `last_at`).
+    assert phase_l1["power_factor"] is None
+    assert phase_l1["occurred_at"] == "2026-05-05T15:00:00+00:00"
 
     fake_ch_client.fetch_transaction_telemetry.assert_awaited_once_with(
         cp_id="CP_BERLIN_001", transaction_id=999
