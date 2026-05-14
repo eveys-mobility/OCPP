@@ -162,7 +162,15 @@ services:
       EVEYS_OCPP_DB_URL: postgresql+asyncpg://eveys:eveys@postgres:5432/eveys_ocpp
       EVEYS_OCPP_LOG_JSON: "true"
       EVEYS_OCPP_LOG_LEVEL: "INFO"
-    restart: "no"
+    # `on-failure:5` covers the race between Postgres's healthcheck
+    # flipping healthy and asyncpg's first connect actually succeeding
+    # — Postgres can claim healthy a moment before it accepts new
+    # connections under load. A real migration failure still exits
+    # cleanly after 5 attempts and blocks `ocpp` from starting (since
+    # consumers wait on `service_completed_successfully`, not just
+    # `started`); 5 × ~10s is enough headroom on a laptop without
+    # masking a genuinely-broken migration for too long.
+    restart: on-failure:5
     depends_on:
       postgres: { condition: service_healthy }
 
@@ -182,7 +190,12 @@ services:
     environment:
       EVEYS_OCPP_LOG_JSON: "true"
       EVEYS_OCPP_LOG_LEVEL: "INFO"
-    restart: "no"
+    # `on-failure:3` as a belt-and-braces complement to the script's
+    # own connection-refused retry loop (`--wait-attempts=12` covers
+    # ~30s of HTTP-listener warmup). Three compose-level retries give
+    # us a second escape hatch if some failure mode slips past the
+    # in-script loop without masking a real migration error.
+    restart: on-failure:3
     depends_on:
       clickhouse: { condition: service_healthy }
 

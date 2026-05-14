@@ -31,6 +31,8 @@ import argparse
 import logging
 import re
 import sys
+import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -169,21 +171,70 @@ def apply_pending(*, host: str, port: int, db: str) -> list[int]:
 
 
 def main() -> None:
-    """CLI entry point: ``python -m eveys_ocpp.clickhouse.migrate``."""
+    """CLI entry point: ``python -m eveys_ocpp.clickhouse.migrate``.
+
+    Retries up to ``--wait-attempts`` times on connection-refused errors
+    (default 12 attempts at 2.5 s each, ~30 s total) before giving up.
+    This matters for the compose init-container: ClickHouse can
+    transition healthy -> ready a moment before its HTTP listener
+    accepts new connections, and the init-container's first attempt
+    would otherwise race that window and exit 1, blocking the whole
+    stack (since ``ocpp`` and the ingestor wait on
+    ``service_completed_successfully``).
+    """
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     parser = argparse.ArgumentParser(description="Apply ClickHouse migrations.")
     parser.add_argument("--host", default="localhost")
     parser.add_argument("--port", type=int, default=8123, help="ClickHouse HTTP port")
     parser.add_argument("--db", default="eveys_ocpp")
+    parser.add_argument(
+        "--wait-attempts",
+        type=int,
+        default=12,
+        help="On connection-refused, retry this many times before giving up.",
+    )
+    parser.add_argument(
+        "--wait-seconds",
+        type=float,
+        default=2.5,
+        help="Sleep this long between retries.",
+    )
     args = parser.parse_args()
 
-    try:
-        applied = apply_pending(host=args.host, port=args.port, db=args.db)
-    except urllib.error.URLError as exc:
-        print(
-            f"ERROR: could not reach ClickHouse at {args.host}:{args.port}: {exc}",
-            file=sys.stderr,
-        )
+    last_exc: urllib.error.URLError | None = None
+    for attempt in range(1, args.wait_attempts + 1):
+        try:
+            applied = apply_pending(host=args.host, port=args.port, db=args.db)
+            break
+        except urllib.error.URLError as exc:
+            # Only retry on the "not listening yet" case. A 4xx/5xx
+            # comes back as `HTTPError`, which is also a `URLError` —
+            # filter those out so a real schema failure exits fast.
+            if isinstance(exc, urllib.error.HTTPError):
+                print(
+                    f"ERROR: ClickHouse returned {exc.code} at {args.host}:{args.port}: {exc}",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            last_exc = exc
+            if attempt < args.wait_attempts:
+                print(
+                    f"clickhouse not ready at {args.host}:{args.port} "
+                    f"(attempt {attempt}/{args.wait_attempts}); retrying in {args.wait_seconds}s",
+                    file=sys.stderr,
+                )
+                time.sleep(args.wait_seconds)
+                continue
+            print(
+                f"ERROR: could not reach ClickHouse at {args.host}:{args.port} "
+                f"after {args.wait_attempts} attempts: {exc}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+    else:
+        # Loop completed without `break` AND without `sys.exit`.
+        # Unreachable in practice; here for the type checker.
+        assert last_exc is not None
         sys.exit(1)
     print(f"applied {len(applied)} migration(s): {applied}")
 
