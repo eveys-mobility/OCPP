@@ -46,6 +46,12 @@ WORKDIR /build
 
 COPY pyproject.toml README.md ./
 COPY src/ ./src/
+# Alembic config + migration scripts. Shipped in the runtime image so
+# the compose init-container (and the Helm pre-install hook) can run
+# `python -m alembic upgrade head` without a host bind-mount. See
+# eveys-mobility/OCPP#234.
+COPY alembic.ini ./alembic.ini
+COPY alembic/ ./alembic/
 # Replace the empty _generated dir from src/ with the generated stubs.
 COPY --from=codegen /codegen/out/eveys_ocpp/_generated/ ./src/eveys_ocpp/_generated/
 
@@ -63,6 +69,14 @@ COPY --from=builder /usr/local/lib/python3.13 /usr/local/lib/python3.13
 COPY --from=builder /usr/local/lib/libpython3.13.so.1.0 /usr/local/lib/libpython3.13.so.1.0
 COPY --from=builder /usr/local/bin/python3.13 /usr/local/bin/python3.13
 COPY --from=builder /opt/venv /opt/venv
+# Carry alembic.ini + alembic/ from the builder into the runtime
+# layer (under /build, same path the builder used) so `python -m
+# alembic` finds them when the init-container runs. Two thin copies;
+# the contents are <50KB.
+COPY --from=builder /build/alembic.ini /build/alembic.ini
+COPY --from=builder /build/alembic/ /build/alembic/
+
+WORKDIR /build
 
 ENV PATH="/opt/venv/bin:/usr/local/bin:${PATH}" \
     LD_LIBRARY_PATH="/usr/local/lib" \
