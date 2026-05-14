@@ -1311,7 +1311,7 @@
         "type": "object"
       },
       "PhaseSnapshot": {
-        "description": "Most-recent per-phase electrical snapshot for one transaction.\n\n`argMax(value, occurred_at)` per measurand on the named phase\n(`L1`, `L2`, `L3`). Each field is `null` when the charger never\nreported that measurand on that phase \u2014 single-phase chargers\npopulate only one phase, DC chargers may populate none.",
+        "description": "Most-recent per-phase electrical snapshot for one transaction.\n\n`argMax(value, occurred_at)` per measurand on the named phase\n(`L1`, `L2`, `L3`). Each field is `null` when the charger never\nreported that measurand on that phase \u2014 single-phase chargers\npopulate only one phase, DC chargers may populate none.\n\n`power_factor` is null today (the ingestor doesn't surface it yet)\nbut is part of the contract so UI consumers can render the column\nwithout a schema change later.",
         "properties": {
           "current_a": {
             "anyOf": [
@@ -1324,7 +1324,7 @@
             ],
             "title": "Current A"
           },
-          "last_at": {
+          "occurred_at": {
             "anyOf": [
               {
                 "type": "string"
@@ -1334,7 +1334,18 @@
               }
             ],
             "description": "ISO 8601 timestamp of the most recent sample on this phase.",
-            "title": "Last At"
+            "title": "Occurred At"
+          },
+          "power_factor": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Power Factor"
           },
           "power_w": {
             "anyOf": [
@@ -1502,21 +1513,9 @@
         "type": "object"
       },
       "SocSummary": {
-        "description": "State-of-charge summary for one transaction.\n\n`start_pct` is the earliest SoC sample inside the transaction's\nwindow; `last_pct` is the most recent. For a stopped transaction,\n`last_pct` is effectively the SoC at stop. Any field is `null`\nwhen the charger never reported SoC.",
+        "description": "State-of-charge summary for one transaction.\n\n`start` is the earliest SoC sample inside the transaction's\nwindow; `last` is the most recent. `delta = last - start` when\nboth ends are populated, else `null`. For a stopped transaction,\n`last` is effectively the SoC at stop. Any field is `null` when\nthe charger never reported SoC.",
         "properties": {
-          "last_at": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "ISO 8601 timestamp of the most recent SoC sample.",
-            "title": "Last At"
-          },
-          "last_pct": {
+          "delta": {
             "anyOf": [
               {
                 "type": "number"
@@ -1525,9 +1524,10 @@
                 "type": "null"
               }
             ],
-            "title": "Last Pct"
+            "description": "`last - start` when both bounds are populated; null otherwise.",
+            "title": "Delta"
           },
-          "start_pct": {
+          "last": {
             "anyOf": [
               {
                 "type": "number"
@@ -1536,7 +1536,18 @@
                 "type": "null"
               }
             ],
-            "title": "Start Pct"
+            "title": "Last"
+          },
+          "start": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Start"
           }
         },
         "title": "SocSummary",
@@ -1732,27 +1743,27 @@
             "phases": {
               "L1": {
                 "current_a": 14.8,
-                "last_at": "2026-05-07T12:29:58+00:00",
+                "occurred_at": "2026-05-07T12:29:58+00:00",
                 "power_w": 3417.3,
                 "voltage_v": 231.4
               },
               "L2": {
                 "current_a": 14.6,
-                "last_at": "2026-05-07T12:29:58+00:00",
+                "occurred_at": "2026-05-07T12:29:58+00:00",
                 "power_w": 3370.5,
                 "voltage_v": 230.9
               },
               "L3": {
                 "current_a": 14.7,
-                "last_at": "2026-05-07T12:29:58+00:00",
+                "occurred_at": "2026-05-07T12:29:58+00:00",
                 "power_w": 3393.0,
                 "voltage_v": 231.1
               }
             },
             "soc": {
-              "last_at": "2026-05-07T12:29:58+00:00",
-              "last_pct": 81.0,
-              "start_pct": 38.0
+              "delta": 43.0,
+              "last": 81.0,
+              "start": 38.0
             }
           },
           "transaction_id": 12345

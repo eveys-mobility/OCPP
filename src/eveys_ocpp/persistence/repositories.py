@@ -1299,12 +1299,13 @@ async def list_transactions_by_cp(
         min_consumed_wh=min_consumed_wh,
         max_consumed_wh=max_consumed_wh,
     )
-    stmt = select(Transaction).where(and_(*conditions)).order_by(Transaction.id)
+    # Newest-first; see `list_transactions` for the rationale.
+    stmt = select(Transaction).where(and_(*conditions)).order_by(Transaction.id.desc())
     if offset is not None:
         stmt = stmt.offset(offset).limit(limit)
     else:
         if after_id is not None:
-            stmt = stmt.where(Transaction.id > after_id)
+            stmt = stmt.where(Transaction.id < after_id)
         stmt = stmt.limit(limit + 1)
     result = await session.execute(stmt)
     return [_transaction_to_dict(tx) for tx in result.scalars().all()]
@@ -1547,12 +1548,18 @@ async def list_transactions(
     )
     if conditions:
         stmt = stmt.where(and_(*conditions))
-    stmt = stmt.order_by(Transaction.id)
+    # Newest-first by surrogate id. The OCPP `transaction_id` we expose
+    # to operators is server-assigned monotonically per gateway, so
+    # `id DESC` ≈ `transaction_id DESC` ≈ chronologically newest first,
+    # which is the audit-list default operators expect. The cursor
+    # condition flips correspondingly: `id < after_id` walks toward
+    # older rows.
+    stmt = stmt.order_by(Transaction.id.desc())
     if offset is not None:
         stmt = stmt.offset(offset).limit(limit)
     else:
         if after_id is not None:
-            stmt = stmt.where(Transaction.id > after_id)
+            stmt = stmt.where(Transaction.id < after_id)
         stmt = stmt.limit(limit + 1)
 
     result = await session.execute(stmt)
