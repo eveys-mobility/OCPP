@@ -6129,6 +6129,38 @@
               ],
               "title": "Max Consumed Wh"
             }
+          },
+          {
+            "in": "query",
+            "name": "sort",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Sort"
+            }
+          },
+          {
+            "in": "query",
+            "name": "dir",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Dir"
+            }
           }
         ],
         "responses": {
@@ -6153,7 +6185,7 @@
                 }
               }
             },
-            "description": "Bad cursor or unparseable from/to timestamp."
+            "description": "Bad cursor, sort/dir, or unparseable from/to timestamp."
           },
           "422": {
             "content": {

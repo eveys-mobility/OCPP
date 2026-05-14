@@ -1494,6 +1494,22 @@ def _transactions_filter_conditions(
     return conditions
 
 
+def _tx_sort_expr(sort: str | None) -> Any:
+    """Resolve the sort enum to a SQLAlchemy expression.
+
+    `consumed_wh` is computed (`meter_stop_wh - meter_start_wh`), not a
+    column, so we can't `getattr(Transaction, name)` for it. The other
+    sorts map to real columns.
+    """
+    if sort == "started_at":
+        return Transaction.started_reported_at
+    if sort == "stopped_at":
+        return Transaction.stopped_reported_at
+    if sort == "consumed_wh":
+        return Transaction.meter_stop_wh - Transaction.meter_start_wh
+    return Transaction.id
+
+
 async def list_transactions(
     session: AsyncSession,
     *,
@@ -1511,6 +1527,8 @@ async def list_transactions(
     min_consumed_wh: int | None = None,
     max_consumed_wh: int | None = None,
     offset: int | None = None,
+    sort: str | None = None,
+    direction: str = "desc",
 ) -> list[dict[str, Any]]:
     """Global transactions list.
 
@@ -1548,13 +1566,29 @@ async def list_transactions(
     )
     if conditions:
         stmt = stmt.where(and_(*conditions))
-    # Newest-first by surrogate id. The OCPP `transaction_id` we expose
-    # to operators is server-assigned monotonically per gateway, so
-    # `id DESC` ≈ `transaction_id DESC` ≈ chronologically newest first,
-    # which is the audit-list default operators expect. The cursor
-    # condition flips correspondingly: `id < after_id` walks toward
-    # older rows.
-    stmt = stmt.order_by(Transaction.id.desc())
+    # Default: newest-first by surrogate id. The OCPP `transaction_id`
+    # we expose to operators is server-assigned monotonically per
+    # gateway, so `id DESC` ≈ chronologically newest first — the
+    # audit-list default operators expect.
+    #
+    # When `sort` is supplied the route layer guarantees it's already
+    # the closed-enum-validated string ('started_at', 'consumed_wh',
+    # …); we translate to the underlying column and tie-break on
+    # `id` so the order is stable across calls. The cursor-mode
+    # condition (`id < after_id`) is only meaningful when sorting on
+    # `id` itself; the route rejects cursor+non-id-sort with 400.
+    sort_expr = _tx_sort_expr(sort)
+    is_id_sort = sort in (None, "id")
+    dir_lower = direction.lower()
+    primary = sort_expr.desc() if dir_lower == "desc" else sort_expr.asc()
+    if is_id_sort:
+        stmt = stmt.order_by(primary)
+    else:
+        # `id` tiebreaker keeps rows with identical sort values in a
+        # stable order (matters most for `consumed_wh`, where many
+        # sessions share the value `0` or `null`).
+        tiebreak = Transaction.id.desc() if dir_lower == "desc" else Transaction.id.asc()
+        stmt = stmt.order_by(primary, tiebreak)
     if offset is not None:
         stmt = stmt.offset(offset).limit(limit)
     else:
