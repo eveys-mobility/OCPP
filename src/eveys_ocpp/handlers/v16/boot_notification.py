@@ -42,11 +42,12 @@ Deviations from the OCA spec to verify before W2 / OCTT (see
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-from ocpp.v16 import call_result
+from ocpp.v16 import call, call_result
 from ocpp.v16.enums import RegistrationStatus
 
 from eveys_ocpp._generated.events.v1 import events_pb2
@@ -61,6 +62,13 @@ if TYPE_CHECKING:
     from eveys_ocpp.connection import EveysChargePoint
 
 log = get_logger(__name__)
+
+# Charger needs a moment to settle after BootNotification before we
+# start pushing ChangeConfiguration calls — some firmwares ignore or
+# error on commands during the boot handshake. 2s is the empirical
+# settle window from the mobilityhouse/ocpp sim and a few production
+# Schneider/ABB units. See eveys-mobility/OCPP#238.
+_METER_VALUE_PUSH_DELAY_SECONDS = 2.0
 
 
 # OCPP wire string → mobilityhouse/ocpp enum. Forward-compat: an
@@ -257,4 +265,66 @@ async def _handle_inner(
         except Exception as exc:
             log.warning("boot_notification.publish_failed", error=str(exc))
 
+    # Push the configured MeterValueSampleInterval on every Accepted
+    # boot (eveys-mobility/OCPP#238). Fire-and-forget — we don't want
+    # the boot reply to wait on a charger that's slow to ack the
+    # ChangeConfiguration. The task itself sleeps a couple of seconds
+    # first to let the charger settle post-boot before issuing the
+    # command (some firmwares reject ChangeConfiguration during the
+    # boot handshake window).
+    if status == RegistrationStatus.accepted:
+        _schedule_meter_value_sample_interval_push(cp)
+
     return _response(received_at, status, interval)
+
+
+def _schedule_meter_value_sample_interval_push(cp: EveysChargePoint) -> None:
+    """Spawn the deferred ChangeConfiguration task.
+
+    Pinned on `cp` so the asyncio loop doesn't garbage-collect it
+    before it runs (the "lost task" footgun from PEP 3156-style
+    fire-and-forget code).
+    """
+    task = asyncio.create_task(
+        _push_meter_value_sample_interval(cp),
+        name=f"boot_notification.push_meter_value_sample_interval.{cp.id}",
+    )
+    # Hold a reference via the cp object. The library doesn't expose
+    # a hook for this so we tack a private attribute on; reassigning
+    # on subsequent boots is fine — the prior task either ran to
+    # completion (no leak) or is still pending (it'll keep running
+    # because asyncio holds its own ref via the loop).
+    cp._meter_value_push_task = task
+
+
+async def _push_meter_value_sample_interval(cp: EveysChargePoint) -> None:
+    """Wait briefly, then send ChangeConfiguration(MeterValueSampleInterval=…).
+
+    Failure modes (all logged at WARN, none re-raised):
+    - Charger has disconnected by the time we wake up → CALL fails.
+    - Charger rejects the key (read-only, unknown on older firmwares)
+      → response.status is `Rejected` / `NotSupported`; we log and
+      move on. Operators can override per-charger via the existing
+      `POST /api/v1/charge-points/{cp_id}/commands/change-configuration`.
+    """
+    try:
+        await asyncio.sleep(_METER_VALUE_PUSH_DELAY_SECONDS)
+        value = str(cp.settings.meter_value_sample_interval_seconds)
+        request = call.ChangeConfiguration(key="MeterValueSampleInterval", value=value)
+        response = await cp.call(request)
+        accepted_status = getattr(response, "status", None)
+        log.info(
+            "boot_notification.meter_value_sample_interval.pushed",
+            cp_id=cp.id,
+            value=value,
+            response_status=str(accepted_status) if accepted_status is not None else None,
+        )
+    except Exception as exc:
+        # Best-effort — a charger that disconnected or refuses the
+        # key must not crash a background asyncio task or, worse,
+        # propagate to the WS read loop. Log + drop.
+        log.warning(
+            "boot_notification.meter_value_sample_interval.failed",
+            cp_id=cp.id,
+            error=str(exc),
+        )
