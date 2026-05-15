@@ -98,6 +98,7 @@ Reversible at moderate cost. Switching to Kafka Engine, Kafka Connect, or a diff
 - Repeated proto fields become `Nested` columns. Same.
 - DDL files are append-only; never edit a merged file. To change a table, write a new migration.
 - `eveys/ocpp` does not query ClickHouse (per ADR-0004 line 35). The ingestor writes; downstream consumers read.
+- Pending migrations are applied automatically on `docker compose up` by the `migrate-clickhouse` init-container (one-shot, exits `0`); the gateway and the ingestor wait on `service_completed_successfully` before starting. `make ch-migrate` still works for explicit local re-runs. See [#234](https://github.com/eveys-mobility/OCPP/issues/234) for the rationale.
 
 ## References
 
