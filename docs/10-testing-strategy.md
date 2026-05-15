@@ -95,12 +95,17 @@ Steps run by the target:
 
 1. `docker compose -f deploy/compose/docker-compose.yml down --volumes`
    (clean slate)
-2. `docker compose ... up -d --build` (builds the image, starts the stack)
+2. `docker compose ... up -d --build` (builds the image, starts the stack —
+   includes the `migrate-postgres` and `migrate-clickhouse` init-containers
+   which apply schemas before `ocpp` and `clickhouse-ingestor` are allowed
+   to start; see [#234](https://github.com/eveys-mobility/OCPP/issues/234))
 3. `make compose-wait` (block on healthchecks)
-4. `alembic upgrade head` (Postgres schema)
-5. `make ch-migrate` (ClickHouse schema)
-6. `pytest tests/compose_smoke -v --no-cov`
-7. `docker compose ... down --volumes` (tear down on success or fail)
+4. `pytest tests/compose_smoke -v --no-cov`
+5. `docker compose ... down --volumes` (tear down on success or fail)
+
+`alembic upgrade head` / `make ch-migrate` are no longer required steps —
+compose runs both at boot. They still work for explicit re-runs (debugging
+schema drift, applying a new migration to an already-running stack).
 
 **CI:** `compose-smoke` workflow. Uses the runner's preinstalled Docker
 daemon directly — no DinD wrapping needed on GitHub Actions. Triggered

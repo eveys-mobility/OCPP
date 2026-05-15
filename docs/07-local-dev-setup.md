@@ -102,6 +102,26 @@ make compose-status  # or: docker compose ps
 
 All five services should be `healthy`. If any is `unhealthy`, see [Troubleshooting](#troubleshooting) below.
 
+#### About the two `Exited (0)` containers
+
+After `compose-up` you'll see two extra entries in `docker ps -a`:
+
+```
+eveys-ocpp-migrate-postgres      Exited (0)
+eveys-ocpp-migrate-clickhouse    Exited (0)
+```
+
+These are **migration init-containers**, not crashes. Each runs once at stack boot:
+
+- `migrate-postgres` runs `alembic upgrade head` against Postgres.
+- `migrate-clickhouse` runs `python -m eveys_ocpp.clickhouse.migrate ...` against ClickHouse.
+
+`ocpp` and `clickhouse-ingestor` `depends_on: { condition: service_completed_successfully }` for the matching migrator, so the gateway and ingestor only start once schemas are at HEAD. `Exited (0)` is the desired terminal state — same as `make ch-migrate` finishing and the shell returning to a prompt.
+
+If a migration fails, the exit code is non-zero, compose retries up to `restart: on-failure:N`, and the dependents stay blocked. `docker compose logs migrate-postgres migrate-clickhouse` shows the failure.
+
+`make ch-migrate` and `alembic upgrade head` still work for explicit local override or CI; they're idempotent against the init-container path.
+
 ### Verify it works
 
 Two scripted smoke tests exercise the stack at different trust levels (see [`10-testing-strategy.md`](./10-testing-strategy.md) and ADR-0024):

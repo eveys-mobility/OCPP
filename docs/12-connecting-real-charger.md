@@ -78,19 +78,18 @@ make compose-wait    # block until every container reports healthy
 
 `make compose-wait` exits zero when all five services are healthy (default 120 s). If it times out, run `make compose-status` to see which one is unhealthy and `docker logs <container>` for diagnostics.
 
-### 4.2 Apply schemas
+### 4.2 Verify schemas
 
-The gateway image ships with the SQLAlchemy models, but Postgres needs the schema applied once and ClickHouse needs the DDL migrations:
+`compose-up` runs two init-containers (`migrate-postgres`, `migrate-clickhouse`) before `ocpp` and `clickhouse-ingestor` are allowed to start — both apply pending migrations and exit `0`. If you see `eveys-ocpp` up and healthy, schemas are at HEAD.
+
+If you ever need to re-run explicitly (e.g. debugging schema drift):
 
 ```bash
-# Postgres — Alembic migration (idempotent)
-.venv/bin/alembic upgrade head
-
-# ClickHouse — apply DDL migrations 0001..0005
-make ch-migrate
+.venv/bin/alembic upgrade head   # Postgres
+make ch-migrate                  # ClickHouse
 ```
 
-You can verify the schemas are in place:
+Both are idempotent. Verify the result:
 
 ```bash
 psql postgres://eveys:eveys@localhost:5432/eveys_ocpp -c "\dt"
