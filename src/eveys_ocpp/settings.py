@@ -824,7 +824,7 @@ class Settings(BaseSettings):
 
     # ---- OCPP defaults --------------------------------------------------
     heartbeat_interval_seconds: int = Field(
-        default=300,
+        default=60,
         ge=30,
         le=86400,
         description=("Sent back in `BootNotification.interval`; the charger pings us this often."),
@@ -834,7 +834,10 @@ class Settings(BaseSettings):
                 "Lower → quicker offline detection at the cost of fleet-"
                 "wide heartbeat traffic. Coordinate with "
                 "`REDIS_ONLINE_TTL_SECONDS` (rule of thumb: TTL ~= 2x "
-                "heartbeat). 300 s is the OCPP-recommended default."
+                "heartbeat). 60 s pairs with the default 120 s online "
+                "TTL — 2 missed heartbeats triggers offline detection. "
+                "The OCPP-1.6 spec doesn't mandate a value; 300 s was "
+                "the previous gateway default."
             ),
             "secret": False,
             "stability": "tunable",

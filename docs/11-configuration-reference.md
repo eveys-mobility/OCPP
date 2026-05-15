@@ -137,7 +137,7 @@ sensitivity.
 
 | Variable | Default | Range | Stability | Secret | What it does | Impact of changing |
 |---|---|---|---|---|---|---|
-| `EVEYS_OCPP_HEARTBEAT_INTERVAL_SECONDS` | `300` | 30–86400 | tunable | no | Sent back in `BootNotification.interval`; the charger pings us this often. | Lower → quicker offline detection at the cost of fleet-wide heartbeat traffic. Coordinate with `REDIS_ONLINE_TTL_SECONDS` (rule of thumb: TTL ~= 2x heartbeat). 300 s is the OCPP-recommended default. |
+| `EVEYS_OCPP_HEARTBEAT_INTERVAL_SECONDS` | `60` | 30–86400 | tunable | no | Sent back in `BootNotification.interval`; the charger pings us this often. | Lower → quicker offline detection at the cost of fleet-wide heartbeat traffic. Coordinate with `REDIS_ONLINE_TTL_SECONDS` (rule of thumb: TTL ~= 2x heartbeat). 60 s pairs with the default 120 s online TTL — 2 missed heartbeats triggers offline detection. The OCPP-1.6 spec doesn't mandate a value; 300 s was the previous gateway default. |
 
 ## Cross-pod command bus (ADR-0016)
 
