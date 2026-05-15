@@ -11,7 +11,7 @@ def test_defaults_are_dev_safe() -> None:
     s = Settings()
     assert s.ws_host == "0.0.0.0"
     assert s.ws_port == 9000
-    assert s.heartbeat_interval_seconds == 300
+    assert s.heartbeat_interval_seconds == 60
     assert s.log_level == "INFO"
     assert s.log_json is True
 
