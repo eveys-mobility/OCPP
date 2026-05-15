@@ -138,6 +138,7 @@ sensitivity.
 | Variable | Default | Range | Stability | Secret | What it does | Impact of changing |
 |---|---|---|---|---|---|---|
 | `EVEYS_OCPP_HEARTBEAT_INTERVAL_SECONDS` | `60` | 30–86400 | tunable | no | Sent back in `BootNotification.interval`; the charger pings us this often. | Lower → quicker offline detection at the cost of fleet-wide heartbeat traffic. Coordinate with `REDIS_ONLINE_TTL_SECONDS` (rule of thumb: TTL ~= 2x heartbeat). 60 s pairs with the default 120 s online TTL — 2 missed heartbeats triggers offline detection. The OCPP-1.6 spec doesn't mandate a value; 300 s was the previous gateway default. |
+| `EVEYS_OCPP_METER_VALUE_SAMPLE_INTERVAL_SECONDS` | `15` | 5–3600 | tunable | no | Value pushed to every charger after `BootNotification.Accepted` via `ChangeConfiguration(MeterValueSampleInterval=…)`. Sets how often the charger sends `MeterValues` during a transaction. | Lower → finer-grained power/energy charts on the operator console, more `MeterValues` frames per session (and more Kafka/ClickHouse traffic). 15 s is fine for AC sessions on the order of hours; consider 5-10 s for short fast-charge sessions if you want sub-minute resolution. Pushed best-effort: a charger that rejects the configuration key is logged but does not fail boot. See https://github.com/eveys-mobility/OCPP/issues/238. |
 
 ## Cross-pod command bus (ADR-0016)
 

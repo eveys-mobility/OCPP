@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from ocpp.v16 import call_result
@@ -461,3 +461,91 @@ async def test_replay_does_not_call_backend(fake_cp: Any, monkeypatch: pytest.Mo
     assert result.status == "Accepted"
     fake_cp.backend_client.register_charge_point.assert_not_awaited()
     upsert.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# MeterValueSampleInterval push (eveys-mobility/OCPP#238)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_meter_value_sample_interval_pushed_after_accepted_boot(
+    fake_cp: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """After BootNotification.Accepted, the handler schedules a
+    deferred ChangeConfiguration push. Sleep is patched to 0 so the
+    task runs synchronously inside the test."""
+    from eveys_ocpp.handlers.v16 import boot_notification
+
+    upsert = AsyncMock(return_value=None)
+    monkeypatch.setattr(boot_notification, "upsert_charge_point_boot", upsert)
+    # Patch the inter-step sleep so the deferred task fires immediately.
+    monkeypatch.setattr(boot_notification, "_METER_VALUE_PUSH_DELAY_SECONDS", 0)
+    fake_cp.call = AsyncMock(return_value=MagicMock(status="Accepted"))
+    # Default is 15 — fake_cp.settings ships with it. If a test needs
+    # a different value, swap the whole `cp.settings` for a new
+    # `Settings(meter_value_sample_interval_seconds=…)` instance
+    # (Settings is frozen).
+
+    await boot_notification.handle(fake_cp, charge_point_vendor="ACME")
+    # Let the deferred task run. Read from __dict__ so a MagicMock
+    # auto-attr can't paper over a missing assignment.
+    task = fake_cp.__dict__.get("_meter_value_push_task")
+    assert task is not None, "the deferred task should be attached to cp"
+    await task
+
+    fake_cp.call.assert_awaited_once()
+    request = fake_cp.call.await_args.args[0]
+    assert type(request).__name__ == "ChangeConfiguration"
+    assert request.key == "MeterValueSampleInterval"
+    assert request.value == "15"
+
+
+@pytest.mark.asyncio
+async def test_meter_value_sample_interval_not_pushed_on_rejected_boot(
+    fake_cp: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No push if the boot was Rejected — a charger we just turned
+    away shouldn't receive any commands."""
+    from eveys_ocpp.handlers.v16 import boot_notification
+
+    monkeypatch.setattr(boot_notification, "upsert_charge_point_boot", AsyncMock(return_value=None))
+    monkeypatch.setattr(boot_notification, "_METER_VALUE_PUSH_DELAY_SECONDS", 0)
+    # Backend rejects → handler maps to RegistrationStatus.rejected.
+    fake_cp.backend_client = MagicMock()
+    fake_cp.backend_client.register_charge_point = AsyncMock(
+        side_effect=boot_notification.BackendBusinessError(
+            error_code="cp_disabled", message="charger is disabled"
+        )
+    )
+    fake_cp.call = AsyncMock()
+
+    result = await boot_notification.handle(fake_cp, charge_point_vendor="ACME")
+
+    assert result.status == "Rejected"
+    # MagicMock auto-creates attributes on access — check the real
+    # __dict__ instead. The handler attaches the task to `cp` only
+    # on Accepted; a Rejected boot must NOT have touched it.
+    assert "_meter_value_push_task" not in fake_cp.__dict__
+    fake_cp.call.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_meter_value_sample_interval_push_failure_does_not_propagate(
+    fake_cp: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A charger that disconnects (or refuses the key) must not crash
+    the background task or leak the exception."""
+    from eveys_ocpp.handlers.v16 import boot_notification
+
+    monkeypatch.setattr(boot_notification, "upsert_charge_point_boot", AsyncMock(return_value=None))
+    monkeypatch.setattr(boot_notification, "_METER_VALUE_PUSH_DELAY_SECONDS", 0)
+    fake_cp.call = AsyncMock(side_effect=RuntimeError("WS closed"))
+
+    await boot_notification.handle(fake_cp, charge_point_vendor="ACME")
+    task = fake_cp.__dict__.get("_meter_value_push_task")
+    assert task is not None
+    # The task should finish without raising — log + drop is the contract.
+    await task
+    assert task.done()
+    assert task.exception() is None

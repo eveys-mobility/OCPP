@@ -843,6 +843,31 @@ class Settings(BaseSettings):
             "stability": "tunable",
         },
     )
+    meter_value_sample_interval_seconds: int = Field(
+        default=15,
+        ge=5,
+        le=3600,
+        description=(
+            "Value pushed to every charger after `BootNotification.Accepted` via "
+            "`ChangeConfiguration(MeterValueSampleInterval=…)`. Sets how often the "
+            "charger sends `MeterValues` during a transaction."
+        ),
+        json_schema_extra={
+            "category": "ocpp_defaults",
+            "impact": (
+                "Lower → finer-grained power/energy charts on the operator "
+                "console, more `MeterValues` frames per session (and more "
+                "Kafka/ClickHouse traffic). 15 s is fine for AC sessions on "
+                "the order of hours; consider 5-10 s for short fast-charge "
+                "sessions if you want sub-minute resolution. Pushed best-"
+                "effort: a charger that rejects the configuration key is "
+                "logged but does not fail boot. See "
+                "https://github.com/eveys-mobility/OCPP/issues/238."
+            ),
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
 
     # ---- Cross-pod command bus (ADR-0016) -------------------------------
     bus_request_timeout_seconds: int = Field(
