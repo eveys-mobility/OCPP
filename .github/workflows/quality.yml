@@ -14,7 +14,7 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-python-venv
       - name: ruff check
         run: .venv/bin/ruff check src tests scripts
@@ -22,7 +22,7 @@ jobs:
   types:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-python-venv
       - name: mypy --strict
         run: .venv/bin/mypy
@@ -34,7 +34,7 @@ jobs:
   config-reference-fresh:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-python-venv
       - name: render --check
         run: .venv/bin/python scripts/render_config_reference.py --check
@@ -50,7 +50,7 @@ jobs:
     env:
       BUF_VERSION: "1.45.0"
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           # `buf breaking --against` needs the base branch as a git ref. Fetch
           # depth 50 is enough for typical PRs without pulling full history.
@@ -86,7 +86,7 @@ jobs:
   envoy-validate:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       # Generate ephemeral self-signed certs so Envoy's validate-mode
       # can load the TLS listener config. The certs aren't trusted by
       # anything; they exist only to satisfy the file-path validation.
@@ -139,7 +139,7 @@ jobs:
   helm-lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Install Helm
         uses: azure/setup-helm@v5
         with:

@@ -35,7 +35,7 @@ jobs:
       # green-but-skipped pipelines let coverage rot.
       E2E_REQUIRE: "1"
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-python-venv
       - name: Run unit tests with coverage
         run: |
@@ -58,7 +58,7 @@ jobs:
   mock-backend-smoke:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-python-venv
       - name: Run mock-backend standalone smoke
         # --no-cov disables the project's 80% coverage gate (which targets
