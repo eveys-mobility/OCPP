@@ -84,6 +84,12 @@ jobs:
       E2E_REDIS_HOST: localhost
       E2E_KAFKA_HOST: localhost
       E2E_CH_HOST: localhost
+      # GitHub Actions service containers publish on canonical ports.
+      # Local compose remaps these (55432 / 16379 / 9001) to dodge host
+      # collisions with locally-installed services; tests default to the
+      # compose ports, so CI overrides back to canonical.
+      E2E_PG_PORT: "5432"
+      E2E_REDIS_PORT: "6379"
       E2E_CH_HTTP_PORT: "8123"
       E2E_CH_NATIVE_PORT: "9000"
       EVEYS_OCPP_CLICKHOUSE_HOST: localhost

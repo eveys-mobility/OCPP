@@ -179,8 +179,8 @@ fi
 # We probe TCP listen state (not just open sockets) so a `curl` that
 # just connected and closed doesn't trigger a false positive.
 declare -a expected_ports=(
-    "5432:postgres"
-    "6379:redis"
+    "55432:postgres"
+    "16379:redis"
     "9092:kafka"
     "8124:clickhouse-http"
     "9001:clickhouse-native"
@@ -212,13 +212,12 @@ if [ "$collisions" -eq 0 ]; then
     ok  "ports" "no collisions on the 9 ports compose publishes"
 fi
 
-# Free disk space at the repo root.
+# Free disk space at the repo root. Local laptop dev needs ~10 GB for
+# Docker images + volumes; k3d/k8s testing wants more headroom.
 disk_avail_kb=$(df -k . 2>/dev/null | awk 'NR==2 {print $4}' || echo 0)
 disk_avail_gb=$(( disk_avail_kb / 1024 / 1024 ))
-if [ "$disk_avail_gb" -ge 20 ]; then
-    ok "Disk space"   "${disk_avail_gb} GB free (≥ 20 GB)"
-elif [ "$disk_avail_gb" -ge 10 ]; then
-    warn "Disk space"  "${disk_avail_gb} GB free (≥ 20 GB recommended for k3d images + Docker volumes)"
+if [ "$disk_avail_gb" -ge 10 ]; then
+    ok "Disk space"   "${disk_avail_gb} GB free (≥ 10 GB)"
 else
     miss "Disk space"  "${disk_avail_gb} GB free (need ≥ 10 GB to run the local stack)"
 fi

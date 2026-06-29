@@ -55,7 +55,11 @@ from eveys_ocpp.settings import Settings
 from eveys_ocpp.transport.grpc_server import OcppGatewayService
 
 _REDIS_HOST = os.environ.get("E2E_REDIS_HOST", "localhost")
-_REDIS_PORT = int(os.environ.get("E2E_REDIS_PORT", "6379"))
+# Compose remaps Redis from 6379 → 16379 on the host (see
+# `deploy/compose/docker-compose.yml`); same shape as `_PG_PORT`. CI on
+# GitHub Actions uses service containers on the canonical port and
+# overrides this via `E2E_REDIS_PORT=6379`.
+_REDIS_PORT = int(os.environ.get("E2E_REDIS_PORT", "16379"))
 # CI sets this; when set, a missing Redis is a hard failure rather than
 # a silent skip. This file is the literal "two-pod test passes" acceptance
 # criterion for E2-10 — a green-but-skipped run would defeat its purpose.
@@ -565,9 +569,13 @@ async def test_charger_disconnects_mid_request_returns_not_found(
 
 
 _PG_HOST = os.environ.get("E2E_PG_HOST", "localhost")
+# Compose remaps Postgres from 5432 → 55432 on the host to dodge a host
+# Postgres install. CI binds PG directly on 5432, so it overrides via
+# E2E_PG_PORT=5432.
+_PG_PORT = int(os.environ.get("E2E_PG_PORT", "55432"))
 _PG_DB_URL = os.environ.get(
     "EVEYS_OCPP_DB_URL",
-    f"postgresql+asyncpg://eveys:eveys@{_PG_HOST}:5432/eveys_ocpp",
+    f"postgresql+asyncpg://eveys:eveys@{_PG_HOST}:{_PG_PORT}/eveys_ocpp",
 )
 
 
@@ -576,7 +584,7 @@ def _postgres_reachable() -> bool:
     with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as s:
         s.settimeout(0.5)
         try:
-            s.connect((_PG_HOST, 5432))
+            s.connect((_PG_HOST, _PG_PORT))
         except OSError:
             return False
         return True
