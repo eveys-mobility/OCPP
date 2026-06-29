@@ -39,6 +39,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from eveys_ocpp import __version__
 from eveys_ocpp.api import (
     admin,
+    authorizations,
     charge_points,
     charging_profiles,
     commands,
@@ -70,6 +71,7 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
     from eveys_ocpp.clickhouse.read_client import ClickHouseReadClient
+    from eveys_ocpp.connections import ConnectionMap
     from eveys_ocpp.registry import Registry
     from eveys_ocpp.settings import Settings
     from eveys_ocpp.shutdown import DrainController
@@ -85,6 +87,7 @@ def make_app(
     command_service: OcppGatewayService | None = None,
     ch_client: ClickHouseReadClient | None = None,
     drain_controller: DrainController | None = None,
+    connections: ConnectionMap | None = None,
 ) -> FastAPI:
     """Construct the gateway REST app.
 
@@ -166,6 +169,10 @@ def make_app(
     # unit tests that build the app without a shutdown lifecycle —
     # the endpoint treats absence as "never draining".
     app.state.drain_controller = drain_controller
+    # Per-pod live-WS map. The revoke endpoint reaches into it to
+    # force-close an offending charger; None in unit tests that
+    # exercise only read endpoints.
+    app.state.connections = connections
 
     # Order matters: request-id MUST run before auth so the auth-reject
     # response carries the correlation id. Middlewares run in reverse
@@ -194,6 +201,7 @@ def make_app(
     app.include_router(charging_profiles.router, prefix="/api/v1")
     app.include_router(commands.router, prefix="/api/v1")
     app.include_router(credentials.router, prefix="/api/v1")
+    app.include_router(authorizations.router, prefix="/api/v1")
     app.include_router(pending_certificate_signings.router, prefix="/api/v1")
     app.include_router(timeseries.router, prefix="/api/v1")
     app.include_router(admin.router, prefix="/api/v1")

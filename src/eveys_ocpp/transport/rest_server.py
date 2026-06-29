@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
     from eveys_ocpp.clickhouse.read_client import ClickHouseReadClient
+    from eveys_ocpp.connections import ConnectionMap
     from eveys_ocpp.registry import Registry
     from eveys_ocpp.settings import Settings
     from eveys_ocpp.shutdown import DrainController
@@ -44,6 +45,7 @@ async def serve_forever(
     command_service: OcppGatewayService | None = None,
     ch_client: ClickHouseReadClient | None = None,
     drain_controller: DrainController | None = None,
+    connections: ConnectionMap | None = None,
 ) -> None:
     """Build the FastAPI app, run uvicorn, return when the loop exits.
 
@@ -61,6 +63,7 @@ async def serve_forever(
         command_service=command_service,
         ch_client=ch_client,
         drain_controller=drain_controller,
+        connections=connections,
     )
 
     # SSE bus (ADR-0030). Off by default; when on, one Kafka consumer

@@ -610,6 +610,88 @@ async def test_aggregate_transactions_emits_group_when_split_by_cp_id() -> None:
     assert out[0]["duration_seconds_total"] == 60
 
 
+# ---- Device authorizations (#0013) ---------------------------------------
+
+
+def _build_auth_row(*, status: str, requested_at: datetime) -> MagicMock:
+    """Stub `ChargePointAuthorization` ORM row with just the fields the
+    repository projector reads."""
+    row = MagicMock()
+    row.status = status
+    row.requested_at = requested_at
+    row.decided_at = None
+    row.decided_by = None
+    row.last_attempt_ip = "1.2.3.4"
+    row.last_attempt_user_agent = "ua/1"
+    row.last_attempt_at = requested_at
+    row.updated_at = requested_at
+    return row
+
+
+@pytest.mark.asyncio
+async def test_get_authorization_returns_none_when_unknown() -> None:
+    result_obj = MagicMock()
+    result_obj.first.return_value = None
+    session = AsyncMock()
+    session.execute = AsyncMock(return_value=result_obj)
+
+    assert await repositories.get_authorization(session, cp_id="GHOST") is None
+
+
+@pytest.mark.asyncio
+async def test_get_authorization_projects_row() -> None:
+    now = datetime.now(UTC)
+    auth_row = _build_auth_row(status="approved", requested_at=now)
+    result_obj = MagicMock()
+    result_obj.first.return_value = (auth_row, "CP_001")
+    session = AsyncMock()
+    session.execute = AsyncMock(return_value=result_obj)
+
+    out = await repositories.get_authorization(session, cp_id="CP_001")
+    assert out is not None
+    assert out["cp_id"] == "CP_001"
+    assert out["status"] == "approved"
+
+
+@pytest.mark.asyncio
+async def test_decide_authorization_rejects_pending_status() -> None:
+    """`pending` is not a decision; passing it must raise so a buggy
+    caller can't reset a decided row."""
+    session = AsyncMock()
+    with pytest.raises(ValueError, match="invalid decision status"):
+        await repositories.decide_authorization(
+            session,
+            cp_id="CP_001",
+            new_status="pending",
+            decided_by="ops",
+            now=datetime.now(UTC),
+        )
+
+
+@pytest.mark.asyncio
+async def test_decide_authorization_returns_none_when_charger_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(repositories, "get_charge_point_pk", AsyncMock(return_value=None))
+    session = AsyncMock()
+    out = await repositories.decide_authorization(
+        session,
+        cp_id="GHOST",
+        new_status="approved",
+        decided_by="ops",
+        now=datetime.now(UTC),
+    )
+    assert out is None
+
+
+@pytest.mark.asyncio
+async def test_list_authorizations_short_circuits_unknown_status() -> None:
+    session = AsyncMock()
+    out = await repositories.list_authorizations(session, status="nonsense")
+    assert out == []
+    session.execute.assert_not_called()
+
+
 @pytest.mark.asyncio
 async def test_aggregate_transactions_omits_group_when_group_by_none() -> None:
     rows_mapping = [

@@ -29,7 +29,8 @@ from eveys_ocpp.metrics import registry as m
 # 57: +1 LOG_STATUS_TOTAL for LogStatusNotification (TC_079)
 # 58: +1 STOP_TRANSACTIONS_RECEIVED_TOTAL for SLO 4 denominator (#163)
 # 59: +1 OCPP_FRAMES_PUBLISH_FAILURES_TOTAL for cp.ocpp_frames best-effort drops (#212)
-EXPECTED_METRIC_COUNT = 60
+# 60: +1 WS_AUTHORIZATION_TOTAL for device-authorization decisions (#0013)
+EXPECTED_METRIC_COUNT = 61
 
 
 def _gateway_metric_attrs() -> list[tuple[str, object]]:

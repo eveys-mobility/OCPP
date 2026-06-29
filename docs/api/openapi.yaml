@@ -1726,6 +1726,137 @@ paths:
         helper)
       tags:
       - admin
+  /api/v1/authorizations:
+    get:
+      operationId: list_authorizations_route_api_v1_authorizations_get
+      parameters:
+      - description: Filter by status. One of `pending`, `approved`, `rejected`, `revoked`.
+          Omit to list all (capped at the server's page size).
+        in: query
+        name: status
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Filter by status. One of `pending`, `approved`, `rejected`,
+            `revoked`. Omit to list all (capped at the server's page size).
+          title: Status
+      - in: query
+        name: limit
+        required: false
+        schema:
+          default: 200
+          maximum: 500
+          minimum: 1
+          title: Limit
+          type: integer
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response List Authorizations Route Api V1 Authorizations Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: List device authorizations
+      tags:
+      - authorizations
+  /api/v1/authorizations/{cp_id}/approve:
+    post:
+      operationId: approve_route_api_v1_authorizations__cp_id__approve_post
+      parameters:
+      - in: path
+        name: cp_id
+        required: true
+        schema:
+          title: Cp Id
+          type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Approve Route Api V1 Authorizations  Cp Id  Approve
+                  Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Approve a charger so it can connect
+      tags:
+      - authorizations
+  /api/v1/authorizations/{cp_id}/reject:
+    post:
+      operationId: reject_route_api_v1_authorizations__cp_id__reject_post
+      parameters:
+      - in: path
+        name: cp_id
+        required: true
+        schema:
+          title: Cp Id
+          type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Reject Route Api V1 Authorizations  Cp Id  Reject
+                  Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Reject a charger; future upgrades return 401
+      tags:
+      - authorizations
+  /api/v1/authorizations/{cp_id}/revoke:
+    post:
+      operationId: revoke_route_api_v1_authorizations__cp_id__revoke_post
+      parameters:
+      - in: path
+        name: cp_id
+        required: true
+        schema:
+          title: Cp Id
+          type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Revoke Route Api V1 Authorizations  Cp Id  Revoke
+                  Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Revoke an approved charger; force-disconnects any live WS and rejects
+        future upgrades
+      tags:
+      - authorizations
   /api/v1/charge-points:
     get:
       operationId: list_charge_points_route_api_v1_charge_points_get

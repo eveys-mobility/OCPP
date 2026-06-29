@@ -266,6 +266,16 @@ WS_BASIC_AUTH_TOTAL: Counter = Counter(
     "(missing migrations, Postgres outage) — page on it.",
     labelnames=("outcome",),
 )
+WS_AUTHORIZATION_TOTAL: Counter = Counter(
+    "eveys_ocpp_ws_authorization_total",
+    "WS-edge device-authorization decisions (#0013). `outcome` is a "
+    "closed enum: approved, pending_new, pending_within_window, "
+    "pending_expired, rejected, revoked, db_error. A non-zero "
+    "`pending_expired` rate means an operator missed the approval "
+    "window — the charger is being kicked off; raise the cadence on "
+    "the Pending Approvals view.",
+    labelnames=("outcome",),
+)
 
 DATA_TRANSFERS_TOTAL: Counter = Counter(
     "eveys_ocpp_data_transfers_total",
@@ -583,6 +593,7 @@ __all__ = [
     "WEBHOOK_CONSUMER_LAG_MESSAGES",
     "WEBHOOK_DELIVERIES_TOTAL",
     "WEBHOOK_DELIVERY_LATENCY_SECONDS",
+    "WS_AUTHORIZATION_TOTAL",
     "WS_BASIC_AUTH_TOTAL",
     "WS_CONNECTIONS_ACTIVE",
     "WS_CONNECTS_TOTAL",

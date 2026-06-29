@@ -103,6 +103,59 @@ class ChargePoint(Base):
         uselist=False,
     )
 
+    authorization: Mapped[ChargePointAuthorization | None] = relationship(
+        back_populates="charge_point",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
+
+
+class ChargePointAuthorization(Base):
+    """Operator-driven allowlist for a charger (#0013).
+
+    See alembic migration 0013 for the lifecycle rationale. The model
+    here is intentionally read-mostly: writes go through repository
+    functions so the status transitions stay in one place.
+    """
+
+    __tablename__ = "charge_point_authorizations"
+
+    charge_point_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("charge_points.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    requested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    decided_by: Mapped[str | None] = mapped_column(String(128))
+    last_attempt_ip: Mapped[str | None] = mapped_column(String(64))
+    last_attempt_user_agent: Mapped[str | None] = mapped_column(String(255))
+    last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    charge_point: Mapped[ChargePoint] = relationship(back_populates="authorization")
+
+
+# Closed enum of authorization states. Kept as module-level constants
+# (not a Python Enum) so the values match the DB column directly and
+# can be referenced from settings docs / API schemas without an
+# .value indirection.
+AUTH_STATUS_PENDING = "pending"
+AUTH_STATUS_APPROVED = "approved"
+AUTH_STATUS_REJECTED = "rejected"
+AUTH_STATUS_REVOKED = "revoked"
+AUTH_STATUSES: frozenset[str] = frozenset(
+    {AUTH_STATUS_PENDING, AUTH_STATUS_APPROVED, AUTH_STATUS_REJECTED, AUTH_STATUS_REVOKED}
+)
+
 
 class ChargePointCredential(Base):
     """Per-charger Basic Auth password store (E5-6).

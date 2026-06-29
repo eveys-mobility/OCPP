@@ -2158,6 +2158,34 @@ class Settings(BaseSettings):
             "stability": "structural",
         },
     )
+    auth_pending_grace_seconds: int = Field(
+        default=180,
+        description=(
+            "Window (in seconds) granted to a charger whose "
+            "authorization is `pending` — first-seen devices and "
+            "devices an operator has not yet decided on. The WS upgrade "
+            "is accepted so an operator can see vendor / model / serial "
+            "from the BootNotification while deciding, but a force-"
+            "disconnect timer starts at upgrade time. If the operator "
+            "has not posted `/authorizations/{cp_id}/approve` by the "
+            "deadline the WS is closed with code 1008 and subsequent "
+            "upgrade attempts are rejected with 401 until a decision "
+            "is made."
+        ),
+        ge=10,
+        le=3600,
+        json_schema_extra={
+            "category": "auth",
+            "impact": (
+                "Too short and a slow operator misses the window; too "
+                "long and an unapproved charger sends OCPP traffic for "
+                "minutes. 180 s (the default) is the documented "
+                "trade-off in the device-authorization design."
+            ),
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
     ws_basic_auth_required: bool = Field(
         default=False,
         description=(
