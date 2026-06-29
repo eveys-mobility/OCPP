@@ -284,6 +284,7 @@ async def _serve_all(
                             command_service=command_service,
                             ch_client=ch_client,
                             drain_controller=drain_controller,
+                            connections=connections,
                         ),
                         name="rest_server",
                     )

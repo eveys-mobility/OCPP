@@ -9,6 +9,7 @@ in production. Locally we accept everything.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
@@ -35,6 +36,74 @@ if TYPE_CHECKING:
 log = get_logger(__name__)
 
 OCPP_SUBPROTOCOL = Subprotocol("ocpp1.6")
+
+
+# Pending-authorization deadlines stamped in `_process_request` and
+# read back in `_on_connect`. Keyed by `id(connection)` because that's
+# the only stable handle shared between the two callbacks. Entries are
+# cleaned up by `_on_connect` itself; in the (very rare) case where
+# `_process_request` accepts but `_on_connect` never runs (e.g. a
+# transport-level abort between handshake and handler dispatch), the
+# entry sits until process restart — bounded by realistic upgrade rate.
+_PENDING_DEADLINES: dict[int, datetime] = {}
+
+
+async def _force_close_if_unapproved(
+    connection: ServerConnection,
+    *,
+    cp_id: str,
+    deadline: datetime,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Background task that fires at the pending-authorization deadline
+    and closes the WS unless an operator has approved by then.
+
+    Re-checks the DB at firing time rather than trusting the deadline
+    stamped at upgrade time — covers the case where the operator
+    approved at second 179. If the row was approved or revoked
+    (revoke handles its own close), we no-op.
+    """
+    delay = (deadline - datetime.now(UTC)).total_seconds()
+    if delay > 0:
+        try:
+            await asyncio.sleep(delay)
+        except asyncio.CancelledError:
+            # Normal disconnect cancelled the task — nothing to do.
+            return
+
+    # Re-read the authorization. If it's been approved we leave the
+    # connection alone; otherwise close 1008 with a stable reason
+    # phrase so the operator sees the cause in the log.
+    from eveys_ocpp.persistence.repositories import (
+        AUTH_STATUS_APPROVED,
+        get_authorization,
+    )
+
+    try:
+        async with session_factory() as session:
+            row = await get_authorization(session, cp_id=cp_id)
+    except Exception as exc:
+        log.warning(
+            "authorization.deadline_db_error",
+            cp_id=cp_id,
+            error_type=type(exc).__name__,
+            error=str(exc),
+        )
+        # Fail closed: a DB error at deadline still terminates the
+        # connection, consistent with the upgrade-time `db_error`
+        # outcome.
+        await connection.close(1008, "authorization deadline: db error")
+        return
+
+    if row is not None and row["status"] == AUTH_STATUS_APPROVED:
+        return
+
+    log.info(
+        "authorization.deadline_closed",
+        cp_id=cp_id,
+        status=row["status"] if row else "unknown",
+    )
+    await connection.close(1008, "authorization deadline expired")
 
 
 async def _publish_lifecycle_event(
@@ -168,6 +237,23 @@ async def _on_connect(
     metrics_registry.WS_CONNECTS_TOTAL.inc()
     metrics_registry.WS_CONNECTIONS_ACTIVE.inc()
 
+    # Pending-authorization deadline (#0013). Stamped by
+    # `_process_request`; nil for already-approved chargers. Spawn the
+    # force-close task before any other awaits so the timer is armed
+    # even if the connection runs long.
+    pending_deadline = _PENDING_DEADLINES.pop(id(connection), None)
+    deadline_task: asyncio.Task[None] | None = None
+    if pending_deadline is not None:
+        deadline_task = asyncio.create_task(
+            _force_close_if_unapproved(
+                connection,
+                cp_id=cp_id,
+                deadline=pending_deadline,
+                session_factory=session_factory,
+            ),
+            name=f"auth-deadline-{cp_id}",
+        )
+
     # Offline-duration window closes on the connect side. Read-and-
     # delete the marker BEFORE mark_online: a marker left by a prior
     # disconnect is, by construction, the matching opening side of
@@ -233,6 +319,10 @@ async def _on_connect(
         disconnect_reason = "error"
         raise
     finally:
+        if deadline_task is not None and not deadline_task.done():
+            # Connection ended before the grace deadline fired —
+            # nothing to enforce, cancel the sleep.
+            deadline_task.cancel()
         if connections is not None:
             connections.remove(cp)
         was_ours = False
@@ -329,6 +419,7 @@ async def serve_forever(
     from websockets.datastructures import Headers
     from websockets.http11 import Response
 
+    from eveys_ocpp.transport._authorization import check_and_record_authorization
     from eveys_ocpp.transport._basic_auth import verify_basic_auth
 
     async def _process_request(
@@ -354,21 +445,60 @@ async def serve_forever(
             settings=settings,
         )
         metrics_registry.WS_BASIC_AUTH_TOTAL.labels(outcome=result.outcome).inc()
-        if result.accepted:
-            return None
-        log.info(
-            "ws.basic_auth_rejected",
+        if not result.accepted:
+            log.info(
+                "ws.basic_auth_rejected",
+                cp_id=cp_id,
+                outcome=result.outcome,
+            )
+            # 401 with WWW-Authenticate so a charger that simply
+            # forgot to send creds gets the right hint.
+            return Response(
+                status_code=401,
+                reason_phrase="Unauthorized",
+                headers=Headers([("WWW-Authenticate", 'Basic realm="ocpp"')]),
+                body=b"",
+            )
+
+        # Authorization gate (#0013). Runs *after* Basic Auth so a
+        # bad credential is rejected before we touch the auth table.
+        peer_ip: str | None = None
+        try:
+            remote = getattr(connection, "remote_address", None)
+            if remote is not None:
+                peer_ip = remote[0]
+        except Exception:
+            peer_ip = None
+        user_agent = request.headers.get("user-agent") if hasattr(request, "headers") else None
+
+        auth = await check_and_record_authorization(
             cp_id=cp_id,
-            outcome=result.outcome,
+            peer_ip=peer_ip,
+            user_agent=user_agent,
+            session_factory=session_factory,
+            settings=settings,
+            now=datetime.now(UTC),
         )
-        # 401 with WWW-Authenticate so a charger that simply
-        # forgot to send creds gets the right hint.
-        return Response(
-            status_code=401,
-            reason_phrase="Unauthorized",
-            headers=Headers([("WWW-Authenticate", 'Basic realm="ocpp"')]),
-            body=b"",
-        )
+        metrics_registry.WS_AUTHORIZATION_TOTAL.labels(outcome=auth.outcome).inc()
+        if not auth.accepted:
+            log.info("ws.authorization_rejected", cp_id=cp_id, outcome=auth.outcome)
+            return Response(
+                status_code=401,
+                reason_phrase="Unauthorized",
+                headers=Headers([("X-Authorization-Status", auth.outcome)]),
+                body=b"",
+            )
+        if auth.pending_deadline is not None:
+            # Stash for `_on_connect` to read. Logged loud so the
+            # operator sees it without scraping metrics.
+            _PENDING_DEADLINES[id(connection)] = auth.pending_deadline
+            log.info(
+                "ws.authorization_pending_accepted",
+                cp_id=cp_id,
+                outcome=auth.outcome,
+                deadline=auth.pending_deadline.isoformat(),
+            )
+        return None
 
     async with serve(
         handler,
