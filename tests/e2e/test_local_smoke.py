@@ -34,7 +34,12 @@ from websockets.asyncio.client import connect
 # laptop). In GitLab CI, where the stack runs as `services:` sidecars, the
 # pipeline overrides these via env to the service aliases (e.g. `postgres`).
 _PG_HOST = os.environ.get("E2E_PG_HOST", "localhost")
+# Compose remaps Postgres from 5432 → 55432 on the host to dodge a host
+# Postgres install. CI binds PG directly on 5432, so it overrides via
+# E2E_PG_PORT=5432.
+_PG_PORT = int(os.environ.get("E2E_PG_PORT", "55432"))
 _REDIS_HOST = os.environ.get("E2E_REDIS_HOST", "localhost")
+_REDIS_PORT = int(os.environ.get("E2E_REDIS_PORT", "16379"))
 _KAFKA_HOST = os.environ.get("E2E_KAFKA_HOST", "localhost")
 _CH_HOST = os.environ.get("E2E_CH_HOST", "localhost")
 # Compose remaps CH HTTP from 8123 to 8124 to dodge a Homebrew
@@ -55,8 +60,8 @@ def _can_connect(host: str, port: int, timeout: float = 0.5) -> bool:
 
 _unreachable_services: list[str] = []
 for _name, _host, _port in (
-    ("postgres", _PG_HOST, 5432),
-    ("redis", _REDIS_HOST, 6379),
+    ("postgres", _PG_HOST, _PG_PORT),
+    ("redis", _REDIS_HOST, _REDIS_PORT),
     ("kafka", _KAFKA_HOST, 9092),
     ("clickhouse-http", _CH_HOST, _CH_HTTP_PORT),
 ):
@@ -82,14 +87,14 @@ pytestmark = pytest.mark.skipif(
 # `make compose-up` ocpp container which uses 9000 and 50051).
 _TEST_WS_PORT = 19432
 _TEST_GRPC_PORT = 19433
-_TEST_DB_URL = f"postgresql+asyncpg://eveys:eveys@{_PG_HOST}:5432/eveys_ocpp"
+_TEST_DB_URL = f"postgresql+asyncpg://eveys:eveys@{_PG_HOST}:{_PG_PORT}/eveys_ocpp"
 
 
 @pytest.fixture
 def compose_endpoints() -> Iterator[dict[str, str]]:
     yield {
-        "postgres": f"{_PG_HOST}:5432",
-        "redis": f"{_REDIS_HOST}:6379",
+        "postgres": f"{_PG_HOST}:{_PG_PORT}",
+        "redis": f"{_REDIS_HOST}:{_REDIS_PORT}",
         "kafka": f"{_KAFKA_HOST}:9092",
         "clickhouse": f"{_CH_HOST}:{_CH_HTTP_PORT}",
     }

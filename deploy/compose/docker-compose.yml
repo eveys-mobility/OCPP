@@ -21,7 +21,12 @@ services:
       POSTGRES_PASSWORD: eveys           # local-dev only
       POSTGRES_DB: eveys_ocpp
     ports:
-      - "5432:5432"
+      # Host 55432 (well clear of the canonical 5432 + the 5433 fallback
+      # that local Postgres clusters / pgbouncer / Supabase CLI tend to
+      # squat on). Same shape as ClickHouse (8124→8123) and the gateway
+      # WS (19000→9000). In-network containers still reach Postgres on
+      # `postgres:5432` via the service hostname, unchanged.
+      - "55432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -34,7 +39,7 @@ services:
     image: redis:7-alpine
     container_name: eveys-ocpp-redis
     ports:
-      - "6379:6379"
+      - "16379:6379"
     volumes:
       - redis_data:/data
     healthcheck:
@@ -327,42 +332,6 @@ services:
       # the CH schema is at HEAD. The dead-ingestor case in #234 was
       # exactly "tables don't exist yet, 10 flush failures, exit 1."
       migrate-clickhouse: { condition: service_completed_successfully }
-
-  # Envoy edge proxy (E5-1, ADR-0007).
-  #
-  # Additive — sits in front of the gateway exposing TLS WebSocket on
-  # host port 19443. The plain ws:// path on host port 19000 is kept
-  # so existing tests, the charger sim, and the e2e suite still hit
-  # the gateway directly. Production removes the plain path; the
-  # additive shape here is to introduce TLS without breaking the
-  # dev workflow in one go.
-  #
-  # Self-signed certs come from `scripts/gen-dev-certs.sh`. Mount
-  # is read-only because the certs aren't going to change at runtime
-  # in dev. Production certs come from cert-manager / external-
-  # secrets and are wired by the Helm chart.
-  envoy:
-    image: envoyproxy/envoy:v1.31-latest
-    container_name: eveys-ocpp-envoy
-    ports:
-      - "19443:443"     # wss:// — TLS-fronted entry point
-      # Admin (local-dev only). The distroless envoy image has no
-      # shell tools to probe admin from `docker exec`, so we bind it
-      # to 0.0.0.0 inside the container (envoy.local.yaml) and map
-      # it here for `curl http://localhost:19901/clusters` triage.
-      # Production envoy.yaml keeps the loopback-only bind.
-      - "19901:9901"    # admin/triage — DO NOT mirror this to production
-    volumes:
-      - ../envoy/envoy.local.yaml:/etc/envoy/envoy.yaml:ro
-      - ../envoy/certs:/etc/envoy/certs:ro
-    depends_on:
-      # Wait for the gateway to be HEALTHY (REST listener answering
-      # /api/v1/ready), not just STARTED. Without this, Envoy fires
-      # its first health-check while the gateway is still binding
-      # ports, the network-level failure poisons the upstream, and
-      # Envoy never recovers without a manual restart.
-      ocpp: { condition: service_healthy }
-    restart: unless-stopped
 
 volumes:
   postgres_data:

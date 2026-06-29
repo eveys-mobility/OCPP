@@ -128,6 +128,12 @@ gateway:
 
 # ---- Envoy ---------------------------------------------------------
 envoy:
+  # When false, none of the Envoy resources (Deployment, Service,
+  # ConfigMap, PodDisruptionBudget) are rendered. Chargers then talk to
+  # the gateway Service directly. Default true preserves the
+  # TLS-terminated production shape from ADR-0007.
+  enabled: true
+
   image:
     repository: envoyproxy/envoy
     tag: v1.31-latest

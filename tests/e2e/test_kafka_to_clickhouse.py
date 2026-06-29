@@ -41,7 +41,7 @@ _CH_HTTP_PORT = int(os.environ.get("E2E_CH_HTTP_PORT", "8124"))
 # with IDE tools that squat on 9000 (see deploy/compose/docker-compose.yml
 # line ~123). Set EVEYS_OCPP_CLICKHOUSE_PORT=9001 OR
 # E2E_CH_NATIVE_PORT=9001 in that case.
-_CH_NATIVE_PORT = int(os.environ.get("E2E_CH_NATIVE_PORT", "9000"))
+_CH_NATIVE_PORT = int(os.environ.get("E2E_CH_NATIVE_PORT", "9001"))
 _CH_DB = os.environ.get("EVEYS_OCPP_CLICKHOUSE_DB", "eveys_ocpp")
 _KAFKA_HOST = os.environ.get("E2E_KAFKA_HOST", "localhost")
 _KAFKA_PORT = int(os.environ.get("E2E_KAFKA_PORT", "9092"))

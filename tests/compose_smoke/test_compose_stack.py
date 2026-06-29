@@ -29,8 +29,6 @@ from websockets.asyncio.client import connect
 
 from tests.compose_smoke.conftest import (
     HOST_CH_HTTP_PORT,
-    HOST_ENVOY_ADMIN_PORT,
-    HOST_ENVOY_TLS_PORT,
     HOST_REST_PORT,
     HOST_WS_PORT,
     PUBLISHED_HOST,
@@ -389,99 +387,6 @@ def test_rest_meter_values_returns_ocpp_wire_form_not_proto_enum_names() -> None
             f"phase leaked storage form: {sample['phase']!r}"
         )
         assert sample["unit"] in {"V", None}, f"unit leaked storage form: {sample['unit']!r}"
-
-
-# ---- Envoy edge --------------------------------------------------------
-
-
-def test_envoy_upstream_is_healthy() -> None:
-    """The Envoy edge must report its `ocpp_gateway` upstream cluster
-    as `healthy` against a real running gateway. Catches the class of
-    bug where the YAML validates fine (`envoy --mode validate`) but
-    the wiring is wrong at runtime — e.g. health-checking the wrong
-    port, an upstream cluster pointing at a stale service name, or
-    mTLS misconfiguration on the upstream leg.
-
-    Without this test, an Envoy that 503s every request because every
-    upstream is unhealthy would still pass CI, because the existing
-    `envoy-validate` job is YAML-schema only.
-    """
-    import urllib.request
-
-    # Wait up to 15 s for the first health-check pass — Envoy's
-    # interval is 3 s and `healthy_threshold` is 1, so a healthy
-    # gateway should flip to healthy within the first interval.
-    deadline = 15.0
-    poll_every = 1.0
-    elapsed = 0.0
-    last_flags = "<unknown>"
-    while elapsed < deadline:
-        try:
-            with urllib.request.urlopen(
-                f"http://{PUBLISHED_HOST}:{HOST_ENVOY_ADMIN_PORT}/clusters",
-                timeout=2,
-            ) as resp:
-                body = resp.read().decode()
-        except Exception as exc:
-            last_flags = f"admin unreachable: {exc}"
-            elapsed += poll_every
-            import time
-
-            time.sleep(poll_every)
-            continue
-        for line in body.splitlines():
-            if "ocpp_gateway::" in line and "::health_flags::" in line:
-                last_flags = line.rsplit("::health_flags::", 1)[1].strip()
-                if last_flags == "healthy":
-                    return  # success
-                break
-        elapsed += poll_every
-        import time
-
-        time.sleep(poll_every)
-    raise AssertionError(
-        f"Envoy upstream `ocpp_gateway` did not become healthy within "
-        f"{deadline:.0f}s — last health_flags: {last_flags!r}. "
-        f"This usually means the http_health_check is misconfigured "
-        f"(wrong port / wrong path) or the gateway's /api/v1/ready "
-        f"isn't returning 200."
-    )
-
-
-def test_envoy_proxies_websocket_upgrade() -> None:
-    """A WebSocket upgrade through the TLS edge (`:19443`) must NOT
-    return `503 no healthy upstream`. The downstream charger flow has
-    its own auth (Basic Auth at the WS edge — E5-6) which may reject
-    a synthetic upgrade attempt with 401, but a 503 specifically
-    means Envoy's upstream is down — exactly the bug class this test
-    exists to catch.
-    """
-    import ssl
-    import urllib.request
-
-    # Don't validate the self-signed cert in compose.
-    ctx = ssl._create_unverified_context()
-    req = urllib.request.Request(
-        f"https://{PUBLISHED_HOST}:{HOST_ENVOY_TLS_PORT}/ocpp/SMOKE_PROBE",
-        headers={
-            "Connection": "Upgrade",
-            "Upgrade": "websocket",
-            "Sec-WebSocket-Key": "dGVzdA==",
-            "Sec-WebSocket-Version": "13",
-        },
-        method="GET",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=5, context=ctx) as resp:
-            status = resp.status
-    except urllib.error.HTTPError as exc:
-        status = exc.code
-
-    assert status != 503, (
-        f"Envoy returned 503 for a WebSocket upgrade — upstream is unhealthy. "
-        f"Check `http://{PUBLISHED_HOST}:{HOST_ENVOY_ADMIN_PORT}/clusters` for "
-        f"the `ocpp_gateway::*::health_flags` line."
-    )
 
 
 # ---- end-to-end pipeline (Kafka → ClickHouse via ingestor) ----------------
