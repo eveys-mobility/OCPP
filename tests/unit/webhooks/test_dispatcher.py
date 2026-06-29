@@ -298,6 +298,7 @@ def test_enabled_topics_all_off() -> None:
             webhook_enable_cp_boot=False,
             webhook_enable_cp_online=False,
             webhook_enable_cp_offline=False,
+            webhook_enable_cp_heartbeat=False,
             webhook_enable_cp_status=False,
             webhook_enable_tx_started=False,
             webhook_enable_tx_stopped=False,

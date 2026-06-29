@@ -20,11 +20,13 @@ Behavior:
 
 from __future__ import annotations
 
+import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from ocpp.v16 import call_result
 
+from eveys_ocpp._generated.events.v1 import events_pb2
 from eveys_ocpp.metrics import record_handler_error, time_handler
 from eveys_ocpp.metrics import registry as metrics_registry
 from eveys_ocpp.observability import bind_contextvars, get_logger
@@ -35,6 +37,17 @@ if TYPE_CHECKING:
     from eveys_ocpp.connection import EveysChargePoint
 
 log = get_logger(__name__)
+
+
+def _build_envelope(*, cp_id: str, payload: events_pb2.CpHeartbeat, occurred_at: datetime) -> bytes:
+    envelope = events_pb2.EventEnvelope(
+        event_id=str(uuid.uuid4()),
+        occurred_at=occurred_at.isoformat(),
+        cp_id=cp_id,
+        schema_version="v1",
+        cp_heartbeat=payload,
+    )
+    return envelope.SerializeToString()
 
 
 async def handle(cp: EveysChargePoint) -> call_result.Heartbeat:
@@ -54,6 +67,24 @@ async def handle(cp: EveysChargePoint) -> call_result.Heartbeat:
                     await cp.registry.mark_online(cp.id)
                     metrics_registry.HEARTBEAT_REGISTRY_RECLAIMS_TOTAL.inc()
                     log.info("heartbeat.registry_reclaimed")
+
+            # Best-effort publish so the backend can refresh
+            # `last_online`. A broker drop must not block the Heartbeat
+            # response — same pattern boot/meter_values use.
+            if cp.event_producer is not None:
+                envelope_bytes = _build_envelope(
+                    cp_id=cp.id,
+                    payload=events_pb2.CpHeartbeat(pod_id=cp.settings.pod_id),
+                    occurred_at=now,
+                )
+                try:
+                    await cp.event_producer.publish(
+                        topic=cp.settings.kafka_topic_cp_heartbeat,
+                        key=cp.id,
+                        value=envelope_bytes,
+                    )
+                except Exception as exc:
+                    log.warning("heartbeat.publish_failed", error=str(exc))
 
             log.debug("heartbeat.tick")
             return call_result.Heartbeat(current_time=now.isoformat())
