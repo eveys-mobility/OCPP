@@ -1602,16 +1602,22 @@ class Settings(BaseSettings):
     )
 
     webhook_enable_cp_meter: bool = Field(
-        default=False,
+        default=True,
         description=(
             "Enable webhook delivery for `cp.meter` MeterValues "
-            "events. **Off by default** — high volume."
+            "events. **On by default** so a fresh install gets "
+            "per-frame consumption rows into the backend's "
+            "`charging_consumptions` table without extra wiring. "
+            "Large operators should set this to `false` and consume "
+            "the `cp.meter` Kafka topic directly — see impact."
         ),
         json_schema_extra={
             "category": "webhooks",
             "impact": (
-                "Enabling this on a fleet >100 chargers will saturate "
-                "the dispatcher's HTTP pool. Subscribe to Kafka instead."
+                "MeterValues are high-volume — ~333 webhooks/sec at "
+                "10k chargers will saturate the dispatcher's HTTP "
+                "pool. For fleets >100 chargers, prefer the Kafka "
+                "consumer path."
             ),
             "secret": False,
             "stability": "tunable",
