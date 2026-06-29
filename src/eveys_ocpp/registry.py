@@ -142,12 +142,8 @@ class Registry:
 
     async def mark_offline(self, cp_id: str) -> bool:
         """Release the key iff this pod still owns it. Returns True on delete."""
-        # redis-py's async eval() is incorrectly typed as `Awaitable[str] | str`
-        # (sync/async dual-API typing leak). It's actually awaitable on the
-        # asyncio client. The int() cast at the boundary keeps our caller's
-        # type strict; the ignore is targeted to this one call.
         with _timed_redis("eval"):
-            deleted_raw = await self._redis.eval(  # type: ignore[misc]
+            deleted_raw = await self._redis.eval(
                 _DEL_IF_OWNER,
                 1,
                 _key(cp_id),
@@ -181,10 +177,7 @@ class Registry:
         """
         went_offline_at = datetime.now(UTC).isoformat()
         with _timed_redis("set"):
-            # redis-py's async hset is typed as `Awaitable[int] | int`
-            # (sync/async dual-API typing leak) — same shape as the
-            # `eval` ignore in `mark_offline`.
-            await self._redis.hset(  # type: ignore[misc]
+            await self._redis.hset(
                 _offline_marker_key(cp_id),
                 mapping={
                     "went_offline_at": went_offline_at,
@@ -211,8 +204,7 @@ class Registry:
         """
         key = _offline_marker_key(cp_id)
         with _timed_redis("get"):
-            # Same dual-API typing leak as `record_offline_marker`.
-            data = await self._redis.hgetall(key)  # type: ignore[misc]
+            data = await self._redis.hgetall(key)
         if not data:
             return None
         # decode_responses=True → str keys/values; normalize defensively.

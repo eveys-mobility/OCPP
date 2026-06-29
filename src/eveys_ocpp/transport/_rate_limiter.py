@@ -130,10 +130,7 @@ class RateLimiter:
         """
         try:
             now_ms = int(time.time() * 1000)
-            # redis-py's async eval() is incorrectly typed as
-            # `Awaitable[str] | str` (sync/async dual-API typing leak).
-            # Same pattern as registry.mark_offline.
-            result = await self._redis.eval(  # type: ignore[misc]
+            result = await self._redis.eval(
                 _TOKEN_BUCKET_LUA,
                 1,
                 _key(cp_id),
