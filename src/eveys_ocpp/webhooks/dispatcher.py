@@ -27,6 +27,7 @@ import httpx
 from aiokafka import AIOKafkaConsumer
 
 from eveys_ocpp._generated.events.v1 import events_pb2
+from eveys_ocpp._ocpp_enums import ocpp_string_for
 from eveys_ocpp.metrics import registry as metrics_registry
 from eveys_ocpp.observability import get_logger
 from eveys_ocpp.runtime_overrides import get_override
@@ -496,8 +497,23 @@ class WebhookDispatcher:
             }
             return _envelope(data)
 
-        # cp.meter and unknown payloads: not delivered in this slice.
-        # Returning None silently skips them.
+        if kind == "cp_meter" and self._enabled(
+            "webhook_enable_cp_meter", self._settings.webhook_enable_cp_meter
+        ):
+            p_meter = envelope.cp_meter
+            data = {
+                "event_id": envelope.event_id,
+                "event_type": "cp.meter_values",
+                "occurred_at": envelope.occurred_at,
+                "charger_reported_at": p_meter.charger_reported_at,
+                "cp_id": envelope.cp_id,
+                "connector_id": p_meter.connector_id,
+                "transaction_id": p_meter.transaction_id,
+                "sampled_values": [_sampled_value_to_ocpp(sv) for sv in p_meter.sampled_values],
+            }
+            return _envelope(data)
+
+        # Unknown payloads: silently skip.
         return None
 
     def _url_for(self, envelope: events_pb2.EventEnvelope) -> str | None:
@@ -599,6 +615,43 @@ def _envelope(data: dict[str, Any]) -> dict[str, Any]:
         "success": True,
         "data": data,
         "message": data["event_type"],
+    }
+
+
+def _sampled_value_to_ocpp(sv: events_pb2.SampledValue) -> dict[str, Any]:
+    """Serialize one CpMeter SampledValue to the OCPP-wire JSON shape the
+    backend expects.
+
+    The proto schema stores each dimension as an enum (`Measurand`,
+    `Unit`, `Phase`, `Context`, `Format`, `Location`); the backend's
+    `MeterValuesIngestJob` mirrors the legacy OCPP `MeterValues` listener
+    which matches on OCPP wire strings (`"Power.Active.Import"`,
+    `"Outlet"`, `"Wh"`, …). Translate via `_ocpp_enums.ocpp_string_for`
+    so the round-trip stays consistent with the read path.
+
+    `*_UNSPECIFIED` / unknown enum names round-trip to empty string rather
+    than `None` so the legacy listener's `isset(...) ? : ""` pattern
+    doesn't trip on missing keys.
+    """
+
+    def _name(value: int, enum_name: str) -> str:
+        return events_pb2.DESCRIPTOR.enum_types_by_name[enum_name].values_by_number[value].name
+
+    measurand = ocpp_string_for("measurand", _name(sv.measurand, "Measurand")) or ""
+    unit = ocpp_string_for("unit", _name(sv.unit, "Unit")) or ""
+    phase = ocpp_string_for("phase", _name(sv.phase, "Phase")) or ""
+    context = ocpp_string_for("context", _name(sv.context, "Context")) or ""
+    fmt = ocpp_string_for("format", _name(sv.format, "Format")) or ""
+    location = ocpp_string_for("location", _name(sv.location, "Location")) or ""
+
+    return {
+        "value": sv.value,
+        "measurand": measurand,
+        "unit": unit,
+        "phase": phase,
+        "context": context,
+        "format": fmt,
+        "location": location,
     }
 
 

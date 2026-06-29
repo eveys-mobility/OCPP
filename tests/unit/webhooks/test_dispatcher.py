@@ -193,14 +193,43 @@ def test_build_body_returns_none_for_disabled_event() -> None:
     assert d._build_body(_envelope("cp_boot")) is None
 
 
-def test_build_body_returns_none_for_cp_meter_default() -> None:
-    """cp.meter is off by default per the spec."""
-    d = WebhookDispatcher(_settings())  # webhook_enable_cp_meter defaults to False
+def test_build_body_returns_none_when_cp_meter_disabled() -> None:
+    """`webhook_enable_cp_meter=False` → cp.meter skipped silently."""
+    d = WebhookDispatcher(_settings(webhook_enable_cp_meter=False))
     env = events_pb2.EventEnvelope()
     env.event_id = "e"
     env.cp_id = "CP_TEST"
     env.cp_meter.connector_id = 1
     assert d._build_body(env) is None
+
+
+def test_build_body_emits_cp_meter_with_sampled_values_by_default() -> None:
+    """Default-on: cp.meter envelope → OCPP-wire JSON body, enum→string."""
+    d = WebhookDispatcher(_settings())
+    env = events_pb2.EventEnvelope()
+    env.event_id = "e"
+    env.occurred_at = "2026-05-07T12:00:00+00:00"
+    env.cp_id = "CP_TEST"
+    m = env.cp_meter
+    m.connector_id = 1
+    m.transaction_id = 42
+    m.charger_reported_at = "2026-05-07T12:00:00+00:00"
+    sv = m.sampled_values.add()
+    sv.value = "1234.5"
+    sv.measurand = events_pb2.MEASURAND_ENERGY_ACTIVE_IMPORT_REGISTER
+    sv.unit = events_pb2.UNIT_WH
+    sv.context = events_pb2.CONTEXT_SAMPLE_PERIODIC
+    body = d._build_body(env)
+    assert body is not None
+    data = body["data"]
+    assert data["event_type"] == "cp.meter_values"
+    assert data["connector_id"] == 1
+    assert data["transaction_id"] == 42
+    [s] = data["sampled_values"]
+    assert s["value"] == "1234.5"
+    assert s["measurand"] == "Energy.Active.Import.Register"
+    assert s["unit"] == "Wh"
+    assert s["context"] == "Sample.Periodic"
 
 
 # ---- _url_for --------------------------------------------------------------
@@ -278,9 +307,11 @@ def test_url_for_cp_diagnostics_status_uses_override() -> None:
 def test_enabled_topics_default() -> None:
     d = WebhookDispatcher(_settings())
     topics = d._enabled_topics()
-    # Default: every event except cp.meter is enabled. cp.meter stays
-    # off — high volume; the right channel for it is a Kafka subscription
-    # to `cp.meter`, not webhook delivery.
+    # Default: every event is enabled, including cp.meter — fresh
+    # installs get per-frame consumption rows without extra wiring.
+    # Large fleets (>100 chargers) should set
+    # `webhook_enable_cp_meter=False` and consume the `cp.meter` Kafka
+    # topic directly.
     assert "cp.boot" in topics
     assert "cp.connected" in topics
     assert "cp.disconnected" in topics
@@ -289,7 +320,7 @@ def test_enabled_topics_default() -> None:
     assert "cp.diagnostics_status" in topics
     assert "tx.started" in topics
     assert "tx.stopped" in topics
-    assert "cp.meter" not in topics
+    assert "cp.meter" in topics
 
 
 def test_enabled_topics_all_off() -> None:
@@ -304,6 +335,7 @@ def test_enabled_topics_all_off() -> None:
             webhook_enable_tx_stopped=False,
             webhook_enable_cp_firmware_status=False,
             webhook_enable_cp_diagnostics_status=False,
+            webhook_enable_cp_meter=False,
         )
     )
     assert d._enabled_topics() == ()
