@@ -37,7 +37,7 @@ jobs:
       # where to dial WS / Postgres / ClickHouse. (On GitLab dind it was `docker`.)
       COMPOSE_SMOKE_PUBLISHED_HOST: localhost
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-python-venv
 
       # GitHub-hosted ubuntu runners ship Docker + the compose plugin
