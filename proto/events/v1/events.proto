@@ -11,6 +11,7 @@
 // Topic mapping:
 //   cp.connected          → CpConnected               (charger opened a WS to us)
 //   cp.disconnected       → CpDisconnected            (charger's WS went away)
+//   cp.heartbeat          → CpHeartbeat               (Heartbeat arrived; liveness ping)
 //   cp.offline_duration   → CpOfflineDuration         (charger came back; gap measured)
 //   cp.boot               → CpBoot                    (BootNotification arrived)
 //   cp.status             → CpStatus                  (StatusNotification arrived)
@@ -77,6 +78,7 @@ message EventEnvelope {
     CpCredentialRotated cp_credential_rotated = 111;
     CpOfflineDuration cp_offline_duration = 112;
     CpOcppFrame cp_ocpp_frame = 113;
+    CpHeartbeat cp_heartbeat = 114;
   }
 }
 
@@ -112,6 +114,29 @@ message CpDisconnected {
   // out of the connection task). Same dimension `eveys_ocpp_ws_
   // disconnects_total` already labels by.
   string reason = 2;
+}
+
+// -----------------------------------------------------------------------------
+// cp.heartbeat — OCPP Heartbeat arrived (charger liveness ping)
+// -----------------------------------------------------------------------------
+//
+// Emitted by the Heartbeat handler after the local DB update.
+// Lets the backend keep `station_devices.last_online` fresh between
+// connect/disconnect lifecycle events — a CP that connects once and
+// then just heartbeats forever would otherwise look frozen on the
+// backend side. Best-effort: a broker drop logs and continues; the
+// Heartbeat response to the charger is not blocked on Kafka.
+//
+// Volume: one per charger per heartbeat interval (default 30s). At
+// 10k chargers that is ~333/s — comparable to MeterValues. The
+// dispatcher's `webhook_enable_cp_heartbeat` toggle defaults ON;
+// large fleets should disable it and rely on cp.status / cp.meter /
+// reconnect-driven cp.online events instead.
+
+message CpHeartbeat {
+  // ID of the gateway pod that received the heartbeat. Lets the
+  // backend correlate which pod is currently owning the WS.
+  string pod_id = 1;
 }
 
 // -----------------------------------------------------------------------------

@@ -78,3 +78,46 @@ async def test_no_registry_calls_when_registry_is_none(
 
     result = await heartbeat.handle(fake_cp)
     assert result is not None  # no exception
+
+
+@pytest.mark.asyncio
+async def test_publishes_cp_heartbeat_envelope_when_event_producer_attached(
+    fake_cp: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Per ADR-0027 the gateway emits a cp.heartbeat envelope on every
+    Heartbeat so the backend can refresh `last_online` between
+    connect/disconnect lifecycle events."""
+    from eveys_ocpp._generated.events.v1 import events_pb2
+
+    monkeypatch.setattr(heartbeat, "update_heartbeat", AsyncMock())
+
+    fake_cp.event_producer = AsyncMock()
+    fake_cp.event_producer.publish = AsyncMock()
+
+    await heartbeat.handle(fake_cp)
+
+    fake_cp.event_producer.publish.assert_awaited_once()
+    call = fake_cp.event_producer.publish.await_args
+    assert call.kwargs["topic"] == fake_cp.settings.kafka_topic_cp_heartbeat
+    assert call.kwargs["key"] == "TEST_CP_001"
+
+    envelope = events_pb2.EventEnvelope()
+    envelope.ParseFromString(call.kwargs["value"])
+    assert envelope.cp_id == "TEST_CP_001"
+    assert envelope.WhichOneof("payload") == "cp_heartbeat"
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_publish_failure_is_swallowed(
+    fake_cp: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A Kafka broker drop MUST NOT block the Heartbeat response —
+    same best-effort pattern boot / meter_values use."""
+    monkeypatch.setattr(heartbeat, "update_heartbeat", AsyncMock())
+
+    fake_cp.event_producer = AsyncMock()
+    fake_cp.event_producer.publish = AsyncMock(side_effect=RuntimeError("broker down"))
+
+    result = await heartbeat.handle(fake_cp)
+
+    assert result is not None  # response still returned, exception logged

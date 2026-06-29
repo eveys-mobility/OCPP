@@ -351,7 +351,7 @@ class WebhookDispatcher:
         None when the event type isn't enabled (or is unknown).
 
         Events delivered today: cp.boot, cp.online, cp.offline,
-        cp.status_changed, cp.firmware_status_changed,
+        cp.heartbeat, cp.status_changed, cp.firmware_status_changed,
         cp.diagnostics_status_changed, tx.started, tx.stopped.
         cp.meter is implemented but off-by-default (high volume —
         Kafka subscription is the right channel; see ADR-0027).
@@ -382,6 +382,19 @@ class WebhookDispatcher:
                 "cp_id": envelope.cp_id,
                 "pod_id": p_off.pod_id,
                 "reason": p_off.reason,
+            }
+            return _envelope(data)
+
+        if kind == "cp_heartbeat" and self._enabled(
+            "webhook_enable_cp_heartbeat", self._settings.webhook_enable_cp_heartbeat
+        ):
+            p_hb = envelope.cp_heartbeat
+            data = {
+                "event_id": envelope.event_id,
+                "event_type": "cp.heartbeat",
+                "occurred_at": envelope.occurred_at,
+                "cp_id": envelope.cp_id,
+                "pod_id": p_hb.pod_id,
             }
             return _envelope(data)
 
@@ -503,6 +516,12 @@ class WebhookDispatcher:
             return self._url("webhook_url_cp_offline", s.webhook_url_cp_offline) or (
                 f"{self._base_url()}/cp-offline"
             )
+        if kind == "cp_heartbeat" and self._enabled(
+            "webhook_enable_cp_heartbeat", s.webhook_enable_cp_heartbeat
+        ):
+            return self._url("webhook_url_cp_heartbeat", s.webhook_url_cp_heartbeat) or (
+                f"{self._base_url()}/cp-heartbeat"
+            )
         if kind == "cp_boot" and self._enabled("webhook_enable_cp_boot", s.webhook_enable_cp_boot):
             return self._url("webhook_url_cp_boot", s.webhook_url_cp_boot) or (
                 f"{self._base_url()}/cp-boot"
@@ -557,6 +576,8 @@ class WebhookDispatcher:
             topics.append(s.kafka_topic_cp_connected)
         if s.webhook_enable_cp_offline:
             topics.append(s.kafka_topic_cp_disconnected)
+        if s.webhook_enable_cp_heartbeat:
+            topics.append(s.kafka_topic_cp_heartbeat)
         if s.webhook_enable_cp_status:
             topics.append(s.kafka_topic_cp_status)
         if s.webhook_enable_cp_meter:

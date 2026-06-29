@@ -513,6 +513,20 @@ class Settings(BaseSettings):
             "stability": "structural",
         },
     )
+    kafka_topic_cp_heartbeat: str = Field(
+        default="cp.heartbeat",
+        description=(
+            "OCPP `Heartbeat` events. Source for the `cp.heartbeat` "
+            "webhook the backend uses to keep `station_devices.last_online` "
+            "fresh between WS connect / disconnect lifecycle events."
+        ),
+        json_schema_extra={
+            "category": "kafka_topics",
+            "impact": "Renaming detaches every existing consumer.",
+            "secret": False,
+            "stability": "structural",
+        },
+    )
     kafka_topic_cp_meter: str = Field(
         default="cp.meter",
         description=(
@@ -1424,6 +1438,20 @@ class Settings(BaseSettings):
         },
     )
 
+    webhook_url_cp_heartbeat: str = Field(
+        default="",
+        description=(
+            "Override the URL for `cp.heartbeat` events. Empty falls "
+            "back to `<webhook_base_url>/cp-heartbeat`."
+        ),
+        json_schema_extra={
+            "category": "webhooks",
+            "impact": "Per-event routing override.",
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+
     webhook_url_cp_meter: str = Field(
         default="",
         description=(
@@ -1546,6 +1574,28 @@ class Settings(BaseSettings):
         json_schema_extra={
             "category": "webhooks",
             "impact": "Disable to silence status-change pushes.",
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+
+    webhook_enable_cp_heartbeat: bool = Field(
+        default=True,
+        description=(
+            "Enable webhook delivery for `cp.heartbeat` events. Drives "
+            "the backend's `station_devices.last_online` refresh between "
+            "connect / disconnect lifecycle events. Volume is one per "
+            "charger per heartbeat interval (~30s default). Large fleets "
+            "(>1k chargers) should disable this and rely on cp.status / "
+            "reconnect-driven cp.online instead."
+        ),
+        json_schema_extra={
+            "category": "webhooks",
+            "impact": (
+                "Disabling means `last_online` only advances on connect, "
+                "status change, transaction events, or boot — an idle "
+                "but-connected charger will look stale on the backend."
+            ),
             "secret": False,
             "stability": "tunable",
         },
