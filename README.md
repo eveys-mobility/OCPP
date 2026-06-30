@@ -47,13 +47,32 @@ When that returns, you have:
 - An OCPP WebSocket on `ws://localhost:19000/<cp_id>` ready for a
   charger or simulator to connect.
 - A REST surface on `http://localhost:8080/api/v1` for the backend.
-- A Swagger UI on `/api/v1/docs` (set `EVEYS_OCPP_REST_OPENAPI_ENABLED=true`
-  to enable it; it's off by default in production).
 - Prometheus metrics on `http://localhost:9100/metrics`.
 
 Point an OCPP charger simulator at the WebSocket URL, and you'll see
 the boot, status, and meter events flow through Kafka into ClickHouse
 within seconds.
+
+### Swagger UI
+
+Bring the stack up with `EVEYS_OCPP_REST_OPENAPI_ENABLED=true make
+compose-up` (off by default — the gateway deliberately doesn't
+self-publish a discoverable schema in production). Then:
+
+```bash
+make get-token            # prints a bearer token from .env / shell env
+make get-token | pbcopy   # macOS: straight to clipboard
+open http://localhost:8080/api/v1/docs
+```
+
+In the Swagger UI click **Authorize**, paste the token, and every
+REST endpoint becomes Try-it-out-able. The same token is what any
+caller (backend, scripts, the Console) needs on the
+`Authorization: Bearer …` header.
+
+`make openapi-export` regenerates `docs/api/openapi.{json,yaml}` from
+the live FastAPI app for sharing the static spec with backend teams
+or external Swagger UIs.
 
 ## Operating it
 
@@ -174,6 +193,34 @@ the backend on the hot path — `POST /sessions/open`, `/sessions/close`,
 `Authorize` — over `httpx`, with a circuit breaker and configurable
 fallback policies so a flaky backend can't take the WebSocket layer
 down with it.
+
+### Kafka topics
+
+Every event the gateway publishes uses the same protobuf envelope
+(`proto/events/v1/events.proto`), partitioned on `cp_id` so per-charger
+ordering survives the broker. Defaults are overridable per topic via
+`EVEYS_OCPP_KAFKA_TOPIC_*` env vars.
+
+| Topic | When it fires |
+|---|---|
+| `cp.connected` | Charger accepted on the WS layer (post-handshake). |
+| `cp.disconnected` | WS closed; carries the close reason. |
+| `cp.offline_duration` | Reconnect after an outage; carries the gap length. |
+| `cp.boot` | `BootNotification` accepted. |
+| `cp.heartbeat` | Each accepted `Heartbeat`. |
+| `cp.status` | Each `StatusNotification` (per-connector transitions). |
+| `cp.meter` | Each `MeterValues` sample. |
+| `cp.firmware_status` | `FirmwareStatusNotification` transitions. |
+| `cp.diagnostics_status` | `DiagnosticsStatusNotification` transitions. |
+| `cp.security_event` | OCPP 1.6 Security Whitepaper §4.6 events. |
+| `cp.credential_rotated` | Basic-auth password set / removed via the credentials API. |
+| `cp.csr_submitted` | Charger-initiated CSR awaiting operator approval. |
+| `cp.ocpp_frames` | Full inbound + outbound frame audit (off by default — high volume). |
+| `tx.started` | `StartTransaction` accepted. |
+| `tx.stopped` | `StopTransaction` accepted; carries `consumed_wh`. |
+
+The webhook dispatcher tails the same topics for the subset of events
+configured for at-least-once HTTP push (`EVEYS_OCPP_WEBHOOK_ENABLE_*`).
 
 The two repositories work as a pair:
 
