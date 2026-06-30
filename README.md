@@ -53,26 +53,21 @@ Point an OCPP charger simulator at the WebSocket URL, and you'll see
 the boot, status, and meter events flow through Kafka into ClickHouse
 within seconds.
 
-### Swagger UI
+### Swagger UI and API authorization
 
-Bring the stack up with `EVEYS_OCPP_REST_OPENAPI_ENABLED=true make
-compose-up` (off by default — the gateway deliberately doesn't
-self-publish a discoverable schema in production). Then:
-
-```bash
-make get-token            # prints a bearer token from .env / shell env
-make get-token | pbcopy   # macOS: straight to clipboard
-open http://localhost:8080/api/v1/docs
-```
-
-In the Swagger UI click **Authorize**, paste the token, and every
-REST endpoint becomes Try-it-out-able. The same token is what any
-caller (backend, scripts, the Console) needs on the
-`Authorization: Bearer …` header.
-
-`make openapi-export` regenerates `docs/api/openapi.{json,yaml}` from
-the live FastAPI app for sharing the static spec with backend teams
-or external Swagger UIs.
+- **Reach the Swagger UI** at `http://localhost:8080/api/v1/docs`.
+  Off by default in production; enable it with
+  `EVEYS_OCPP_REST_OPENAPI_ENABLED=true` (set in `.env` or in front of
+  `make compose-up`).
+- **Get a bearer token** with `make get-token` — reads
+  `EVEYS_OCPP_REST_INBOUND_TOKENS` from your shell or `.env` and prints
+  the first entry, pipe-friendly (e.g. `make get-token | pbcopy`).
+- **Authorize** in Swagger by clicking the **Authorize** button and
+  pasting the token. The same token is the `Authorization: Bearer …`
+  value every other REST caller uses — backend, scripts, the Console.
+- **Static spec** for sharing without a running gateway:
+  `make openapi-export` writes `docs/api/openapi.{json,yaml}` from
+  the live FastAPI app.
 
 ## Operating it
 
