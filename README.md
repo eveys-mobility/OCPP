@@ -78,6 +78,73 @@ stack, wiping volumes, running the e2e suite, dropping the venv — and
 prints a clear message telling the operator what they'd need to add
 (`FORCE_PROD=1`) if they really mean it.
 
+### Make targets
+
+The verbs you'll actually reach for, grouped by when. `make help`
+prints the live list.
+
+**Setup**
+
+| Target | What it does |
+|---|---|
+| `make doctor` | Check the laptop has the required tools. |
+| `make install` | Create `.venv/`, install deps, regenerate proto stubs, install git hooks. |
+
+**Stack**
+
+| Target | What it does |
+|---|---|
+| `make compose-up` | Bring up Postgres + Redis + Kafka + ClickHouse + the gateway; apply all migrations. |
+| `make compose-status` | Container health. |
+| `make compose-wait` | Block until everything reports `healthy`. |
+| `make compose-down` | Stop containers, keep data volumes. *(production-gated)* |
+| `make compose-down-volumes` | Stop **and wipe** Postgres / Kafka / ClickHouse volumes. *(production-gated)* |
+| `make build-image` | Build `eveys-ocpp:dev` from `deploy/Dockerfile`. |
+| `make migrate` | Re-apply Postgres + ClickHouse migrations against the running stack. Idempotent. |
+| `make get-token` | Print a bearer token from `.env` for Swagger Authorize. |
+| `make grafana-up` / `make grafana-down` | Opt-in Grafana + Prometheus sidecar. |
+
+**Code quality**
+
+| Target | What it does |
+|---|---|
+| `make format` | `isort` + `black`. |
+| `make lint` | `ruff check`. |
+| `make types` | `mypy --strict`. |
+| `make tests` | The local pre-commit gate: lint + types + pytest with the 80% coverage floor. |
+| `make audit` | `pip-audit` against the resolved venv. |
+| `make precommit` | Run every pre-commit hook against every file. |
+
+**Test ladder**
+
+| Target | What it does |
+|---|---|
+| `make tests` | Tier 1 — unit + lint + types. Fast inner loop. |
+| `make e2e` | Tier 2 — compose-up, run `tests/e2e/`, compose-down. *(production-gated)* |
+| `make compose-smoke` | Tier 3 — build the production image, run the compose-shaped smoke suite. *(production-gated)* |
+
+**Deployment**
+
+| Target | What it does |
+|---|---|
+| `make update` | One-shot rebuild → migrate → recreate `ocpp` + `clickhouse-ingestor` → poll `/api/v1/ready`. Never tears the stack down. `NO_PULL=1` skips `git pull`. |
+
+**Docs and generated artifacts**
+
+| Target | What it does |
+|---|---|
+| `make docs` / `make docs-clean` | Build / clean the Sphinx docs site. |
+| `make config-export` | Regenerate `docs/11-configuration-reference.md` + `.env.reference` from `settings.py`. |
+| `make openapi-export` | Regenerate `docs/api/openapi.{json,yaml}` from the live FastAPI app. |
+| `make config-schema` | Print `Settings` as JSON Schema. |
+
+**Cleanup**
+
+| Target | What it does |
+|---|---|
+| `make clean` | Drop `.pytest_cache`, `.mypy_cache`, `__pycache__`, … . |
+| `make distclean` | `clean` + drop `.venv/`. *(production-gated)* |
+
 ## Configuration
 
 Configuration is environment-driven, with a hand-curated quickstart
