@@ -1,4 +1,4 @@
-"""Generate `docs/11-configuration-reference.md` and `.env.example` from `Settings`.
+"""Generate `docs/11-configuration-reference.md` and `.env.reference` from `Settings`.
 
 Per ADR-0025, the Pydantic `Settings` model is the source of truth for
 operator-facing configuration documentation. This script walks
@@ -6,7 +6,7 @@ operator-facing configuration documentation. This script walks
 emits two artefacts:
 
   1. `docs/11-configuration-reference.md` — operator-facing reference.
-  2. `.env.example` — copy-paste starter for `.env`, with secrets blanked.
+  2. `.env.reference` — copy-paste starter for `.env`, with secrets blanked.
 
 The renderer is a pure function (`render_config_reference`). The
 `__main__` block writes the two strings to disk; the `--check` flag
@@ -30,7 +30,12 @@ from pydantic_settings import BaseSettings
 # Repo-root-relative paths the script writes to.
 REPO_ROOT: Final = Path(__file__).resolve().parent.parent
 DOC_PATH: Final = REPO_ROOT / "docs" / "11-configuration-reference.md"
-ENV_EXAMPLE_PATH: Final = REPO_ROOT / ".env.example"
+# Output target. `.env.reference` is the FULL every-knob template —
+# used by ops as the source of truth for what each field does. The
+# hand-curated quickstart `.env.example` is a separate file (not
+# generated) — it shows only the values most operators actually need
+# to touch, sourced from a working `.env`.
+ENV_EXAMPLE_PATH: Final = REPO_ROOT / ".env.reference"
 
 # U+2013 EN DASH, used in range cells to match the hand-written seed's
 # typography. Spelled via escape so ruff's RUF001 (ambiguous-character)
@@ -152,8 +157,8 @@ docker exec eveys-ocpp env | grep '^EVEYS_OCPP_'
 
 ### "I want a starter `.env`."
 
-`make config-export` regenerates `.env.example` alongside this file;
-`cp .env.example .env` and edit. Secrets are blank in the example.
+`make config-export` regenerates `.env.reference` alongside this file;
+`cp .env.reference .env` and edit. Secrets are blank in the example.
 
 ### "I changed a variable; do I need to redeploy?"
 
@@ -348,7 +353,7 @@ def _render_markdown(settings_cls: type[BaseSettings]) -> str:
 
 
 def _format_default_for_env(info: FieldInfo) -> str | None:
-    """Return the value to put on the right-hand side of `KEY=` in `.env.example`.
+    """Return the value to put on the right-hand side of `KEY=` in `.env.reference`.
 
     `None` means the line should be a blank value. The caller decides
     whether to add a comment.
@@ -366,7 +371,7 @@ def _format_default_for_env(info: FieldInfo) -> str | None:
 def _render_env_line(field_name: str, info: FieldInfo) -> str:
     var = _env_var_name(field_name)
     if _is_secret(info):
-        # Always blank secrets in .env.example, even if the default is a
+        # Always blank secrets in .env.reference, even if the default is a
         # placeholder. The committed file is checked in; embedding even a
         # dev-grade secret value defeats the whole point of the flag.
         return f"# secret — fill from your secrets manager\n{var}="
@@ -397,7 +402,7 @@ def _render_env_example(settings_cls: type[BaseSettings]) -> str:
         "# scripts/render_config_reference.py. Do not hand-edit; change",
         "# the Settings field and run `make config-export`.",
         "#",
-        "# Copy to .env (`cp .env.example .env`) and fill in secrets.",
+        "# Copy to .env (`cp .env.reference .env`) and fill in secrets.",
         "",
     ]
     for category in _CATEGORY_ORDER:
@@ -436,7 +441,7 @@ def _diff_or_zero(label: str, generated: str, on_disk: Path) -> int:
 def _main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Generate the configuration reference doc and .env.example "
+            "Generate the configuration reference doc and .env.reference "
             "from src/eveys_ocpp/settings.py."
         )
     )
@@ -459,7 +464,7 @@ def _main(argv: list[str]) -> int:
     if args.check:
         rc = 0
         rc |= _diff_or_zero("docs/11-configuration-reference.md", markdown, DOC_PATH)
-        rc |= _diff_or_zero(".env.example", env_example, ENV_EXAMPLE_PATH)
+        rc |= _diff_or_zero(".env.reference", env_example, ENV_EXAMPLE_PATH)
         if rc == 0:
             print("Config reference is up to date.")
         return rc
