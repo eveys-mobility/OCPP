@@ -18,165 +18,155 @@
 
 # eveys-mobility/ocpp
 
-OCPP 1.6 / 2.0.1 CSMS gateway. Terminates charger WebSockets,
-schema-validates and dispatches OCPP messages, and exposes a
-backend-facing contract over REST, gRPC, Kafka, and webhooks.
+This is the OCPP gateway that sits between a fleet of EV chargers and
+the rest of an EV-charging platform. Every charger opens a WebSocket
+here; every command the back office wants to send to a charger goes
+through here. The gateway speaks OCPP-J 1.6 today (with 2.0.1 in
+progress), validates everything against the official JSON Schemas
+before dispatching, and exposes a clean, language-agnostic contract
+upstream — REST, gRPC, Kafka, and webhooks. Backends don't have to
+care about the OCPP wire; they call REST and subscribe to Kafka.
 
-Python 3.13 + asyncio + uvloop. Horizontally scaled out of the box.
-Apache-2.0.
+Python 3.13 on `asyncio` + `uvloop`. Horizontally scalable: an Envoy
+load balancer hashes connections on `cp_id` so the same charger sticks
+to the same pod across reconnects, Redis tracks which pod owns which
+charger, and a cross-pod command bus routes RPCs to whichever pod
+holds the WebSocket. State that has to survive a pod kill lives in
+Postgres and ClickHouse — never in process memory.
+
+Apache-2.0. Maintained by [Eveys](https://eveys.com).
 
 ---
 
 ## Quickstart
 
-Brings up the gateway + its data plane (Postgres, Redis, Kafka,
-ClickHouse) on your laptop. Takes ~60 s on a fresh machine.
+The compose stack brings up the gateway plus everything it needs
+(Postgres, Redis, Kafka, ClickHouse) and applies the schema migrations
+before declaring itself ready. On a fresh laptop it takes around a
+minute.
 
 ```bash
-# Prereqs (macOS): Docker Desktop, Python 3.13, uv, make.
-#   brew install python@3.13 uv
-# `make doctor` lists anything missing.
-
+brew install python@3.13 uv             # macOS prereqs (Linux: use the equivalents)
+                                        # `make doctor` lists anything else missing
 git clone git@github.com:eveys-mobility/OCPP.git
 cd OCPP
-cp .env.example .env          # edit the placeholder tokens
-make install                  # .venv + protoc + pre-commit
-make compose-up               # data plane + gateway + migrations
+cp .env.example .env                    # then edit the placeholder tokens
+make install
+make compose-up
 ```
 
-| URL | What |
-|---|---|
-| `ws://localhost:19000/<cp_id>` | OCPP WebSocket (subprotocol `ocpp1.6`) |
-| `http://localhost:8080/api/v1` | Gateway REST |
-| `http://localhost:8080/api/v1/docs` | Swagger UI (set `EVEYS_OCPP_REST_OPENAPI_ENABLED=true`) |
-| `http://localhost:9100/metrics` | Prometheus metrics |
+When that returns, you have:
 
-Point an OCPP charger simulator at the WS URL and watch events flow.
+- An OCPP WebSocket on `ws://localhost:19000/<cp_id>` ready for a
+  charger or simulator to connect.
+- A REST surface on `http://localhost:8080/api/v1` for the backend.
+- A Swagger UI on `/api/v1/docs` (set `EVEYS_OCPP_REST_OPENAPI_ENABLED=true`
+  to enable it; it's off by default in production).
+- Prometheus metrics on `http://localhost:9100/metrics`.
 
-## Update (rebuild + migrate + restart)
+Point an OCPP charger simulator at the WebSocket URL, and you'll see
+the boot, status, and meter events flow through Kafka into ClickHouse
+within seconds.
 
-The one-shot updater rebuilds the gateway image, applies any new
-Alembic migrations through the `migrate-postgres` service, and
-recreates `ocpp` + `clickhouse-ingestor` in place. Never tears the
-stack down; safe on a production VM.
+## Operating it
 
-```bash
-make update                       # update the gateway
-make update NO_PULL=1             # skip git pull
-```
+The Makefile groups the daily operations into a handful of verbs.
+`make compose-up` is the canonical "make me a working stack" entry
+point. `make compose-status` reports container health. `make migrate`
+re-applies migrations idempotently after a schema change. `make
+get-token` prints a bearer token for Swagger so you don't have to dig
+through env files.
 
-Scope is the **gateway only**. The
-[**eveys-mobility/Console**](https://github.com/eveys-mobility/Console)
-— the operator-facing system administration UI for this gateway
-(sign-in protected, live snapshot+tail subscriptions, fleet view,
-transaction detail, OCPP-config page, alerts) — is a separate
-service with its own release cycle and its own updater. Run it
-separately when you need to bump the Console:
+For a rolling update on a server, `make update` rebuilds the image,
+runs the migrations against the live Postgres before the gateway
+starts, recreates the gateway containers, and waits for `/api/v1/ready`
+to come back green. It never tears the stack down, so it's safe to run
+on a host that's serving live traffic.
 
-```bash
-cd ../eveys-console            # https://github.com/eveys-mobility/Console
-sh scripts/updater.sh
-```
-
-See [`scripts/update.sh`](./scripts/update.sh) for the steps the
-gateway updater walks through.
-
-## Production safety
-
-Set `EVEYS_ENV=production` (shell or `.env`). The Makefile then
-refuses destructive targets that would stop the stack or wipe data:
-`compose-down`, `compose-down-volumes`, `e2e`, `compose-smoke`,
-`mock-backend`, `grafana-down`, `distclean`.
-
-Override per call with `FORCE_PROD=1`:
-
-```bash
-EVEYS_ENV=production make compose-down                # refused
-EVEYS_ENV=production FORCE_PROD=1 make compose-down   # runs
-```
+Production hosts should set `EVEYS_ENV=production` (in the shell or in
+`.env`). The Makefile then refuses anything destructive — stopping the
+stack, wiping volumes, running the e2e suite, dropping the venv — and
+prints a clear message telling the operator what they'd need to add
+(`FORCE_PROD=1`) if they really mean it.
 
 ## Configuration
 
-Two files at the repo root:
+Configuration is environment-driven, with a hand-curated quickstart
+file and a generated full reference next to it:
 
-- **`.env.example`** — hand-curated quickstart template. The values
-  most operators actually need to set. Copy to `.env`, fill in.
-- **`.env.reference`** — generated from `src/eveys_ocpp/settings.py`
-  via `make config-export`. Every available knob with documented
-  defaults; ops reference, not a starter.
+- `.env.example` is the human starter — only the values most operators
+  actually need to set, with placeholders pointing at `openssl rand`
+  for the secrets. Copy it to `.env` and fill the gaps.
+- `.env.reference` is the generated catalogue of every knob the
+  gateway supports, regenerated from `src/eveys_ocpp/settings.py` by
+  `make config-export`. Treat it as documentation, not a starter.
+- `docs/11-configuration-reference.md` is the same catalogue rendered
+  as Markdown with descriptions and "what changes if you change
+  this" notes.
 
-Field-by-field reference: [`docs/11-configuration-reference.md`](./docs/11-configuration-reference.md).
+A subset of settings are runtime-overridable — log level, rate-limit
+toggles, the post-boot ChangeConfiguration matrix, webhook URLs — via
+`PATCH /api/v1/admin/config`. The system administration console
+([eveys-mobility/Console](https://github.com/eveys-mobility/Console))
+is the operator UI for those.
 
-### Post-boot OCPP config matrix
+## How it fits together
 
-After every Accepted `BootNotification`, the gateway pushes a set of
-operator-tunable `ChangeConfiguration` calls
-(`HeartbeatInterval`, `ConnectionTimeOut`, `MeterValuesSampledData`,
-`StopTxnAlignedData`, `TransactionMessageAttempts`, …). The
-measurand-list keys split on `charge_points.charger_type` (`ac` |
-`dc` | NULL → AC) so DC sites get `SoC` and AC sites get
-`Current.Export`. Every key is runtime-overridable through
-`/api/v1/admin/config`; the
-[Console](https://github.com/eveys-mobility/Console)'s **OCPP config**
-page is the operator UI.
+The gateway exposes five surfaces. Chargers connect inbound over
+WebSocket; the backend talks to it over REST or gRPC, subscribes to
+Kafka for the event firehose, or receives webhook deliveries for the
+events that need at-least-once push. The gateway also calls back into
+the backend on the hot path — `POST /sessions/open`, `/sessions/close`,
+`Authorize` — over `httpx`, with a circuit breaker and configurable
+fallback policies so a flaky backend can't take the WebSocket layer
+down with it.
 
-## Make targets — most-used
+The two repositories work as a pair:
 
-```bash
-make compose-up         # bring up data plane + gateway + migrations
-make compose-status     # container health
-make migrate            # idempotent Postgres + ClickHouse migrations
-make build-image        # rebuild eveys-ocpp:dev
-make update             # rebuild + migrate + restart (gateway + console)
-make get-token          # print a bearer token for Swagger UI
-make grafana-up         # opt-in Grafana + Prometheus sidecar
-make tests              # lint + mypy + pytest (fast inner loop)
-```
+- **eveys-mobility/ocpp** (this repo) — the protocol gateway. Owns
+  the WebSocket connection to each charger, validates and dispatches
+  OCPP messages, and publishes the canonical event stream.
+- **[eveys-mobility/Console](https://github.com/eveys-mobility/Console)**
+  — a sign-in protected operator UI for SREs and on-call engineers
+  running this gateway. Live fleet view, transaction detail, alerts,
+  runtime configuration. It's a consumer of the gateway; deploying or
+  updating it is independent.
 
-`make help` prints the full list with one-line descriptions.
+The backend contract for upstream integrators lives under
+[`docs/integration/`](./docs/integration/).
 
-## Surfaces
+## Going deeper
 
-| Surface | Bind | Direction |
-|---|---|---|
-| OCPP WebSocket | `:9000` (`:19000` under compose) | charger → gateway |
-| REST | `:8080` (`/api/v1/...`) | backend / console → gateway |
-| gRPC | `:50051` | backend → gateway |
-| Kafka producer | `EVEYS_OCPP_KAFKA_BROKERS` | gateway → bus |
-| Webhooks | gateway-initiated POST | gateway → backend |
-| Metrics | `:9100/metrics` | Prometheus |
+If you're trying to understand a particular slice of the codebase:
 
-Backend integration contract: [`docs/integration/`](./docs/integration/).
+- [`docs/00-overview.md`](./docs/00-overview.md) — what the gateway
+  owns, what it doesn't, and why the boundary is where it is.
+- [`docs/05-architecture-decisions.md`](./docs/05-architecture-decisions.md)
+  and [`docs/adr/`](./docs/adr/) — every significant decision in the
+  codebase has an ADR explaining what was chosen, what was rejected,
+  and why.
+- [`docs/08-ocpp-conformance.md`](./docs/08-ocpp-conformance.md) —
+  the per-OCPP-test-case conformance matrix.
+- [`docs/12-connecting-real-charger.md`](./docs/12-connecting-real-charger.md)
+  — onboarding a hardware OCPP charger.
+- [`docs/14-slos.md`](./docs/14-slos.md), [`docs/17-sizing.md`](./docs/17-sizing.md),
+  and [`docs/16-dr-runbook.md`](./docs/16-dr-runbook.md) — the SLO
+  commitments, capacity planning, and disaster-recovery drill kit.
+- [`docs/api/openapi.yaml`](./docs/api/openapi.yaml) — the canonical
+  OpenAPI 3.1 spec for the REST surface.
 
-## Documentation
+The full Sphinx site builds with `make docs`.
 
-| For | Start at |
-|---|---|
-| Conceptual overview | [`docs/00-overview.md`](./docs/00-overview.md) |
-| Architecture decisions | [`docs/05-architecture-decisions.md`](./docs/05-architecture-decisions.md) and [`docs/adr/`](./docs/adr/) |
-| OCPP conformance matrix | [`docs/08-ocpp-conformance.md`](./docs/08-ocpp-conformance.md) |
-| Connecting a hardware charger | [`docs/12-connecting-real-charger.md`](./docs/12-connecting-real-charger.md) |
-| SLOs / capacity / DR | [`docs/14-slos.md`](./docs/14-slos.md), [`docs/17-sizing.md`](./docs/17-sizing.md), [`docs/16-dr-runbook.md`](./docs/16-dr-runbook.md) |
-| Rolling back a deploy | [`docs/18-rollback-runbook.md`](./docs/18-rollback-runbook.md) |
-| Backend integration | [`docs/integration/`](./docs/integration/) |
-| OpenAPI spec | [`docs/api/openapi.yaml`](./docs/api/openapi.yaml) |
+## Contributing, security, license
 
-Full Sphinx site: `make docs` (output under `docs/_build/html/`).
+[`CONTRIBUTING.md`](./CONTRIBUTING.md) covers branch naming, PR size,
+Conventional Commits, and the local quality gate. The Code of Conduct
+is in [`CODE_OF_CONDUCT.md`](./CODE_OF_CONDUCT.md).
 
-## Contributing
-
-Branch naming, PR size, [Conventional Commits](https://www.conventionalcommits.org/),
-and the local quality gate (`make tests`) live in
-[`CONTRIBUTING.md`](./CONTRIBUTING.md). Code of Conduct:
-[`CODE_OF_CONDUCT.md`](./CODE_OF_CONDUCT.md).
-
-## Security
-
-Private disclosure channel and supported-version policy in
-[`SECURITY.md`](./SECURITY.md). Non-vulnerability questions:
+Security issues do not go through the public tracker — see
+[`SECURITY.md`](./SECURITY.md) for the private channel, supported-version
+policy, and our response targets. Non-vulnerability questions:
 [info@eveys.com](mailto:info@eveys.com).
 
-## License
-
-Apache-2.0. See [`LICENSE`](./LICENSE) for the text and
-[`NOTICE`](./NOTICE) for attribution.
+Released under the Apache License, Version 2.0 — see
+[`LICENSE`](./LICENSE) and [`NOTICE`](./NOTICE).
