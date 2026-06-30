@@ -55,17 +55,26 @@ Point an OCPP charger simulator at the WS URL and watch events flow.
 
 ## Update (rebuild + migrate + restart)
 
-The one-shot updater rebuilds the image, applies any new Alembic
-migrations, and recreates the gateway containers in place. Never
-tears the stack down.
+The one-shot updater rebuilds the gateway image, applies any new
+Alembic migrations through the `migrate-postgres` service, and
+recreates `ocpp` + `clickhouse-ingestor` in place. Never tears the
+stack down; safe on a production VM.
 
 ```bash
-make update                       # gateway + sibling eveys-console
-make update GATEWAY_ONLY=1        # gateway only
+make update                       # update the gateway
 make update NO_PULL=1             # skip git pull
 ```
 
-Same script works on a production VM. See [`scripts/update.sh`](./scripts/update.sh) for the steps.
+Scope is the **gateway only**. The Console (web + server) has its
+own updater — run it separately when you need to bump the Console:
+
+```bash
+cd ../eveys-console
+sh scripts/updater.sh
+```
+
+See [`scripts/update.sh`](./scripts/update.sh) for the steps the
+gateway updater walks through.
 
 ## Production safety
 

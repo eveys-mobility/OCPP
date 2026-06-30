@@ -216,23 +216,20 @@ precommit: install
 build-image:
 	docker build -f deploy/Dockerfile -t eveys-ocpp:dev .
 
-# One-shot production-safe update: rebuilds the gateway image, applies
-# Alembic + ClickHouse migrations through the existing migrate-* services,
-# and recreates `ocpp` + `clickhouse-ingestor` with the new image. Never
-# tears the stack down; safe to run on a live host.
+# One-shot production-safe update for the **gateway**: rebuilds the
+# image, applies Alembic + ClickHouse migrations through the existing
+# migrate-* services, and recreates `ocpp` + `clickhouse-ingestor`
+# with the new image. Never tears the stack down; safe to run on a
+# live host.
 #
-# Defaults to updating BOTH the gateway and the Console (sibling
-# directory `../eveys-console`). Override:
-#   make update GATEWAY_ONLY=1       # skip the Console rebuild
-#   make update CONSOLE_ONLY=1       # skip the gateway rebuild
-#   make update NO_PULL=1            # don't `git pull` either repo
-#   make update CONSOLE_DIR=/path    # use a non-sibling Console checkout
+# The Console (web + server) is NOT touched by this target — it has
+# its own updater at eveys-console/scripts/updater.sh.
+#
+#   make update                # update the gateway
+#   make update NO_PULL=1      # skip git pull
 update:
 	@flags=""; \
-	if [ "$(GATEWAY_ONLY)" = "1" ]; then flags="$$flags --gateway-only"; fi; \
-	if [ "$(CONSOLE_ONLY)" = "1" ]; then flags="$$flags --console-only"; fi; \
 	if [ "$(NO_PULL)" = "1" ]; then flags="$$flags --no-pull"; fi; \
-	if [ -n "$(CONSOLE_DIR)" ]; then flags="$$flags --console-dir $(CONSOLE_DIR)"; fi; \
 	./scripts/update.sh $$flags
 
 compose-up:
