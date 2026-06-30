@@ -18,23 +18,49 @@
 
 # eveys-mobility/ocpp
 
-This is the OCPP gateway that sits between a fleet of EV chargers and
-the rest of an EV-charging platform. Every charger opens a WebSocket
-here; every command the back office wants to send to a charger goes
-through here. The gateway speaks OCPP-J 1.6 today (with 2.0.1 in
-progress), validates everything against the official JSON Schemas
-before dispatching, and exposes a clean, language-agnostic contract
-upstream — REST, gRPC, Kafka, and webhooks. Backends don't have to
-care about the OCPP wire; they call REST and subscribe to Kafka.
+OCPP-J 1.6 CSMS gateway (2.0.1 in progress under `handlers/v201/`).
+Built on `mobilityhouse/ocpp`; every inbound frame is JSON-Schema
+validated before dispatch and every outbound CALL goes through the
+same audit + metrics seam. The library's own routing table dispatches
+to handlers under `handlers/v16/`; the WS class is overridden to tap
+inbound and outbound for `WS_MESSAGES_{IN,OUT}_TOTAL`, the per-charger
+rate limiter, the inbound replay-idempotency gate, and presence
+liveness — without touching individual handlers.
 
-Python 3.13 on `asyncio` + `uvloop`. Horizontally scalable: an Envoy
-load balancer hashes connections on `cp_id` so the same charger sticks
-to the same pod across reconnects, Redis tracks which pod owns which
-charger, and a cross-pod command bus routes RPCs to whichever pod
-holds the WebSocket. State that has to survive a pod kill lives in
-Postgres and ClickHouse — never in process memory.
+The upstream contract is REST + gRPC for commands, Kafka for the
+event firehose, and HMAC-signed webhooks for the events that need
+at-least-once push. The two RPC surfaces share one command dispatcher
+so REST and gRPC can never drift on semantics; the Kafka envelope
+(`proto/events/v1/events.proto`) is protobuf, versioned, partitioned
+on `cp_id`.
 
-Apache-2.0. Maintained by [Eveys](https://eveys.com).
+Python 3.13, `asyncio`, `uvloop`, FastAPI for REST, `grpclib` for
+gRPC, `aiokafka` for the producer, `asyncpg` via SQLAlchemy 2 for
+Postgres, the official `clickhouse-driver` for the ClickHouse ingest
+sidecar. Pydantic v2 `Settings` is the single source of truth for
+configuration (ADR-0025).
+
+Horizontal scale-out is built in. Envoy `RING_HASH` on the WS URL
+`:path` (`cp_id` is encoded in the path) pins each charger to a
+specific pod across reconnects. Redis carries the online registry —
+`cp:online:{cp_id} → pod_id`, TTL-refreshed on every inbound frame
+so a charging session whose only traffic is `MeterValues` doesn't
+flap to offline. Cross-pod RPCs go through a Redis pub/sub command
+bus (`cp:cmd:*` / `cp:reply:*`); the owning pod dispatches to its
+in-process `ChargePoint` instance and replies on the correlation
+channel. Process state is intentionally local — anything that has
+to survive a pod kill (charger row, transactions, reservations,
+charging profiles, time-series) is in Postgres or ClickHouse before
+the handler returns.
+
+Hot-path backend integration (Authorize, sessions/open,
+sessions/close, charge-points/register) is `httpx` with a circuit
+breaker, per-call retry budgets, and configurable fallback policies
+(`accept_offline` / `reject`) so a flaky backend can't take the
+WebSocket layer down with it. The asymmetric envelope on outbound vs
+inbound is by spec — see [`docs/integration/`](./docs/integration/).
+
+Apache-2.0.
 
 ---
 
