@@ -29,7 +29,7 @@ ClickHouse for time-series. Apache-2.0.
 
 The compose stack brings up the gateway plus everything it needs
 (Postgres, Redis, Kafka, ClickHouse) and applies the schema migrations
-before declaring itself ready. On a fresh laptop it takes around a
+before declaring itself ready. On a fresh system it takes around a
 minute.
 
 ```bash
@@ -85,7 +85,7 @@ prints the live list.
 
 | Target | What it does |
 |---|---|
-| `make doctor` | Check the laptop has the required tools. |
+| `make doctor` | Check the system has the required tools. |
 | `make install` | Create `.venv/`, install deps, regenerate proto stubs, install git hooks. |
 
 **Stack**
