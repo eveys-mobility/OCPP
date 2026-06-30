@@ -146,7 +146,7 @@ class Registry:
             # redis-py's stubs annotate the union of sync/async return
             # types on its single client; the asyncio Redis class
             # actually returns a coroutine, but mypy sees the union.
-            deleted_raw = await self._redis.eval(  # type: ignore[misc]
+            deleted_raw = await self._redis.eval(  # type: ignore[misc, unused-ignore]
                 _DEL_IF_OWNER,
                 1,
                 _key(cp_id),
@@ -180,7 +180,7 @@ class Registry:
         """
         went_offline_at = datetime.now(UTC).isoformat()
         with _timed_redis("set"):
-            await self._redis.hset(  # type: ignore[misc]
+            await self._redis.hset(  # type: ignore[misc, unused-ignore]
                 _offline_marker_key(cp_id),
                 mapping={
                     "went_offline_at": went_offline_at,
@@ -207,7 +207,7 @@ class Registry:
         """
         key = _offline_marker_key(cp_id)
         with _timed_redis("get"):
-            data = await self._redis.hgetall(key)  # type: ignore[misc]
+            data = await self._redis.hgetall(key)  # type: ignore[misc, unused-ignore]
         if not data:
             return None
         # decode_responses=True → str keys/values; normalize defensively.

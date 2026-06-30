@@ -131,7 +131,7 @@ class RateLimiter:
         try:
             now_ms = int(time.time() * 1000)
             # redis-py stub union (sync | async) — see registry.py for context.
-            result = await self._redis.eval(  # type: ignore[misc]
+            result = await self._redis.eval(  # type: ignore[misc, unused-ignore]
                 _TOKEN_BUCKET_LUA,
                 1,
                 _key(cp_id),
