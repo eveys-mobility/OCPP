@@ -61,18 +61,31 @@ EVEYS_ENV ?= $(shell sh -c '\
 	fi')
 
 _require-nonprod:
-	@if [ "$(EVEYS_ENV)" = "production" ] && [ "$(FORCE_PROD)" != "1" ]; then \
-	  echo ""; \
+	@# Fail-closed: destructive targets refuse unless the host is
+	@# explicitly marked as a dev host. Empty / production / typo all
+	@# refuse — operator must opt in. CI=true (set by GitHub Actions and
+	@# every other major CI) counts as opt-in so CI workflows don't need
+	@# to thread EVEYS_ENV manually.
+	@if [ "$(FORCE_PROD)" = "1" ]; then exit 0; fi; \
+	if [ -n "$$CI" ]; then exit 0; fi; \
+	if [ "$(EVEYS_ENV)" = "development" ]; then exit 0; fi; \
+	echo ""; \
+	if [ "$(EVEYS_ENV)" = "production" ]; then \
 	  echo "REFUSING: target '$(MAKECMDGOALS)' is destructive and EVEYS_ENV=production." >&2; \
-	  echo "         It would stop the running stack, wipe data, or boot test fixtures" >&2; \
-	  echo "         against the live process. Set FORCE_PROD=1 to override:" >&2; \
-	  echo "             make $(MAKECMDGOALS) FORCE_PROD=1" >&2; \
-	  echo ""; \
-	  echo "         Safer alternative: scripts/update.sh ships a production-safe" >&2; \
-	  echo "         rebuild + migrate + restart sequence that doesn't tear the" >&2; \
-	  echo "         stack down at the end." >&2; \
-	  exit 1; \
-	fi
+	else \
+	  echo "REFUSING: target '$(MAKECMDGOALS)' is destructive and EVEYS_ENV is not 'development'." >&2; \
+	  echo "         (current value: '$(EVEYS_ENV)'). Fail-closed: an unset / typo'd" >&2; \
+	  echo "         marker is treated as production. Set EVEYS_ENV=development in" >&2; \
+	  echo "         .env (or the shell) on dev boxes to allow destructive targets." >&2; \
+	fi; \
+	echo "         It would stop the running stack, wipe data, or boot test" >&2; \
+	echo "         fixtures against the live process. Override per-invocation:" >&2; \
+	echo "             make $(MAKECMDGOALS) FORCE_PROD=1" >&2; \
+	echo ""; \
+	echo "         Safer alternative: scripts/update.sh ships a production-safe" >&2; \
+	echo "         rebuild + migrate + restart sequence that doesn't tear the" >&2; \
+	echo "         stack down at the end." >&2; \
+	exit 1
 
 # ---- meta -------------------------------------------------------------------
 
@@ -349,7 +362,7 @@ ch-migrate: install
 	    --port $${E2E_CH_HTTP_PORT:-8124} \
 	    --db $${EVEYS_OCPP_CLICKHOUSE_DB:-eveys_ocpp}
 
-e2e: install _require-nonprod
+e2e: _require-nonprod install
 	@echo ">> bringing up local data plane (compose-up bakes in migrate)..."
 	@$(MAKE) compose-up
 	@echo ">> running e2e tests..."
@@ -369,7 +382,7 @@ e2e: install _require-nonprod
 # Slower than `make tests` (~ 90s); not run as part of `make tests` so
 # the fast inner loop stays fast. CI runs it on MRs that touch
 # `deploy/`, `tests/compose_smoke/`, or `pyproject.toml`.
-compose-smoke: install _require-nonprod
+compose-smoke: _require-nonprod install
 	@echo ">> Tier-3 compose smoke (ADR-0024)..."
 	@echo ">> running compose-smoke tests against the production-shaped stack..."
 	@echo "   (the suite's session fixture owns docker compose up/down + schema apply)"
@@ -387,7 +400,7 @@ compose-smoke: install _require-nonprod
 # Used by E3-2..E3-6 wiring work; not part of the production runtime.
 # Defaults: bind 0.0.0.0:9200, bearer token "dev-token", accept all id_tags.
 # Override via MOCK_BACKEND_* env vars (see tests/mock_backend/__init__.py).
-mock-backend: install _require-nonprod
+mock-backend: _require-nonprod install
 	@echo ">> booting mock backend on http://localhost:$${MOCK_BACKEND_PORT:-9200} ..."
 	@$(VENV)/bin/python -m tests.mock_backend
 
@@ -438,6 +451,6 @@ clean: docs-clean
 	rm -rf .pytest_cache .mypy_cache .ruff_cache .coverage htmlcov coverage.xml
 	find . -type d -name '__pycache__' -not -path './$(VENV)/*' -not -path './docs/.venv/*' -exec rm -rf {} +
 
-distclean: clean _require-nonprod
+distclean: _require-nonprod clean
 	rm -rf $(VENV)
 	$(MAKE) -C docs distclean
