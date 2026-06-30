@@ -151,6 +151,3 @@ fi
 echo ""
 bold "done."
 echo "  gateway: WS :19000  REST :8080  /api/v1/docs"
-echo ""
-echo "To update the Console (web + server), run from the eveys-console repo:"
-echo "    sh scripts/updater.sh"
