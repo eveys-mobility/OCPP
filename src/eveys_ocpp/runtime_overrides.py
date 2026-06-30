@@ -123,28 +123,6 @@ def _coerce_int_in_range(low: int, high: int, field: str) -> Callable[[Any], int
     return coerce
 
 
-def _coerce_measurand_csv(field: str) -> Callable[[Any], str]:
-    """OCPP measurand-list keys are comma-separated strings. Trim each
-    entry, drop empties, re-join. The empty result is permitted (it's
-    how an operator opts out of pushing the key — leaves the charger's
-    vendor default in place).
-
-    No closed-set validation against OCPP measurand names: vendors
-    publish proprietary extensions that the spec doesn't list but
-    chargers happily accept. A typo will be rejected by the charger
-    at ChangeConfiguration time and logged — that's a fine failure
-    mode for an operator-edited field.
-    """
-
-    def coerce(value: Any) -> str:
-        if not isinstance(value, str):
-            raise ValueError(f"{field}: expected string, got {value!r}")
-        parts = [p.strip() for p in value.split(",") if p.strip()]
-        return ",".join(parts)
-
-    return coerce
-
-
 def _coerce_url(value: Any) -> str:
     """Like `_coerce_url_or_empty` but rejects the empty value. Used
     for the global `webhook_base_url` since clearing it disables the
@@ -329,46 +307,6 @@ _ALLOWLIST: dict[str, _AllowlistEntry] = {
         coerce=_coerce_int_in_range(5, 3600, "ocpp_cfg_websocket_ping_interval_seconds"),
         description="WebSocketPingInterval (seconds) pushed after boot.",
     ),
-    "ocpp_cfg_meter_values_aligned_data_ac": _AllowlistEntry(
-        name="ocpp_cfg_meter_values_aligned_data_ac",
-        coerce=_coerce_measurand_csv("ocpp_cfg_meter_values_aligned_data_ac"),
-        description="MeterValuesAlignedData CSV for AC chargers. Empty = skip pushing.",
-    ),
-    "ocpp_cfg_meter_values_aligned_data_dc": _AllowlistEntry(
-        name="ocpp_cfg_meter_values_aligned_data_dc",
-        coerce=_coerce_measurand_csv("ocpp_cfg_meter_values_aligned_data_dc"),
-        description="MeterValuesAlignedData CSV for DC chargers. Empty = skip pushing.",
-    ),
-    "ocpp_cfg_meter_values_sampled_data_ac": _AllowlistEntry(
-        name="ocpp_cfg_meter_values_sampled_data_ac",
-        coerce=_coerce_measurand_csv("ocpp_cfg_meter_values_sampled_data_ac"),
-        description="MeterValuesSampledData CSV for AC chargers. Empty = skip pushing.",
-    ),
-    "ocpp_cfg_meter_values_sampled_data_dc": _AllowlistEntry(
-        name="ocpp_cfg_meter_values_sampled_data_dc",
-        coerce=_coerce_measurand_csv("ocpp_cfg_meter_values_sampled_data_dc"),
-        description="MeterValuesSampledData CSV for DC chargers. Empty = skip pushing.",
-    ),
-    "ocpp_cfg_stop_txn_aligned_data_ac": _AllowlistEntry(
-        name="ocpp_cfg_stop_txn_aligned_data_ac",
-        coerce=_coerce_measurand_csv("ocpp_cfg_stop_txn_aligned_data_ac"),
-        description="StopTxnAlignedData CSV for AC chargers. Empty = skip pushing.",
-    ),
-    "ocpp_cfg_stop_txn_aligned_data_dc": _AllowlistEntry(
-        name="ocpp_cfg_stop_txn_aligned_data_dc",
-        coerce=_coerce_measurand_csv("ocpp_cfg_stop_txn_aligned_data_dc"),
-        description="StopTxnAlignedData CSV for DC chargers. Empty = skip pushing.",
-    ),
-    "ocpp_cfg_stop_txn_sampled_data_ac": _AllowlistEntry(
-        name="ocpp_cfg_stop_txn_sampled_data_ac",
-        coerce=_coerce_measurand_csv("ocpp_cfg_stop_txn_sampled_data_ac"),
-        description="StopTxnSampledData CSV for AC chargers. Empty = skip pushing.",
-    ),
-    "ocpp_cfg_stop_txn_sampled_data_dc": _AllowlistEntry(
-        name="ocpp_cfg_stop_txn_sampled_data_dc",
-        coerce=_coerce_measurand_csv("ocpp_cfg_stop_txn_sampled_data_dc"),
-        description="StopTxnSampledData CSV for DC chargers. Empty = skip pushing.",
-    ),
 }
 
 
@@ -509,12 +447,4 @@ AllowlistName = Literal[
     "ocpp_cfg_transaction_message_attempts",
     "ocpp_cfg_transaction_message_retry_interval_seconds",
     "ocpp_cfg_websocket_ping_interval_seconds",
-    "ocpp_cfg_meter_values_aligned_data_ac",
-    "ocpp_cfg_meter_values_aligned_data_dc",
-    "ocpp_cfg_meter_values_sampled_data_ac",
-    "ocpp_cfg_meter_values_sampled_data_dc",
-    "ocpp_cfg_stop_txn_aligned_data_ac",
-    "ocpp_cfg_stop_txn_aligned_data_dc",
-    "ocpp_cfg_stop_txn_sampled_data_ac",
-    "ocpp_cfg_stop_txn_sampled_data_dc",
 ]

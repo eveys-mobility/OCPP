@@ -482,7 +482,6 @@ async def test_meter_value_sample_interval_pushed_after_accepted_boot(
     # Patch the inter-step sleep so the deferred task fires immediately.
     monkeypatch.setattr(boot_notification, "_POST_BOOT_PUSH_DELAY_SECONDS", 0)
     monkeypatch.setattr(boot_notification, "_POST_BOOT_INTER_CALL_GAP_SECONDS", 0)
-    monkeypatch.setattr(boot_notification, "_resolve_charger_type", AsyncMock(return_value="ac"))
     fake_cp.call = AsyncMock(return_value=MagicMock(status="Accepted"))
     # Default is 15 — fake_cp.settings ships with it. If a test needs
     # a different value, swap the whole `cp.settings` for a new
@@ -508,7 +507,12 @@ async def test_meter_value_sample_interval_pushed_after_accepted_boot(
     assert first_request.value == "15"
     pushed_keys = {c.args[0].key for c in fake_cp.call.await_args_list}
     assert "HeartbeatInterval" in pushed_keys
-    assert "MeterValuesSampledData" in pushed_keys
+    # Measurand-list keys are NOT pushed by the post-boot burst —
+    # they're charger-type-specific and BootNotification doesn't carry
+    # a reliable AC/DC signal. Operators send them per-CP via the
+    # ChangeConfiguration command endpoint.
+    assert "MeterValuesSampledData" not in pushed_keys
+    assert "StopTxnAlignedData" not in pushed_keys
 
 
 @pytest.mark.asyncio
@@ -522,7 +526,6 @@ async def test_meter_value_sample_interval_not_pushed_on_rejected_boot(
     monkeypatch.setattr(boot_notification, "upsert_charge_point_boot", AsyncMock(return_value=None))
     monkeypatch.setattr(boot_notification, "_POST_BOOT_PUSH_DELAY_SECONDS", 0)
     monkeypatch.setattr(boot_notification, "_POST_BOOT_INTER_CALL_GAP_SECONDS", 0)
-    monkeypatch.setattr(boot_notification, "_resolve_charger_type", AsyncMock(return_value="ac"))
     # Backend rejects → handler maps to RegistrationStatus.rejected.
     fake_cp.backend_client = MagicMock()
     fake_cp.backend_client.register_charge_point = AsyncMock(
@@ -553,7 +556,6 @@ async def test_meter_value_sample_interval_push_failure_does_not_propagate(
     monkeypatch.setattr(boot_notification, "upsert_charge_point_boot", AsyncMock(return_value=None))
     monkeypatch.setattr(boot_notification, "_POST_BOOT_PUSH_DELAY_SECONDS", 0)
     monkeypatch.setattr(boot_notification, "_POST_BOOT_INTER_CALL_GAP_SECONDS", 0)
-    monkeypatch.setattr(boot_notification, "_resolve_charger_type", AsyncMock(return_value="ac"))
     fake_cp.call = AsyncMock(side_effect=RuntimeError("WS closed"))
 
     await boot_notification.handle(fake_cp, charge_point_vendor="ACME")

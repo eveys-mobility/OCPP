@@ -124,22 +124,6 @@ async def update_log_status(session: AsyncSession, *, cp_id: str, status: str) -
     )
 
 
-async def update_charger_type(
-    session: AsyncSession, *, cp_id: str, charger_type: str | None
-) -> int:
-    """Set the AC/DC flag on a charger row. Returns rowcount so the
-    route layer can map 0 → 404 (unknown cp_id). ``None`` clears the
-    column; the post-boot push then falls back to the AC default."""
-    result = await session.execute(
-        update(ChargePoint).where(ChargePoint.cp_id == cp_id).values(charger_type=charger_type)
-    )
-    # CursorResult.rowcount is documented but mypy sees the generic
-    # `Result[Any]` — same pattern as the rowcount accesses elsewhere
-    # in this module (see `delete_charge_point_certificate`).
-    rowcount: int = result.rowcount  # type: ignore[attr-defined]
-    return rowcount or 0
-
-
 async def upsert_charge_point_certificate(
     session: AsyncSession,
     *,
@@ -918,7 +902,6 @@ def _charge_point_to_dict(cp: ChargePoint) -> dict[str, Any]:
         "firmware_version": cp.firmware_version,
         "serial_number": cp.serial_number,
         "ocpp_version": cp.ocpp_version,
-        "charger_type": cp.charger_type,
         "last_boot_at": cp.last_boot_at,
         "last_heartbeat_at": cp.last_heartbeat_at,
         "last_status": cp.last_status,

@@ -922,84 +922,15 @@ class Settings(BaseSettings):
             "stability": "tunable",
         },
     )
-    # Measurand-list keys split by charger_type ('ac' vs 'dc'). AC
-    # rigs typically carry per-phase Voltage/Current.Export; DC rigs
-    # add the SoC measurand and drop Current.Export. The boot handler
-    # picks one or the other based on the charge_points.charger_type
-    # column.
-    ocpp_cfg_meter_values_aligned_data_ac: str = Field(
-        default=(
-            "Energy.Active.Import.Register,Voltage,Current.Export,"
-            "Power.Offered,Current.Import,Power.Active.Import"
-        ),
-        description=(
-            "OCPP `MeterValuesAlignedData` for AC chargers — comma-separated "
-            "measurand list for clock-aligned MeterValues. Empty string skips "
-            "pushing this key on boot for AC sites."
-        ),
-        json_schema_extra={
-            "category": "ocpp_defaults",
-            "impact": (
-                "Adding measurands increases per-aligned-sample frame size. "
-                "Removing measurands drops them from clock-aligned reports."
-            ),
-            "secret": False,
-            "stability": "tunable",
-        },
-    )
-    ocpp_cfg_meter_values_aligned_data_dc: str = Field(
-        default=(
-            "Energy.Active.Import.Register,Voltage,Current.Import,"
-            "Power.Active.Import,Power.Offered,SoC"
-        ),
-        description=(
-            "OCPP `MeterValuesAlignedData` for DC chargers — includes SoC "
-            "and drops `Current.Export` (DC rigs don't report export-side "
-            "current). Empty string skips pushing for DC sites."
-        ),
-        json_schema_extra={
-            "category": "ocpp_defaults",
-            "impact": ("Adding measurands increases per-aligned-sample frame size."),
-            "secret": False,
-            "stability": "tunable",
-        },
-    )
-    ocpp_cfg_meter_values_sampled_data_ac: str = Field(
-        default=(
-            "Energy.Active.Import.Register,Voltage,Current.Export,"
-            "Power.Offered,Current.Import,Power.Active.Import"
-        ),
-        description=(
-            "OCPP `MeterValuesSampledData` for AC chargers — measurand list "
-            "for sample-based MeterValues. Empty string skips pushing for AC "
-            "sites."
-        ),
-        json_schema_extra={
-            "category": "ocpp_defaults",
-            "impact": (
-                "These measurands are what the transaction-detail page reads "
-                "for live power / energy / phase charts."
-            ),
-            "secret": False,
-            "stability": "tunable",
-        },
-    )
-    ocpp_cfg_meter_values_sampled_data_dc: str = Field(
-        default=(
-            "Energy.Active.Import.Register,Voltage,Current.Import,"
-            "Power.Active.Import,Power.Offered,SoC"
-        ),
-        description=(
-            "OCPP `MeterValuesSampledData` for DC chargers — sample-based "
-            "MeterValues including SoC. Empty string skips pushing for DC sites."
-        ),
-        json_schema_extra={
-            "category": "ocpp_defaults",
-            "impact": ("SoC + Voltage + Current + Power drive the DC fast-charge session view."),
-            "secret": False,
-            "stability": "tunable",
-        },
-    )
+    # Measurand-list keys (MeterValuesAlignedData / MeterValuesSampledData
+    # / StopTxnAlignedData / StopTxnSampledData) are deliberately NOT
+    # pushed in the post-boot burst. They're charger-type-specific (AC
+    # rigs carry `Current.Export`, DC rigs carry `SoC`), and
+    # BootNotification doesn't carry a trustworthy AC/DC signal —
+    # vendor/model strings vary wildly and the operator would have to
+    # label every charger by hand. Operators that need to set them per
+    # charger should use
+    # `POST /api/v1/charge-points/{cp_id}/commands/change-configuration`.
     ocpp_cfg_connection_time_out_seconds: int = Field(
         default=30,
         ge=1,
@@ -1016,78 +947,6 @@ class Settings(BaseSettings):
                 "plugging in; lower → connector frees up sooner if the "
                 "driver walks away."
             ),
-            "secret": False,
-            "stability": "tunable",
-        },
-    )
-    ocpp_cfg_stop_txn_aligned_data_ac: str = Field(
-        default=(
-            "Energy.Active.Import.Register,Voltage,Current.Export,"
-            "Power.Offered,Current.Import,Power.Active.Import"
-        ),
-        description=(
-            "OCPP `StopTxnAlignedData` for AC chargers — measurands included "
-            "in the final `StopTransaction.transactionData` clock-aligned "
-            "block. Empty skips pushing."
-        ),
-        json_schema_extra={
-            "category": "ocpp_defaults",
-            "impact": (
-                "Adds detail to the stop-transaction record for billing / "
-                "audit at the cost of a larger StopTransaction payload."
-            ),
-            "secret": False,
-            "stability": "tunable",
-        },
-    )
-    ocpp_cfg_stop_txn_aligned_data_dc: str = Field(
-        default=(
-            "Energy.Active.Import.Register,Voltage,Current.Import,"
-            "Power.Active.Import,Power.Offered,SoC"
-        ),
-        description=(
-            "OCPP `StopTxnAlignedData` for DC chargers — clock-aligned block "
-            "including SoC. Empty skips pushing for DC sites."
-        ),
-        json_schema_extra={
-            "category": "ocpp_defaults",
-            "impact": "Pairs with `ocpp_cfg_stop_txn_sampled_data_dc`.",
-            "secret": False,
-            "stability": "tunable",
-        },
-    )
-    ocpp_cfg_stop_txn_sampled_data_ac: str = Field(
-        default=(
-            "Energy.Active.Import.Register,Voltage,Current.Export,"
-            "Power.Offered,Current.Import,Power.Active.Import"
-        ),
-        description=(
-            "OCPP `StopTxnSampledData` for AC chargers — sampled block of "
-            "the final `StopTransaction.transactionData`. Empty skips "
-            "pushing."
-        ),
-        json_schema_extra={
-            "category": "ocpp_defaults",
-            "impact": (
-                "Pair with `ocpp_cfg_stop_txn_aligned_data_ac` so the "
-                "transaction archive has both modes' measurands."
-            ),
-            "secret": False,
-            "stability": "tunable",
-        },
-    )
-    ocpp_cfg_stop_txn_sampled_data_dc: str = Field(
-        default=(
-            "Energy.Active.Import.Register,Voltage,Current.Import,"
-            "Power.Active.Import,Power.Offered,SoC"
-        ),
-        description=(
-            "OCPP `StopTxnSampledData` for DC chargers — sampled block "
-            "including SoC. Empty skips pushing for DC sites."
-        ),
-        json_schema_extra={
-            "category": "ocpp_defaults",
-            "impact": "Pairs with `ocpp_cfg_stop_txn_aligned_data_dc`.",
             "secret": False,
             "stability": "tunable",
         },
