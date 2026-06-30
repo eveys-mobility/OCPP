@@ -65,11 +65,16 @@ make update                       # update the gateway
 make update NO_PULL=1             # skip git pull
 ```
 
-Scope is the **gateway only**. The Console (web + server) has its
-own updater — run it separately when you need to bump the Console:
+Scope is the **gateway only**. The
+[**eveys-mobility/Console**](https://github.com/eveys-mobility/Console)
+— the operator-facing system administration UI for this gateway
+(sign-in protected, live snapshot+tail subscriptions, fleet view,
+transaction detail, OCPP-config page, alerts) — is a separate
+service with its own release cycle and its own updater. Run it
+separately when you need to bump the Console:
 
 ```bash
-cd ../eveys-console
+cd ../eveys-console            # https://github.com/eveys-mobility/Console
 sh scripts/updater.sh
 ```
 
