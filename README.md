@@ -21,7 +21,7 @@
 OCPP-J 1.6 CSMS gateway. Python 3.13 on `asyncio` + `uvloop`,
 FastAPI for REST, `grpclib` for gRPC, Kafka for the event firehose,
 HMAC webhooks for at-least-once push. Postgres for relational state,
-ClickHouse for time-series. Apache-2.0.
+ClickHouse for time-series.
 
 ---
 
