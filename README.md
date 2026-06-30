@@ -18,12 +18,10 @@
 
 # eveys-mobility/ocpp
 
-OCPP-J 1.6 CSMS gateway (2.0.1 in progress). Python 3.13 on
-`asyncio` + `uvloop`, FastAPI for REST, `grpclib` for gRPC, Kafka
-for the event firehose, HMAC webhooks for at-least-once push.
-Multi-pod by default — Envoy ring-hash on `cp_id`, Redis presence
-registry + pub/sub command bus, Postgres + ClickHouse for anything
-that has to survive a pod kill. Apache-2.0.
+OCPP-J 1.6 CSMS gateway. Python 3.13 on `asyncio` + `uvloop`,
+FastAPI for REST, `grpclib` for gRPC, Kafka for the event firehose,
+HMAC webhooks for at-least-once push. Postgres for relational state,
+ClickHouse for time-series. Apache-2.0.
 
 ---
 
