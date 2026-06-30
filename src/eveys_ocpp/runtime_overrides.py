@@ -96,6 +96,55 @@ def _coerce_url_or_empty(value: Any) -> str:
     return stripped
 
 
+def _coerce_int_in_range(low: int, high: int, field: str) -> Callable[[Any], int]:
+    """Build a coercer that accepts JSON numbers / strings and clamps
+    to the [low, high] inclusive range. Used by the OCPP post-boot
+    config push allowlist where each numeric key has its own bounds
+    (mirrors the Settings field's ``ge`` / ``le``)."""
+
+    def coerce(value: Any) -> int:
+        if isinstance(value, bool):
+            # `bool is int` in Python; reject the int subclass so a
+            # JSON `true` doesn't silently become `1`.
+            raise ValueError(f"{field}: expected integer, got bool {value!r}")
+        if isinstance(value, int):
+            n = value
+        elif isinstance(value, str):
+            try:
+                n = int(value.strip())
+            except ValueError as exc:
+                raise ValueError(f"{field}: expected integer, got {value!r}") from exc
+        else:
+            raise ValueError(f"{field}: expected integer, got {value!r}")
+        if n < low or n > high:
+            raise ValueError(f"{field}: {n} outside [{low}, {high}]")
+        return n
+
+    return coerce
+
+
+def _coerce_measurand_csv(field: str) -> Callable[[Any], str]:
+    """OCPP measurand-list keys are comma-separated strings. Trim each
+    entry, drop empties, re-join. The empty result is permitted (it's
+    how an operator opts out of pushing the key — leaves the charger's
+    vendor default in place).
+
+    No closed-set validation against OCPP measurand names: vendors
+    publish proprietary extensions that the spec doesn't list but
+    chargers happily accept. A typo will be rejected by the charger
+    at ChangeConfiguration time and logged — that's a fine failure
+    mode for an operator-edited field.
+    """
+
+    def coerce(value: Any) -> str:
+        if not isinstance(value, str):
+            raise ValueError(f"{field}: expected string, got {value!r}")
+        parts = [p.strip() for p in value.split(",") if p.strip()]
+        return ",".join(parts)
+
+    return coerce
+
+
 def _coerce_url(value: Any) -> str:
     """Like `_coerce_url_or_empty` but rejects the empty value. Used
     for the global `webhook_base_url` since clearing it disables the
@@ -244,6 +293,82 @@ _ALLOWLIST: dict[str, _AllowlistEntry] = {
         coerce=_coerce_bool,
         description="tx.stopped webhook delivery toggle." + _WEBHOOK_ENABLE_ASYMMETRY,
     ),
+    # ---- Post-boot ChangeConfiguration push (OCPP config page) ----
+    # Each key here is read fresh by `handlers.v16.boot_notification.
+    # _post_boot_keys` on every boot, so an operator edit takes effect
+    # on the next boot without restarting the gateway. AC/DC measurand
+    # variants are independently settable so a mixed-site operator
+    # can tune both without restarting.
+    "meter_value_sample_interval_seconds": _AllowlistEntry(
+        name="meter_value_sample_interval_seconds",
+        coerce=_coerce_int_in_range(5, 3600, "meter_value_sample_interval_seconds"),
+        description="Seconds between MeterValues samples during a transaction.",
+    ),
+    "ocpp_cfg_heartbeat_interval_seconds": _AllowlistEntry(
+        name="ocpp_cfg_heartbeat_interval_seconds",
+        coerce=_coerce_int_in_range(10, 86400, "ocpp_cfg_heartbeat_interval_seconds"),
+        description="HeartbeatInterval pushed via ChangeConfiguration after boot.",
+    ),
+    "ocpp_cfg_connection_time_out_seconds": _AllowlistEntry(
+        name="ocpp_cfg_connection_time_out_seconds",
+        coerce=_coerce_int_in_range(1, 600, "ocpp_cfg_connection_time_out_seconds"),
+        description="ConnectionTimeOut (seconds) pushed after boot.",
+    ),
+    "ocpp_cfg_transaction_message_attempts": _AllowlistEntry(
+        name="ocpp_cfg_transaction_message_attempts",
+        coerce=_coerce_int_in_range(1, 20, "ocpp_cfg_transaction_message_attempts"),
+        description="TransactionMessageAttempts pushed after boot.",
+    ),
+    "ocpp_cfg_transaction_message_retry_interval_seconds": _AllowlistEntry(
+        name="ocpp_cfg_transaction_message_retry_interval_seconds",
+        coerce=_coerce_int_in_range(1, 3600, "ocpp_cfg_transaction_message_retry_interval_seconds"),
+        description="TransactionMessageRetryInterval (seconds) pushed after boot.",
+    ),
+    "ocpp_cfg_websocket_ping_interval_seconds": _AllowlistEntry(
+        name="ocpp_cfg_websocket_ping_interval_seconds",
+        coerce=_coerce_int_in_range(5, 3600, "ocpp_cfg_websocket_ping_interval_seconds"),
+        description="WebSocketPingInterval (seconds) pushed after boot.",
+    ),
+    "ocpp_cfg_meter_values_aligned_data_ac": _AllowlistEntry(
+        name="ocpp_cfg_meter_values_aligned_data_ac",
+        coerce=_coerce_measurand_csv("ocpp_cfg_meter_values_aligned_data_ac"),
+        description="MeterValuesAlignedData CSV for AC chargers. Empty = skip pushing.",
+    ),
+    "ocpp_cfg_meter_values_aligned_data_dc": _AllowlistEntry(
+        name="ocpp_cfg_meter_values_aligned_data_dc",
+        coerce=_coerce_measurand_csv("ocpp_cfg_meter_values_aligned_data_dc"),
+        description="MeterValuesAlignedData CSV for DC chargers. Empty = skip pushing.",
+    ),
+    "ocpp_cfg_meter_values_sampled_data_ac": _AllowlistEntry(
+        name="ocpp_cfg_meter_values_sampled_data_ac",
+        coerce=_coerce_measurand_csv("ocpp_cfg_meter_values_sampled_data_ac"),
+        description="MeterValuesSampledData CSV for AC chargers. Empty = skip pushing.",
+    ),
+    "ocpp_cfg_meter_values_sampled_data_dc": _AllowlistEntry(
+        name="ocpp_cfg_meter_values_sampled_data_dc",
+        coerce=_coerce_measurand_csv("ocpp_cfg_meter_values_sampled_data_dc"),
+        description="MeterValuesSampledData CSV for DC chargers. Empty = skip pushing.",
+    ),
+    "ocpp_cfg_stop_txn_aligned_data_ac": _AllowlistEntry(
+        name="ocpp_cfg_stop_txn_aligned_data_ac",
+        coerce=_coerce_measurand_csv("ocpp_cfg_stop_txn_aligned_data_ac"),
+        description="StopTxnAlignedData CSV for AC chargers. Empty = skip pushing.",
+    ),
+    "ocpp_cfg_stop_txn_aligned_data_dc": _AllowlistEntry(
+        name="ocpp_cfg_stop_txn_aligned_data_dc",
+        coerce=_coerce_measurand_csv("ocpp_cfg_stop_txn_aligned_data_dc"),
+        description="StopTxnAlignedData CSV for DC chargers. Empty = skip pushing.",
+    ),
+    "ocpp_cfg_stop_txn_sampled_data_ac": _AllowlistEntry(
+        name="ocpp_cfg_stop_txn_sampled_data_ac",
+        coerce=_coerce_measurand_csv("ocpp_cfg_stop_txn_sampled_data_ac"),
+        description="StopTxnSampledData CSV for AC chargers. Empty = skip pushing.",
+    ),
+    "ocpp_cfg_stop_txn_sampled_data_dc": _AllowlistEntry(
+        name="ocpp_cfg_stop_txn_sampled_data_dc",
+        coerce=_coerce_measurand_csv("ocpp_cfg_stop_txn_sampled_data_dc"),
+        description="StopTxnSampledData CSV for DC chargers. Empty = skip pushing.",
+    ),
 }
 
 
@@ -378,4 +503,18 @@ AllowlistName = Literal[
     "webhook_enable_cp_meter",
     "webhook_enable_tx_started",
     "webhook_enable_tx_stopped",
+    "meter_value_sample_interval_seconds",
+    "ocpp_cfg_heartbeat_interval_seconds",
+    "ocpp_cfg_connection_time_out_seconds",
+    "ocpp_cfg_transaction_message_attempts",
+    "ocpp_cfg_transaction_message_retry_interval_seconds",
+    "ocpp_cfg_websocket_ping_interval_seconds",
+    "ocpp_cfg_meter_values_aligned_data_ac",
+    "ocpp_cfg_meter_values_aligned_data_dc",
+    "ocpp_cfg_meter_values_sampled_data_ac",
+    "ocpp_cfg_meter_values_sampled_data_dc",
+    "ocpp_cfg_stop_txn_aligned_data_ac",
+    "ocpp_cfg_stop_txn_aligned_data_dc",
+    "ocpp_cfg_stop_txn_sampled_data_ac",
+    "ocpp_cfg_stop_txn_sampled_data_dc",
 ]

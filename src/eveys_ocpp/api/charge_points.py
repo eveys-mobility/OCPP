@@ -28,6 +28,7 @@ from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, Query, Request
+from pydantic import BaseModel, Field
 
 from eveys_ocpp.api._errors import ERR_BAD_REQUEST, ERR_UNKNOWN_CP_ID, ApiError
 from eveys_ocpp.api._pagination import (
@@ -49,6 +50,7 @@ from eveys_ocpp.persistence.repositories import (
     get_charge_point_detail,
     list_charge_points,
     list_transactions_by_cp,
+    update_charger_type,
 )
 
 router = APIRouter(tags=["charge_points"])
@@ -89,6 +91,7 @@ def _to_response(cp: dict[str, Any]) -> dict[str, Any]:
         "firmware_version": cp["firmware_version"],
         "serial_number": cp["serial_number"],
         "ocpp_version": cp.get("ocpp_version"),
+        "charger_type": cp.get("charger_type"),
         "last_boot_at": _isoformat(cp["last_boot_at"]),
         "last_heartbeat_at": _isoformat(cp["last_heartbeat_at"]),
         "last_status": cp["last_status"],
@@ -486,3 +489,65 @@ async def get_charge_point_route(request: Request, cp_id: str) -> dict[str, Any]
     response["latest_meter"] = latest_meter
     response["request_id"] = request.state.request_id
     return response
+
+
+_VALID_CHARGER_TYPES = {"ac", "dc"}
+
+
+class _ChargerTypePatch(BaseModel):
+    """PATCH body for `PATCH /charge-points/{cp_id}/type`.
+
+    `charger_type` accepts ``'ac'``, ``'dc'``, or ``null`` (clear back
+    to "unknown"). Anything else 400s — the post-boot push reads this
+    column to pick AC vs DC measurand lists, so a typo would silently
+    fall through to the AC default."""
+
+    charger_type: str | None = Field(
+        default=None,
+        description="Either 'ac', 'dc', or null to clear.",
+    )
+
+
+@router.patch(
+    "/charge-points/{cp_id}/type",
+    summary="Set the charger_type ('ac' or 'dc') used for post-boot config push",
+    responses={
+        200: {"description": "Updated; returns the new value."},
+        400: {"model": ErrorEnvelope, "description": "Bad charger_type."},
+        404: {"model": ErrorEnvelope, "description": "Unknown cp_id."},
+    },
+)
+async def patch_charger_type(
+    request: Request, cp_id: str, body: _ChargerTypePatch
+) -> dict[str, Any]:
+    """Update the AC/DC flag on a charger row.
+
+    The flag is read by the BootNotification handler when it builds
+    the post-boot ChangeConfiguration burst; DC sites get the SoC-
+    bearing measurand list, AC sites get the per-phase one. ``null``
+    clears the column — the post-boot push then falls back to the AC
+    default (DC measurands would be rejected by an AC rig; AC ones
+    are universal)."""
+    requested = body.charger_type
+    if requested is not None and requested.lower() not in _VALID_CHARGER_TYPES:
+        raise ApiError(
+            status_code=400,
+            error_code=ERR_BAD_REQUEST,
+            message="charger_type must be 'ac', 'dc', or null",
+        )
+    normalized = requested.lower() if isinstance(requested, str) else None
+
+    async with session_scope(request.app.state.session_factory) as session:
+        rows = await update_charger_type(session, cp_id=cp_id, charger_type=normalized)
+    if rows == 0:
+        raise ApiError(
+            status_code=404,
+            error_code=ERR_UNKNOWN_CP_ID,
+            message=f"unknown cp_id: {cp_id}",
+        )
+
+    return {
+        "cp_id": cp_id,
+        "charger_type": normalized,
+        "request_id": request.state.request_id,
+    }

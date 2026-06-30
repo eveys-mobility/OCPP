@@ -52,6 +52,14 @@ class ChargePoint(Base):
     # which OCPP surface a charger speaks.
     ocpp_version: Mapped[str | None] = mapped_column(String(16))
 
+    # 'ac' or 'dc'. Drives which measurand lists the boot handler
+    # pushes via post-boot ChangeConfiguration (DC sites carry SoC;
+    # AC sites carry Current.Export). NULL is treated as 'ac' by the
+    # push path — the safer default since DC measurands are
+    # rejected by AC chargers but AC measurands are universal.
+    # Operators set this via the Console.
+    charger_type: Mapped[str | None] = mapped_column(String(8))
+
     last_boot_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_status: Mapped[str | None] = mapped_column(String(32))

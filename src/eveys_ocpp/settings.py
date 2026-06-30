@@ -883,6 +883,272 @@ class Settings(BaseSettings):
         },
     )
 
+    # ---- Post-boot ChangeConfiguration matrix ---------------------------
+    # Pushed to every charger after `BootNotification.Accepted`. Operators
+    # tune these from the Console's "OCPP config" page; the values flow
+    # through the same runtime-overrides path as `meter_value_sample_
+    # interval_seconds`, so a change applies on the *next* boot without
+    # restarting the gateway. Best-effort delivery — a charger that
+    # rejects a key (read-only, unknown on older firmware, key not
+    # supported by the vendor profile) is logged and we move on; an
+    # operator can fix the value or remove it from the push via the
+    # admin/config endpoint.
+    #
+    # The CSV measurand list mirrors what the user spec (#0014) prescribes
+    # and is identical for sampled/aligned/stop-txn variants; chargers
+    # that don't implement a particular measurand will drop it but the
+    # key itself stays accepted. Default of empty string means "skip
+    # pushing this key entirely" — leave a charger's vendor default
+    # alone instead of clobbering it with a value the operator never
+    # set.
+    ocpp_cfg_heartbeat_interval_seconds: int = Field(
+        default=60,
+        ge=10,
+        le=86400,
+        description=(
+            "Pushed to chargers as `ChangeConfiguration(HeartbeatInterval=…)` "
+            "after each Accepted boot. Mirrors the value placed in "
+            "`BootNotificationResponse.interval` — pushing it explicitly "
+            "catches firmwares that ignore the response field."
+        ),
+        json_schema_extra={
+            "category": "ocpp_defaults",
+            "impact": (
+                "Lower → quicker offline detection but more heartbeat "
+                "traffic. Coordinate with `REDIS_ONLINE_TTL_SECONDS` "
+                "(rule of thumb: TTL ~= 2x heartbeat)."
+            ),
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+    # Measurand-list keys split by charger_type ('ac' vs 'dc'). AC
+    # rigs typically carry per-phase Voltage/Current.Export; DC rigs
+    # add the SoC measurand and drop Current.Export. The boot handler
+    # picks one or the other based on the charge_points.charger_type
+    # column.
+    ocpp_cfg_meter_values_aligned_data_ac: str = Field(
+        default=(
+            "Energy.Active.Import.Register,Voltage,Current.Export,"
+            "Power.Offered,Current.Import,Power.Active.Import"
+        ),
+        description=(
+            "OCPP `MeterValuesAlignedData` for AC chargers — comma-separated "
+            "measurand list for clock-aligned MeterValues. Empty string skips "
+            "pushing this key on boot for AC sites."
+        ),
+        json_schema_extra={
+            "category": "ocpp_defaults",
+            "impact": (
+                "Adding measurands increases per-aligned-sample frame size. "
+                "Removing measurands drops them from clock-aligned reports."
+            ),
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+    ocpp_cfg_meter_values_aligned_data_dc: str = Field(
+        default=(
+            "Energy.Active.Import.Register,Voltage,Current.Import,"
+            "Power.Active.Import,Power.Offered,SoC"
+        ),
+        description=(
+            "OCPP `MeterValuesAlignedData` for DC chargers — includes SoC "
+            "and drops `Current.Export` (DC rigs don't report export-side "
+            "current). Empty string skips pushing for DC sites."
+        ),
+        json_schema_extra={
+            "category": "ocpp_defaults",
+            "impact": ("Adding measurands increases per-aligned-sample frame size."),
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+    ocpp_cfg_meter_values_sampled_data_ac: str = Field(
+        default=(
+            "Energy.Active.Import.Register,Voltage,Current.Export,"
+            "Power.Offered,Current.Import,Power.Active.Import"
+        ),
+        description=(
+            "OCPP `MeterValuesSampledData` for AC chargers — measurand list "
+            "for sample-based MeterValues. Empty string skips pushing for AC "
+            "sites."
+        ),
+        json_schema_extra={
+            "category": "ocpp_defaults",
+            "impact": (
+                "These measurands are what the transaction-detail page reads "
+                "for live power / energy / phase charts."
+            ),
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+    ocpp_cfg_meter_values_sampled_data_dc: str = Field(
+        default=(
+            "Energy.Active.Import.Register,Voltage,Current.Import,"
+            "Power.Active.Import,Power.Offered,SoC"
+        ),
+        description=(
+            "OCPP `MeterValuesSampledData` for DC chargers — sample-based "
+            "MeterValues including SoC. Empty string skips pushing for DC sites."
+        ),
+        json_schema_extra={
+            "category": "ocpp_defaults",
+            "impact": ("SoC + Voltage + Current + Power drive the DC fast-charge session view."),
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+    ocpp_cfg_connection_time_out_seconds: int = Field(
+        default=30,
+        ge=1,
+        le=600,
+        description=(
+            "OCPP `ConnectionTimeOut` — how long the charger keeps a "
+            "connector reserved after an Authorize before requiring a new "
+            "swipe."
+        ),
+        json_schema_extra={
+            "category": "ocpp_defaults",
+            "impact": (
+                "Higher → drivers can take longer between authorising and "
+                "plugging in; lower → connector frees up sooner if the "
+                "driver walks away."
+            ),
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+    ocpp_cfg_stop_txn_aligned_data_ac: str = Field(
+        default=(
+            "Energy.Active.Import.Register,Voltage,Current.Export,"
+            "Power.Offered,Current.Import,Power.Active.Import"
+        ),
+        description=(
+            "OCPP `StopTxnAlignedData` for AC chargers — measurands included "
+            "in the final `StopTransaction.transactionData` clock-aligned "
+            "block. Empty skips pushing."
+        ),
+        json_schema_extra={
+            "category": "ocpp_defaults",
+            "impact": (
+                "Adds detail to the stop-transaction record for billing / "
+                "audit at the cost of a larger StopTransaction payload."
+            ),
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+    ocpp_cfg_stop_txn_aligned_data_dc: str = Field(
+        default=(
+            "Energy.Active.Import.Register,Voltage,Current.Import,"
+            "Power.Active.Import,Power.Offered,SoC"
+        ),
+        description=(
+            "OCPP `StopTxnAlignedData` for DC chargers — clock-aligned block "
+            "including SoC. Empty skips pushing for DC sites."
+        ),
+        json_schema_extra={
+            "category": "ocpp_defaults",
+            "impact": "Pairs with `ocpp_cfg_stop_txn_sampled_data_dc`.",
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+    ocpp_cfg_stop_txn_sampled_data_ac: str = Field(
+        default=(
+            "Energy.Active.Import.Register,Voltage,Current.Export,"
+            "Power.Offered,Current.Import,Power.Active.Import"
+        ),
+        description=(
+            "OCPP `StopTxnSampledData` for AC chargers — sampled block of "
+            "the final `StopTransaction.transactionData`. Empty skips "
+            "pushing."
+        ),
+        json_schema_extra={
+            "category": "ocpp_defaults",
+            "impact": (
+                "Pair with `ocpp_cfg_stop_txn_aligned_data_ac` so the "
+                "transaction archive has both modes' measurands."
+            ),
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+    ocpp_cfg_stop_txn_sampled_data_dc: str = Field(
+        default=(
+            "Energy.Active.Import.Register,Voltage,Current.Import,"
+            "Power.Active.Import,Power.Offered,SoC"
+        ),
+        description=(
+            "OCPP `StopTxnSampledData` for DC chargers — sampled block "
+            "including SoC. Empty skips pushing for DC sites."
+        ),
+        json_schema_extra={
+            "category": "ocpp_defaults",
+            "impact": "Pairs with `ocpp_cfg_stop_txn_aligned_data_dc`.",
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+    ocpp_cfg_transaction_message_attempts: int = Field(
+        default=3,
+        ge=1,
+        le=20,
+        description=(
+            "OCPP `TransactionMessageAttempts` — how many times the charger "
+            "re-sends a transaction-related CALL (StartTransaction / "
+            "StopTransaction / MeterValues) before giving up while offline."
+        ),
+        json_schema_extra={
+            "category": "ocpp_defaults",
+            "impact": (
+                "Higher → more recovery against transient outages at the "
+                "cost of buffer pressure on the charger."
+            ),
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+    ocpp_cfg_transaction_message_retry_interval_seconds: int = Field(
+        default=2,
+        ge=1,
+        le=3600,
+        description=(
+            "OCPP `TransactionMessageRetryInterval` — base backoff between "
+            "retries of transaction-related CALLs while offline."
+        ),
+        json_schema_extra={
+            "category": "ocpp_defaults",
+            "impact": (
+                "Combines with `ocpp_cfg_transaction_message_attempts` for the total retry window."
+            ),
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+    ocpp_cfg_websocket_ping_interval_seconds: int = Field(
+        default=30,
+        ge=5,
+        le=3600,
+        description=(
+            "OCPP `WebSocketPingInterval` — how often the charger sends a "
+            "WebSocket ping frame to keep the connection warm through "
+            "NAT / load-balancer idle timeouts."
+        ),
+        json_schema_extra={
+            "category": "ocpp_defaults",
+            "impact": (
+                "Lower → faster detection of half-open TCP at the cost of "
+                "more WS frames. 30 s is below most cloud LB idle limits "
+                "(60-120 s)."
+            ),
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+
     # ---- Cross-pod command bus (ADR-0016) -------------------------------
     bus_request_timeout_seconds: int = Field(
         default=30,

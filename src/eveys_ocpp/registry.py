@@ -143,7 +143,10 @@ class Registry:
     async def mark_offline(self, cp_id: str) -> bool:
         """Release the key iff this pod still owns it. Returns True on delete."""
         with _timed_redis("eval"):
-            deleted_raw = await self._redis.eval(
+            # redis-py's stubs annotate the union of sync/async return
+            # types on its single client; the asyncio Redis class
+            # actually returns a coroutine, but mypy sees the union.
+            deleted_raw = await self._redis.eval(  # type: ignore[misc]
                 _DEL_IF_OWNER,
                 1,
                 _key(cp_id),
@@ -177,7 +180,7 @@ class Registry:
         """
         went_offline_at = datetime.now(UTC).isoformat()
         with _timed_redis("set"):
-            await self._redis.hset(
+            await self._redis.hset(  # type: ignore[misc]
                 _offline_marker_key(cp_id),
                 mapping={
                     "went_offline_at": went_offline_at,
@@ -204,7 +207,7 @@ class Registry:
         """
         key = _offline_marker_key(cp_id)
         with _timed_redis("get"):
-            data = await self._redis.hgetall(key)
+            data = await self._redis.hgetall(key)  # type: ignore[misc]
         if not data:
             return None
         # decode_responses=True → str keys/values; normalize defensively.

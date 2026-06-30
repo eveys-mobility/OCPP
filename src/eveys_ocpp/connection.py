@@ -239,6 +239,22 @@ class EveysChargePoint(Cpv16):
             message_id=message_id,
         )
 
+        # Liveness: every inbound frame (CALL or response) is evidence
+        # the charger is alive — MeterValues during a transaction can
+        # be the only traffic while heartbeats are paused. Refresh the
+        # online registry TTL so the cp doesn't flap to offline mid-
+        # session. Heartbeat handler still does its own refresh +
+        # reclaim — leaving that intact keeps the heartbeat-specific
+        # log path untouched. Best-effort; a Redis hiccup never blocks
+        # the frame.
+        if self.registry is not None:
+            try:
+                refreshed = await self.registry.refresh(self.id)
+                if not refreshed:
+                    await self.registry.mark_online(self.id)
+            except Exception as exc:
+                log.warning("registry.refresh_on_inbound_failed", error=str(exc))
+
         # Hot-checked via the runtime-override layer so an admin can
         # flip the rate limiter without a pod restart. Default is
         # the boot-time setting; the override takes precedence when

@@ -480,7 +480,9 @@ async def test_meter_value_sample_interval_pushed_after_accepted_boot(
     upsert = AsyncMock(return_value=None)
     monkeypatch.setattr(boot_notification, "upsert_charge_point_boot", upsert)
     # Patch the inter-step sleep so the deferred task fires immediately.
-    monkeypatch.setattr(boot_notification, "_METER_VALUE_PUSH_DELAY_SECONDS", 0)
+    monkeypatch.setattr(boot_notification, "_POST_BOOT_PUSH_DELAY_SECONDS", 0)
+    monkeypatch.setattr(boot_notification, "_POST_BOOT_INTER_CALL_GAP_SECONDS", 0)
+    monkeypatch.setattr(boot_notification, "_resolve_charger_type", AsyncMock(return_value="ac"))
     fake_cp.call = AsyncMock(return_value=MagicMock(status="Accepted"))
     # Default is 15 — fake_cp.settings ships with it. If a test needs
     # a different value, swap the whole `cp.settings` for a new
@@ -494,11 +496,19 @@ async def test_meter_value_sample_interval_pushed_after_accepted_boot(
     assert task is not None, "the deferred task should be attached to cp"
     await task
 
-    fake_cp.call.assert_awaited_once()
-    request = fake_cp.call.await_args.args[0]
-    assert type(request).__name__ == "ChangeConfiguration"
-    assert request.key == "MeterValueSampleInterval"
-    assert request.value == "15"
+    # Post-boot push sends a burst of ChangeConfiguration calls (the
+    # full OCPP config matrix, see `_post_boot_keys`). The first one is
+    # still MeterValueSampleInterval=15 — keep that assertion as the
+    # backwards-compatible smoke; verify the rest by gathering the
+    # `(key, value)` pairs from every awaited call.
+    assert fake_cp.call.await_count >= 1
+    first_request = fake_cp.call.await_args_list[0].args[0]
+    assert type(first_request).__name__ == "ChangeConfiguration"
+    assert first_request.key == "MeterValueSampleInterval"
+    assert first_request.value == "15"
+    pushed_keys = {c.args[0].key for c in fake_cp.call.await_args_list}
+    assert "HeartbeatInterval" in pushed_keys
+    assert "MeterValuesSampledData" in pushed_keys
 
 
 @pytest.mark.asyncio
@@ -510,7 +520,9 @@ async def test_meter_value_sample_interval_not_pushed_on_rejected_boot(
     from eveys_ocpp.handlers.v16 import boot_notification
 
     monkeypatch.setattr(boot_notification, "upsert_charge_point_boot", AsyncMock(return_value=None))
-    monkeypatch.setattr(boot_notification, "_METER_VALUE_PUSH_DELAY_SECONDS", 0)
+    monkeypatch.setattr(boot_notification, "_POST_BOOT_PUSH_DELAY_SECONDS", 0)
+    monkeypatch.setattr(boot_notification, "_POST_BOOT_INTER_CALL_GAP_SECONDS", 0)
+    monkeypatch.setattr(boot_notification, "_resolve_charger_type", AsyncMock(return_value="ac"))
     # Backend rejects → handler maps to RegistrationStatus.rejected.
     fake_cp.backend_client = MagicMock()
     fake_cp.backend_client.register_charge_point = AsyncMock(
@@ -539,7 +551,9 @@ async def test_meter_value_sample_interval_push_failure_does_not_propagate(
     from eveys_ocpp.handlers.v16 import boot_notification
 
     monkeypatch.setattr(boot_notification, "upsert_charge_point_boot", AsyncMock(return_value=None))
-    monkeypatch.setattr(boot_notification, "_METER_VALUE_PUSH_DELAY_SECONDS", 0)
+    monkeypatch.setattr(boot_notification, "_POST_BOOT_PUSH_DELAY_SECONDS", 0)
+    monkeypatch.setattr(boot_notification, "_POST_BOOT_INTER_CALL_GAP_SECONDS", 0)
+    monkeypatch.setattr(boot_notification, "_resolve_charger_type", AsyncMock(return_value="ac"))
     fake_cp.call = AsyncMock(side_effect=RuntimeError("WS closed"))
 
     await boot_notification.handle(fake_cp, charge_point_vendor="ACME")

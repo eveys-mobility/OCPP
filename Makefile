@@ -26,7 +26,51 @@ COMPOSE_GRAFANA := docker compose \
 .PHONY: help doctor install format lint types tests e2e smoke compose-smoke precommit clean distclean \
         compose-up compose-down compose-status compose-down-volumes compose-wait \
         build-image protoc migrate pg-migrate ch-migrate docs docs-clean config-export config-export-check config-schema \
-        openapi-export openapi-export-check audit get-token grafana-up grafana-down
+        openapi-export openapi-export-check audit get-token grafana-up grafana-down \
+        update _require-nonprod
+
+# ---- production safety gate -------------------------------------------------
+#
+# Set EVEYS_ENV=production in the shell (or repo-root .env) on hosts where
+# Make should refuse destructive targets. The gate covers everything that
+# stops the running stack, deletes data, or boots test fixtures against
+# a live process:
+#
+#   compose-down              # stops the gateway + data plane
+#   compose-down-volumes      # DESTRUCTIVE: also wipes Postgres / Kafka / CH
+#   e2e                       # brings stack up, runs tests, tears it DOWN
+#   compose-smoke             # boots a fresh stack, runs smoke, tears DOWN
+#   mock-backend              # boots a dev-only mock backend process
+#   grafana-down              # removes the Grafana sidecar containers
+#   distclean                 # wipes the local venv
+#
+# Override for a single invocation with FORCE_PROD=1, e.g.
+#   make compose-down EVEYS_ENV=production FORCE_PROD=1
+# The override is intentionally per-call (not persistent) so an
+# operator's explicit ack is required every time.
+#
+# Read order: shell env first, then `.env`. Same pattern as `get-token`.
+# Stripped of surrounding quotes so a `.env` entry like
+# `EVEYS_ENV="production"` is honoured the same as `EVEYS_ENV=production`.
+EVEYS_ENV ?= $(shell sh -c '\
+	if [ -n "$$EVEYS_ENV" ]; then echo "$$EVEYS_ENV"; \
+	elif [ -f .env ]; then \
+	  grep -E "^EVEYS_ENV=" .env 2>/dev/null | head -n1 | cut -d= -f2- | tr -d "\042\047"; \
+	fi')
+
+_require-nonprod:
+	@if [ "$(EVEYS_ENV)" = "production" ] && [ "$(FORCE_PROD)" != "1" ]; then \
+	  echo ""; \
+	  echo "REFUSING: target '$(MAKECMDGOALS)' is destructive and EVEYS_ENV=production." >&2; \
+	  echo "         It would stop the running stack, wipe data, or boot test fixtures" >&2; \
+	  echo "         against the live process. Set FORCE_PROD=1 to override:" >&2; \
+	  echo "             make $(MAKECMDGOALS) FORCE_PROD=1" >&2; \
+	  echo ""; \
+	  echo "         Safer alternative: scripts/update.sh ships a production-safe" >&2; \
+	  echo "         rebuild + migrate + restart sequence that doesn't tear the" >&2; \
+	  echo "         stack down at the end." >&2; \
+	  exit 1; \
+	fi
 
 # ---- meta -------------------------------------------------------------------
 
@@ -57,6 +101,9 @@ help:
 	@echo "  make get-token          print a bearer token from EVEYS_OCPP_REST_INBOUND_TOKENS (paste into Swagger UI Authorize)"
 	@echo "  make grafana-up         start Grafana + Prometheus sidecar on the compose network (http://localhost:3000)"
 	@echo "  make grafana-down       stop the Grafana + Prometheus sidecar (data volumes kept)"
+	@echo ""
+	@echo "Deployment:"
+	@echo "  make update             one-shot rebuild + migrate + restart (production-safe; see scripts/update.sh)"
 	@echo ""
 	@echo "Docs:"
 	@echo "  make docs               build the docs site (Sphinx + MyST)"
@@ -169,6 +216,25 @@ precommit: install
 build-image:
 	docker build -f deploy/Dockerfile -t eveys-ocpp:dev .
 
+# One-shot production-safe update: rebuilds the gateway image, applies
+# Alembic + ClickHouse migrations through the existing migrate-* services,
+# and recreates `ocpp` + `clickhouse-ingestor` with the new image. Never
+# tears the stack down; safe to run on a live host.
+#
+# Defaults to updating BOTH the gateway and the Console (sibling
+# directory `../eveys-console`). Override:
+#   make update GATEWAY_ONLY=1       # skip the Console rebuild
+#   make update CONSOLE_ONLY=1       # skip the gateway rebuild
+#   make update NO_PULL=1            # don't `git pull` either repo
+#   make update CONSOLE_DIR=/path    # use a non-sibling Console checkout
+update:
+	@flags=""; \
+	if [ "$(GATEWAY_ONLY)" = "1" ]; then flags="$$flags --gateway-only"; fi; \
+	if [ "$(CONSOLE_ONLY)" = "1" ]; then flags="$$flags --console-only"; fi; \
+	if [ "$(NO_PULL)" = "1" ]; then flags="$$flags --no-pull"; fi; \
+	if [ -n "$(CONSOLE_DIR)" ]; then flags="$$flags --console-dir $(CONSOLE_DIR)"; fi; \
+	./scripts/update.sh $$flags
+
 compose-up:
 	$(COMPOSE) up -d
 	@$(MAKE) compose-wait
@@ -211,7 +277,7 @@ grafana-up:
 	@echo "stack — it reads from ClickHouse, which the gateway populates"
 	@echo "as soon as a charger connects."
 
-grafana-down:
+grafana-down: _require-nonprod
 	$(COMPOSE_GRAFANA) stop grafana prometheus
 	$(COMPOSE_GRAFANA) rm -f grafana prometheus
 
@@ -234,10 +300,10 @@ get-token:
 	fi; \
 	echo "$$token" | cut -d, -f1
 
-compose-down:
+compose-down: _require-nonprod
 	$(COMPOSE) down
 
-compose-down-volumes:
+compose-down-volumes: _require-nonprod
 	@echo "WARNING: this will DELETE all local Postgres / Kafka / ClickHouse data."
 	@read -p "Continue? [y/N] " ans; [ "$$ans" = "y" ] || [ "$$ans" = "Y" ] || (echo "Aborted." && exit 1)
 	$(COMPOSE) down --volumes
@@ -284,14 +350,14 @@ ch-migrate: install
 	    --port $${E2E_CH_HTTP_PORT:-8124} \
 	    --db $${EVEYS_OCPP_CLICKHOUSE_DB:-eveys_ocpp}
 
-e2e: install
+e2e: install _require-nonprod
 	@echo ">> bringing up local data plane (compose-up bakes in migrate)..."
 	@$(MAKE) compose-up
 	@echo ">> running e2e tests..."
 	@$(VENV)/bin/pytest tests/e2e -v --no-cov; \
 	rc=$$?; \
 	echo ">> tearing down..."; \
-	$(MAKE) compose-down; \
+	$(MAKE) compose-down FORCE_PROD=$(FORCE_PROD); \
 	exit $$rc
 
 # Tier-3 compose-smoke (ADR-0024). Builds the production-shaped image
@@ -304,7 +370,7 @@ e2e: install
 # Slower than `make tests` (~ 90s); not run as part of `make tests` so
 # the fast inner loop stays fast. CI runs it on MRs that touch
 # `deploy/`, `tests/compose_smoke/`, or `pyproject.toml`.
-compose-smoke: install
+compose-smoke: install _require-nonprod
 	@echo ">> Tier-3 compose smoke (ADR-0024)..."
 	@echo ">> running compose-smoke tests against the production-shaped stack..."
 	@echo "   (the suite's session fixture owns docker compose up/down + schema apply)"
@@ -322,7 +388,7 @@ compose-smoke: install
 # Used by E3-2..E3-6 wiring work; not part of the production runtime.
 # Defaults: bind 0.0.0.0:9200, bearer token "dev-token", accept all id_tags.
 # Override via MOCK_BACKEND_* env vars (see tests/mock_backend/__init__.py).
-mock-backend: install
+mock-backend: install _require-nonprod
 	@echo ">> booting mock backend on http://localhost:$${MOCK_BACKEND_PORT:-9200} ..."
 	@$(VENV)/bin/python -m tests.mock_backend
 
@@ -373,6 +439,6 @@ clean: docs-clean
 	rm -rf .pytest_cache .mypy_cache .ruff_cache .coverage htmlcov coverage.xml
 	find . -type d -name '__pycache__' -not -path './$(VENV)/*' -not -path './docs/.venv/*' -exec rm -rf {} +
 
-distclean: clean
+distclean: clean _require-nonprod
 	rm -rf $(VENV)
 	$(MAKE) -C docs distclean

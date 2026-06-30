@@ -68,7 +68,13 @@ log = get_logger(__name__)
 # error on commands during the boot handshake. 2s is the empirical
 # settle window from the mobilityhouse/ocpp sim and a few production
 # Schneider/ABB units. See eveys-mobility/OCPP#238.
-_METER_VALUE_PUSH_DELAY_SECONDS = 2.0
+_POST_BOOT_PUSH_DELAY_SECONDS = 2.0
+
+# Per-CALL gap between consecutive ChangeConfigurations. Some firmwares
+# serialize CALL processing internally and will queue-drop or reject the
+# tail of a rapid burst. 250 ms is below the human-perceivable level
+# but well above any single-CALL processing time we've observed.
+_POST_BOOT_INTER_CALL_GAP_SECONDS = 0.25
 
 
 # OCPP wire string → mobilityhouse/ocpp enum. Forward-compat: an
@@ -265,20 +271,133 @@ async def _handle_inner(
         except Exception as exc:
             log.warning("boot_notification.publish_failed", error=str(exc))
 
-    # Push the configured MeterValueSampleInterval on every Accepted
-    # boot (eveys-mobility/OCPP#238). Fire-and-forget — we don't want
-    # the boot reply to wait on a charger that's slow to ack the
-    # ChangeConfiguration. The task itself sleeps a couple of seconds
-    # first to let the charger settle post-boot before issuing the
-    # command (some firmwares reject ChangeConfiguration during the
-    # boot handshake window).
+    # Push the full post-boot ChangeConfiguration matrix on every
+    # Accepted boot (eveys-mobility/OCPP#238). Fire-and-forget — we
+    # don't want the boot reply to wait on a charger that's slow to
+    # ack the ChangeConfiguration burst. The task sleeps briefly
+    # first to let the charger settle (some firmwares reject
+    # ChangeConfiguration during the boot handshake window) and then
+    # pushes each key with a small gap between CALLs so firmwares
+    # with serial CALL processing don't queue-drop the tail.
     if status == RegistrationStatus.accepted:
-        _schedule_meter_value_sample_interval_push(cp)
+        _schedule_post_boot_configuration_push(cp)
 
     return _response(received_at, status, interval)
 
 
-def _schedule_meter_value_sample_interval_push(cp: EveysChargePoint) -> None:
+def _post_boot_keys(cp: EveysChargePoint, *, charger_type: str) -> list[tuple[str, str]]:
+    """Build the list of ``(key, value)`` pairs the gateway pushes after
+    each Accepted boot. Values are read through the runtime-override
+    layer so an operator's edit in the Console takes effect on the next
+    boot without a gateway restart. Empty-string values mean "skip this
+    key" — for the CSV measurand-list keys, that lets the operator
+    leave a charger's vendor default alone instead of clobbering it.
+
+    The four measurand-list keys split on AC vs DC: DC sites carry
+    ``SoC`` in the lists and drop ``Current.Export``. The split is
+    keyed on ``charger_type`` ('ac' or 'dc') resolved from the
+    charge_points row (see ``_resolve_charger_type``).
+    """
+    from eveys_ocpp.runtime_overrides import get_override
+
+    settings = cp.settings
+    is_dc = charger_type == "dc"
+
+    # Read each value with override fallthrough. ints stringified into
+    # the OCPP wire form here; CSV measurand keys stay strings.
+    def _i(field: str, default: int) -> str:
+        return str(get_override(field, default))
+
+    def _s(field: str, default: str) -> str:
+        return str(get_override(field, default))
+
+    # Helpers for the AC/DC-split CSV measurand keys: read the right
+    # variant based on charger_type. Override naming stays unsuffixed-
+    # on-the-wire? No: we keep the explicit `_ac` / `_dc` suffix in
+    # both the field name AND the override allowlist so an operator
+    # can change AC and DC independently.
+    def _csv(base: str) -> str:
+        suffix = "_dc" if is_dc else "_ac"
+        field = f"{base}{suffix}"
+        default_attr = getattr(settings, field)
+        return _s(field, default_attr)
+
+    pairs: list[tuple[str, str]] = [
+        (
+            "MeterValueSampleInterval",
+            _i("meter_value_sample_interval_seconds", settings.meter_value_sample_interval_seconds),
+        ),
+        (
+            "HeartbeatInterval",
+            _i(
+                "ocpp_cfg_heartbeat_interval_seconds",
+                settings.ocpp_cfg_heartbeat_interval_seconds,
+            ),
+        ),
+        ("MeterValuesAlignedData", _csv("ocpp_cfg_meter_values_aligned_data")),
+        ("MeterValuesSampledData", _csv("ocpp_cfg_meter_values_sampled_data")),
+        (
+            "ConnectionTimeOut",
+            _i(
+                "ocpp_cfg_connection_time_out_seconds",
+                settings.ocpp_cfg_connection_time_out_seconds,
+            ),
+        ),
+        ("StopTxnAlignedData", _csv("ocpp_cfg_stop_txn_aligned_data")),
+        ("StopTxnSampledData", _csv("ocpp_cfg_stop_txn_sampled_data")),
+        (
+            "TransactionMessageAttempts",
+            _i(
+                "ocpp_cfg_transaction_message_attempts",
+                settings.ocpp_cfg_transaction_message_attempts,
+            ),
+        ),
+        (
+            "TransactionMessageRetryInterval",
+            _i(
+                "ocpp_cfg_transaction_message_retry_interval_seconds",
+                settings.ocpp_cfg_transaction_message_retry_interval_seconds,
+            ),
+        ),
+        (
+            "WebSocketPingInterval",
+            _i(
+                "ocpp_cfg_websocket_ping_interval_seconds",
+                settings.ocpp_cfg_websocket_ping_interval_seconds,
+            ),
+        ),
+    ]
+    # Drop empty-string CSV keys so the operator can opt a charger out
+    # of being clobbered with the gateway's defaults.
+    return [(k, v) for k, v in pairs if v != ""]
+
+
+async def _resolve_charger_type(cp: EveysChargePoint) -> str:
+    """Look up the charger_type column for this cp. NULL → 'ac' (the
+    safer default — AC measurand lists don't include SoC, which DC
+    chargers report but AC chargers don't). Any DB hiccup also
+    defaults to 'ac'; we'd rather push the conservative list than
+    skip the entire post-boot push because the lookup raised.
+    """
+    from sqlalchemy import select
+
+    from eveys_ocpp.persistence.models import ChargePoint
+
+    try:
+        async with session_scope(cp.session_factory) as session:
+            row = await session.execute(
+                select(ChargePoint.charger_type).where(ChargePoint.cp_id == cp.id)
+            )
+            value = row.scalar_one_or_none()
+    except Exception as exc:
+        log.warning("boot_notification.charger_type.lookup_failed", error=str(exc))
+        return "ac"
+    if isinstance(value, str) and value.lower() == "dc":
+        return "dc"
+    return "ac"
+
+
+def _schedule_post_boot_configuration_push(cp: EveysChargePoint) -> None:
     """Spawn the deferred ChangeConfiguration task.
 
     Pinned on `cp` so the asyncio loop doesn't garbage-collect it
@@ -286,8 +405,8 @@ def _schedule_meter_value_sample_interval_push(cp: EveysChargePoint) -> None:
     fire-and-forget code).
     """
     task = asyncio.create_task(
-        _push_meter_value_sample_interval(cp),
-        name=f"boot_notification.push_meter_value_sample_interval.{cp.id}",
+        _push_post_boot_configuration(cp),
+        name=f"boot_notification.push_post_boot_configuration.{cp.id}",
     )
     # Hold a reference via the cp object. The library doesn't expose
     # a hook for this so we tack a private attribute on; reassigning
@@ -297,34 +416,53 @@ def _schedule_meter_value_sample_interval_push(cp: EveysChargePoint) -> None:
     cp._meter_value_push_task = task
 
 
-async def _push_meter_value_sample_interval(cp: EveysChargePoint) -> None:
-    """Wait briefly, then send ChangeConfiguration(MeterValueSampleInterval=…).
+async def _push_post_boot_configuration(cp: EveysChargePoint) -> None:
+    """Wait briefly, then push every configured key with
+    ChangeConfiguration. Failure of any single CALL is logged and the
+    loop moves on — the operator can fix the value via the
+    `/api/v1/admin/config` PATCH and the next boot retries.
 
     Failure modes (all logged at WARN, none re-raised):
-    - Charger has disconnected by the time we wake up → CALL fails.
-    - Charger rejects the key (read-only, unknown on older firmwares)
-      → response.status is `Rejected` / `NotSupported`; we log and
-      move on. Operators can override per-charger via the existing
+    - Charger has disconnected by the time we wake up → first CALL
+      raises; subsequent keys are skipped because the WS is gone.
+    - Charger rejects a key (read-only, unknown on older firmwares,
+      not in its vendor feature profile) → response.status is
+      `Rejected` / `NotSupported`; we log and continue to the next
+      key. Operators can patch per-charger via the existing
       `POST /api/v1/charge-points/{cp_id}/commands/change-configuration`.
     """
     try:
-        await asyncio.sleep(_METER_VALUE_PUSH_DELAY_SECONDS)
-        value = str(cp.settings.meter_value_sample_interval_seconds)
-        request = call.ChangeConfiguration(key="MeterValueSampleInterval", value=value)
-        response = await cp.call(request)
-        accepted_status = getattr(response, "status", None)
-        log.info(
-            "boot_notification.meter_value_sample_interval.pushed",
-            cp_id=cp.id,
-            value=value,
-            response_status=str(accepted_status) if accepted_status is not None else None,
-        )
-    except Exception as exc:
-        # Best-effort — a charger that disconnected or refuses the
-        # key must not crash a background asyncio task or, worse,
-        # propagate to the WS read loop. Log + drop.
-        log.warning(
-            "boot_notification.meter_value_sample_interval.failed",
-            cp_id=cp.id,
-            error=str(exc),
-        )
+        await asyncio.sleep(_POST_BOOT_PUSH_DELAY_SECONDS)
+    except asyncio.CancelledError:  # pragma: no cover — pod shutdown
+        raise
+
+    charger_type = await _resolve_charger_type(cp)
+    pairs = _post_boot_keys(cp, charger_type=charger_type)
+    for idx, (key, value) in enumerate(pairs):
+        try:
+            request = call.ChangeConfiguration(key=key, value=value)
+            response = await cp.call(request)
+            response_status = getattr(response, "status", None)
+            log.info(
+                "boot_notification.change_configuration.pushed",
+                cp_id=cp.id,
+                key=key,
+                value=value,
+                response_status=str(response_status) if response_status is not None else None,
+            )
+        except Exception as exc:
+            # Best-effort per-key — a single rejected key must not
+            # abort the rest. The WS path is unaffected; an operator
+            # diagnosing rejections reads the per-key log line.
+            log.warning(
+                "boot_notification.change_configuration.failed",
+                cp_id=cp.id,
+                key=key,
+                value=value,
+                error=str(exc),
+            )
+        # Pace the burst so firmwares with serial CALL processing don't
+        # queue-drop the tail. Skip the gap after the last key — no
+        # point delaying the task's exit.
+        if idx < len(pairs) - 1:
+            await asyncio.sleep(_POST_BOOT_INTER_CALL_GAP_SECONDS)
