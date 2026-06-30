@@ -55,7 +55,9 @@ COMPOSE_GRAFANA := docker compose \
 EVEYS_ENV ?= $(shell sh -c '\
 	if [ -n "$$EVEYS_ENV" ]; then echo "$$EVEYS_ENV"; \
 	elif [ -f .env ]; then \
-	  grep -E "^EVEYS_ENV=" .env 2>/dev/null | head -n1 | cut -d= -f2- | tr -d "\042\047"; \
+	  grep -E "^[[:space:]]*EVEYS_ENV[[:space:]]*=" .env 2>/dev/null \
+	    | head -n1 | sed -E "s/^[[:space:]]*EVEYS_ENV[[:space:]]*=[[:space:]]*//" \
+	    | tr -d "\042\047" | tr -d "[:space:]"; \
 	fi')
 
 _require-nonprod:
