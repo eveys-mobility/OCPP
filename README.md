@@ -82,13 +82,14 @@ For a rolling update on a server, `make update` rebuilds the image,
 runs the migrations against the live Postgres before the gateway
 starts, recreates the gateway containers, and waits for `/api/v1/ready`
 to come back green. It never tears the stack down, so it's safe to run
-on a host that's serving live traffic.
+on a host that's serving live traffic. `NO_PULL=1` skips `git pull`.
 
-Production hosts should set `EVEYS_ENV=production` (in the shell or in
-`.env`). The Makefile then refuses anything destructive — stopping the
-stack, wiping volumes, running the e2e suite, dropping the venv — and
-prints a clear message telling the operator what they'd need to add
-(`FORCE_PROD=1`) if they really mean it.
+Production hosts should mark themselves by setting `EVEYS_ENV=production`
+— in the shell, or in `.env` (any leading whitespace is tolerated). On
+a marked host the Makefile refuses anything destructive: stopping the
+stack, wiping volumes, running the e2e suite, dropping the venv. Each
+refusal prints the exact override (`FORCE_PROD=1`) for the rare
+intentional case.
 
 ### Make targets
 

@@ -112,7 +112,7 @@ help:
 	@echo "  make docs-clean         remove docs/_build/"
 	@echo ""
 	@echo "Config reference (ADR-0025):"
-	@echo "  make config-export       regenerate docs/11-configuration-reference.md + .env.example"
+	@echo "  make config-export       regenerate docs/11-configuration-reference.md + .env.reference"
 	@echo "  make config-export-check fail if either file is out of date with src/eveys_ocpp/settings.py"
 	@echo "  make openapi-export      regenerate docs/api/openapi.{json,yaml} from the FastAPI app"
 	@echo "  make openapi-export-check fail if the committed OpenAPI files drift from the FastAPI app"
@@ -402,8 +402,8 @@ docs-clean:
 # ---- config reference (ADR-0025) --------------------------------------------
 #
 # `Settings` is the source of truth for docs/11-configuration-reference.md
-# and .env.example. Regenerate both with `make config-export` whenever you
-# add or change a field. CI runs `--check` (E0-14) to refuse drift.
+# and .env.reference. Regenerate both with `make config-export` whenever
+# you add or change a field. CI runs `--check` (E0-14) to refuse drift.
 
 config-export: install
 	$(VENV)/bin/python scripts/render_config_reference.py
