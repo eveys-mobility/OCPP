@@ -44,6 +44,7 @@ from eveys_ocpp.persistence.db import session_scope
 from eveys_ocpp.persistence.repositories import (
     get_webhook_backlog_by_id,
     list_webhook_backlog,
+    purge_dead_webhook_backlog,
     purge_webhook_backlog,
     resurrect_dead_webhook_backlog,
     resurrect_webhook_backlog,
@@ -308,6 +309,43 @@ async def replay_dead_backlog_route(
         count = await resurrect_dead_webhook_backlog(session, event_types=event_types)
     log.info(
         "webhook_backlog.bulk_replay_requested",
+        count=count,
+        event_types=event_types,
+        actor=actor,
+    )
+    return {"count": count}
+
+
+class PurgeDeadBody(BaseModel):
+    """Body for bulk-purge. Same shape as ``ReplayDeadBody`` — optional
+    ``event_type`` filter, empty body purges every dead row across every
+    type."""
+
+    event_type: list[str] | None = Field(
+        default=None,
+        description=(
+            "Optional list of event_type values to purge. Omit to delete "
+            "every dead row across all event types. Live rows are never "
+            "touched — the ``WHERE dead=true`` guard is enforced in the "
+            "repository layer."
+        ),
+    )
+
+
+@router.post(
+    "/webhook-backlog/purge-dead",
+    summary="Bulk-delete every dead row (optionally filtered by event_type)",
+)
+async def purge_dead_backlog_route(
+    request: Request,
+    body: PurgeDeadBody | None = None,
+) -> dict[str, Any]:
+    actor = _actor(request)
+    event_types = body.event_type if body else None
+    async with session_scope(request.app.state.session_factory) as session:
+        count = await purge_dead_webhook_backlog(session, event_types=event_types)
+    log.info(
+        "webhook_backlog.bulk_purge_requested",
         count=count,
         event_types=event_types,
         actor=actor,

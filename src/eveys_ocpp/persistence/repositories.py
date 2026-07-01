@@ -2406,3 +2406,21 @@ async def purge_webhook_backlog(
     result = await session.execute(stmt)
     rowcount: int = result.rowcount  # type: ignore[attr-defined]
     return rowcount > 0
+
+
+async def purge_dead_webhook_backlog(
+    session: AsyncSession,
+    *,
+    event_types: list[str] | None,
+) -> int:
+    """Bulk-delete every dead row (optionally filtered by event_type).
+    Returns the number of rows removed. Live rows are never touched —
+    the ``WHERE dead=true`` guard is symmetric with the single-row
+    ``purge_webhook_backlog`` helper. Idempotent; a second call after
+    the first drained the dead subset returns 0."""
+    stmt = delete(WebhookDeliveryBacklog).where(WebhookDeliveryBacklog.dead.is_(True))
+    if event_types:
+        stmt = stmt.where(WebhookDeliveryBacklog.event_type.in_(event_types))
+    result = await session.execute(stmt)
+    rowcount: int = result.rowcount  # type: ignore[attr-defined]
+    return int(rowcount or 0)

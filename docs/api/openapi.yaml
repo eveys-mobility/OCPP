@@ -984,6 +984,25 @@ components:
           title: Voltage V
       title: PhaseSnapshot
       type: object
+    PurgeDeadBody:
+      description: 'Body for bulk-purge. Same shape as ``ReplayDeadBody`` — optional
+
+        ``event_type`` filter, empty body purges every dead row across every
+
+        type.'
+      properties:
+        event_type:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          description: Optional list of event_type values to purge. Omit to delete
+            every dead row across all event types. Live rows are never touched — the
+            ``WHERE dead=true`` guard is enforced in the repository layer.
+          title: Event Type
+      title: PurgeDeadBody
+      type: object
     RemoteStartRequest:
       example:
         connector_id: 1
@@ -4595,6 +4614,36 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
           description: Validation Error
       summary: List rows in the webhook delivery backlog
+      tags:
+      - webhook-backlog
+  /api/v1/webhook-backlog/purge-dead:
+    post:
+      operationId: purge_dead_backlog_route_api_v1_webhook_backlog_purge_dead_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              anyOf:
+              - $ref: '#/components/schemas/PurgeDeadBody'
+              - type: 'null'
+              title: Body
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Purge Dead Backlog Route Api V1 Webhook Backlog Purge
+                  Dead Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Bulk-delete every dead row (optionally filtered by event_type)
       tags:
       - webhook-backlog
   /api/v1/webhook-backlog/replay-dead:

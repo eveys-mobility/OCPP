@@ -301,6 +301,40 @@ async def test_bulk_replay_with_event_type_filter(
     assert mock.await_args.kwargs["event_types"] == ["cp.boot"]
 
 
+# ---- POST /webhook-backlog/purge-dead -------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_bulk_purge_without_filter_calls_repo_with_none(
+    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mock = AsyncMock(return_value=5)
+    monkeypatch.setattr(routes, "purge_dead_webhook_backlog", mock)
+
+    resp = await client.post("/api/v1/webhook-backlog/purge-dead")
+
+    assert resp.status_code == 200
+    assert resp.json() == {"count": 5}
+    assert mock.await_args.kwargs["event_types"] is None
+
+
+@pytest.mark.asyncio
+async def test_bulk_purge_with_event_type_filter(
+    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mock = AsyncMock(return_value=1)
+    monkeypatch.setattr(routes, "purge_dead_webhook_backlog", mock)
+
+    resp = await client.post(
+        "/api/v1/webhook-backlog/purge-dead",
+        json={"event_type": ["tx.stopped"]},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json() == {"count": 1}
+    assert mock.await_args.kwargs["event_types"] == ["tx.stopped"]
+
+
 # ---- Auth guard -----------------------------------------------------------
 
 
