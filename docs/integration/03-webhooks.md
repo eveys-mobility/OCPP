@@ -41,12 +41,31 @@ EVEYS_OCPP_WEBHOOK_ENABLE_TX_STARTED=1
 ## Delivery semantics
 
 - **At-least-once.** A delivery may be retried; the backend MUST be idempotent on `X-Eveys-Event-Id`.
-- **Retries**: 5 attempts with exponential backoff: 1 s, 5 s, 30 s, 2 min, 10 min. After 5 failures the event is logged as `webhook.delivery_failed` and dropped from the gateway's retry queue (operators can replay via Kafka if subscribed).
+- **Retries (in-loop)**: 5 attempts with exponential backoff: 1 s, 5 s, 30 s, 2 min, 10 min. After 5 failures the envelope is enqueued into the durable backlog (see below) rather than dropped.
+- **Durable backlog (tail)**: any envelope the dispatcher couldn't deliver in-loop is persisted into the `webhook_delivery_backlog` Postgres table. A background drainer keeps retrying on a coarser cadence (5 min, 15 min, 30 min, 1 h, 2 h, 4 h, 6 h, then held at 6 h) until either the row delivers or ages past the retention window (`EVEYS_OCPP_WEBHOOK_BACKLOG_RETENTION_HOURS`, default 7 days). Retention aging is the only path to `dead=true`; the `eveys_ocpp_webhook_backlog_deadletter_total` counter fires — alert on any non-zero increment.
 - **Per-charger ordering not guaranteed.** Two events from the same charger may arrive out of order. The backend should use `occurred_at` for ordering, not arrival time. Same caveat as Kafka — `cp_id` is the partition key on Kafka, but webhooks are unordered.
 - **HTTP status interpretation**:
   - `2xx` — delivered. Gateway considers the event acknowledged.
-  - `4xx` (except `429`) — backend rejected (malformed signature, schema mismatch, etc.). Gateway logs and **does not retry** — the backend's bug, not a transient failure.
-  - `429` / `5xx` / network timeout → retried per the backoff schedule.
+  - Every other response (`3xx`, `4xx` including `429`, `5xx`, network timeout, TLS error) — treated as a retryable failure. The dispatcher walks its in-loop schedule, then hands the envelope off to the backlog. This holds even for `4xx` — a backend that 401s during token rotation, 502s during a load-balancer flip, or 400s during a rolling schema deploy still gets retried. Backends MUST return 2xx only when the envelope is durably accepted.
+
+### Recovering dead-lettered rows
+
+If a row hits the retention window it's marked `dead=true` and the drainer walks away. Operators can inspect and replay directly against Postgres:
+
+```sql
+-- Inventory: what's still dead-lettered on this gateway?
+SELECT event_type, count(*), max(created_at) AS newest
+  FROM webhook_delivery_backlog
+ WHERE dead = TRUE
+ GROUP BY event_type;
+
+-- Replay a specific event type after a backend fix:
+UPDATE webhook_delivery_backlog
+   SET dead = FALSE, next_attempt_at = now(), last_error = NULL
+ WHERE dead = TRUE AND event_type = 'tx.stopped';
+```
+
+The drainer picks the rows up on its next poll (default cadence `EVEYS_OCPP_WEBHOOK_BACKLOG_POLL_SECONDS = 30`).
 
 The backend SHOULD respond `200 OK` with an empty body or the standard envelope:
 
@@ -82,7 +101,7 @@ def verify(body_bytes: bytes, signature_header: str, secret: str) -> bool:
     return hmac.compare_digest(expected, signature_header[len("sha256=") :])
 ```
 
-**Verify before parsing.** A request that fails signature verification must be rejected with `401`; the gateway will retry and surface the failure in operator alerts after 5 attempts.
+**Verify before parsing.** A request that fails signature verification must be rejected with `401`. Under the "only 2xx = accepted" contract this is retried like any other non-2xx — the envelope flows into the durable backlog after the in-loop retry budget and keeps retrying on the drainer's coarser schedule. A persistent signature mismatch is therefore always operator-visible via `webhook_backlog_size` climbing.
 
 ---
 
@@ -96,7 +115,7 @@ X-Eveys-Signature: sha256=<hex>
 X-Eveys-Event-Id: <uuid v4>          // idempotency key — dedup on this
 X-Eveys-Event-Type: cp.status_changed
 X-Eveys-Delivered-At: 2026-05-05T14:32:11.847+00:00
-X-Eveys-Attempt: 1                   // 1..5 for the retry sequence
+X-Eveys-Attempt: 1                   // monotonic counter across in-loop + backlog retries
 ```
 
 The body always uses the same envelope as everything else:

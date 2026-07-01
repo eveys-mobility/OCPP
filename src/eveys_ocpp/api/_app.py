@@ -52,6 +52,7 @@ from eveys_ocpp.api import (
     sys_kpis,
     timeseries,
     transactions,
+    webhook_backlog,
 )
 from eveys_ocpp.api._auth import make_bearer_auth_middleware
 from eveys_ocpp.api._errors import (
@@ -207,6 +208,7 @@ def make_app(
     app.include_router(admin.router, prefix="/api/v1")
     app.include_router(sys_config.router, prefix="/api/v1")
     app.include_router(sys_kpis.router, prefix="/api/v1")
+    app.include_router(webhook_backlog.router, prefix="/api/v1")
     # SSE event stream (ADR-0030). Bus lifecycle is owned by the
     # caller (transport/rest_server.py) so the route reads it off
     # `app.state.sse_bus`; None when the feature is off.

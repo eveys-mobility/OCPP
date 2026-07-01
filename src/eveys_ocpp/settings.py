@@ -1839,6 +1839,121 @@ class Settings(BaseSettings):
         },
     )
 
+    # ---- Webhook backlog (E3-9 tail) ------------------------------------
+    #
+    # When the dispatcher's in-loop retries exhaust (~12.6 min at the
+    # default schedule), the envelope is inserted into the
+    # `webhook_delivery_backlog` Postgres table. A separate long-lived
+    # task (`WebhookBacklogDrainer`) polls that table, re-attempts on a
+    # coarser cadence, and either delivers or ages the row into
+    # `dead=true` after the retention window. See
+    # `webhooks/backlog_drainer.py`.
+    webhook_backlog_enabled: bool = Field(
+        default=True,
+        description=(
+            "Master switch for the durable backlog + drainer. When True "
+            "(the default), envelopes the dispatcher fails to deliver "
+            "in-loop are persisted to `webhook_delivery_backlog` and a "
+            "background drainer keeps retrying them on a coarser cadence. "
+            "When False, the dispatcher's old drop-on-exhaust behaviour "
+            'returns — the `webhook_deliveries_total{outcome="failed"}` '
+            "counter still fires but the envelope is gone."
+        ),
+        json_schema_extra={
+            "category": "webhooks",
+            "impact": (
+                "Disabling brings back the pre-tail behaviour. Only useful "
+                "as a rollback lever if the drainer misbehaves; leave True "
+                "in production."
+            ),
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+    webhook_backlog_poll_seconds: int = Field(
+        default=30,
+        ge=1,
+        le=3600,
+        description=(
+            "How often the drainer polls the backlog table for rows "
+            "whose `next_attempt_at` has arrived. Also the sleep cadence "
+            "when the previous poll returned nothing."
+        ),
+        json_schema_extra={
+            "category": "webhooks",
+            "impact": (
+                "Lower = faster recovery once the backend comes back "
+                "(bounded by this interval); higher = fewer idle-time "
+                "queries against Postgres. 30 s is a comfortable balance."
+            ),
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+    webhook_backlog_batch_size: int = Field(
+        default=50,
+        ge=1,
+        le=1000,
+        description=(
+            "Maximum rows the drainer pulls in one poll cycle. Prevents "
+            "a huge accumulated backlog from producing an unbounded "
+            "burst of concurrent HTTP requests."
+        ),
+        json_schema_extra={
+            "category": "webhooks",
+            "impact": (
+                "Larger = faster catch-up after a long outage; smaller = "
+                "gentler on the backend. Concurrency is also capped by "
+                "`webhook_backlog_max_concurrency` regardless of this."
+            ),
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+    webhook_backlog_max_concurrency: int = Field(
+        default=8,
+        ge=1,
+        le=64,
+        description=(
+            "Maximum in-flight webhook POSTs the drainer allows at "
+            "once, per gateway process. Bounded via an asyncio "
+            "semaphore inside the drain loop."
+        ),
+        json_schema_extra={
+            "category": "webhooks",
+            "impact": (
+                "Higher = faster drain but more concurrent load on the "
+                "customer's backend. 8 is safe against most backend "
+                "connection pools."
+            ),
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+    webhook_backlog_retention_hours: int = Field(
+        default=168,
+        ge=1,
+        le=8760,
+        description=(
+            "How long a backlog row keeps getting retried before the "
+            "drainer flips it to `dead=true`. Default is 7 days — "
+            "matches Kafka's default retention so a customer who cares "
+            "about not-lost events can still recover from the durable "
+            "log for that window."
+        ),
+        json_schema_extra={
+            "category": "webhooks",
+            "impact": (
+                "Longer = more forgiving of prolonged backend outages "
+                "but grows the table. `webhook_backlog_deadletter_total` "
+                "counts rows that hit this cap — alerting on any "
+                "increment is the way to catch real data loss."
+            ),
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+
     # ---- Metrics (Phase 4 / E4-1) ---------------------------------------
     metrics_enabled: bool = Field(
         default=True,

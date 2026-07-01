@@ -401,9 +401,13 @@ KAFKA_PUBLISH_BYTES_TOTAL: Counter = Counter(
 WEBHOOK_DELIVERIES_TOTAL: Counter = Counter(
     "eveys_ocpp_webhook_deliveries_total",
     "Webhook delivery final outcomes (one count per envelope after "
-    "all retries are exhausted), grouped by event_type and outcome "
-    "(`delivered` / `rejected` / `failed`). `rejected` means a 4xx "
-    "from the backend; `failed` means the retry budget was exhausted.",
+    "the in-loop retry budget), grouped by event_type and outcome. "
+    "`delivered` = 2xx from the backend; `failed` = the in-loop "
+    "budget was exhausted (envelope is enqueued into the durable "
+    "backlog for the drainer to keep retrying). `rejected` is "
+    "retained in the label set for schema stability but is no "
+    "longer emitted — non-2xx codes are now retryable and follow "
+    "the `failed` path.",
     labelnames=("event_type", "outcome"),
 )
 WEBHOOK_DELIVERY_LATENCY_SECONDS: Histogram = Histogram(
@@ -424,6 +428,42 @@ WEBHOOK_CONSUMER_LAG_MESSAGES: Gauge = Gauge(
     "Per-partition Kafka lag for the webhook dispatcher's consumer "
     "group. Expensive to track precisely; sampled on every poll loop.",
     labelnames=("topic", "partition"),
+)
+
+# Webhook durable backlog (dispatcher tail). The dispatcher inserts an
+# envelope into `webhook_delivery_backlog` after its in-loop retries
+# exhaust; `WebhookBacklogDrainer` polls that table and either drains
+# the row on 2xx or reschedules it. See `webhooks/backlog_drainer.py`.
+WEBHOOK_BACKLOG_SIZE: Gauge = Gauge(
+    "eveys_ocpp_webhook_backlog_size",
+    "Rows in `webhook_delivery_backlog` where NOT dead. Sampled once "
+    "per drainer poll cycle. Sustained non-zero = backend struggling.",
+)
+WEBHOOK_BACKLOG_OLDEST_AGE_SECONDS: Gauge = Gauge(
+    "eveys_ocpp_webhook_backlog_oldest_age_seconds",
+    "Age of the oldest not-dead backlog row (now - min(created_at)). "
+    "Rises during a backend outage; a value that keeps climbing past "
+    "the retention window signals rows are about to dead-letter.",
+)
+WEBHOOK_BACKLOG_ENQUEUED_TOTAL: Counter = Counter(
+    "eveys_ocpp_webhook_backlog_enqueued_total",
+    "Envelopes the dispatcher inserted into the backlog after its "
+    "in-loop retries exhausted, grouped by event_type. Fires alongside "
+    'the existing `webhook_deliveries_total{outcome="failed"}`.',
+    labelnames=("event_type",),
+)
+WEBHOOK_BACKLOG_DRAIN_TOTAL: Counter = Counter(
+    "eveys_ocpp_webhook_backlog_drain_total",
+    "Backlog drain attempts, grouped by outcome (`drained` = 2xx and "
+    "row deleted, `retried` = retryable failure and next_attempt_at "
+    "bumped, `dead` = 4xx or retention hit and row flagged).",
+    labelnames=("outcome",),
+)
+WEBHOOK_BACKLOG_DEADLETTER_TOTAL: Counter = Counter(
+    "eveys_ocpp_webhook_backlog_deadletter_total",
+    "Rows the drainer flipped to dead=true, grouped by event_type. "
+    "Any non-zero increment is real data loss and warrants an alert.",
+    labelnames=("event_type",),
 )
 
 
@@ -590,6 +630,11 @@ __all__ = [
     "STOP_TRANSACTIONS_TOTAL",
     "STOP_TRANSACTION_REPLAYS_TOTAL",
     "WEBHOOK_ATTEMPTS_TOTAL",
+    "WEBHOOK_BACKLOG_DEADLETTER_TOTAL",
+    "WEBHOOK_BACKLOG_DRAIN_TOTAL",
+    "WEBHOOK_BACKLOG_ENQUEUED_TOTAL",
+    "WEBHOOK_BACKLOG_OLDEST_AGE_SECONDS",
+    "WEBHOOK_BACKLOG_SIZE",
     "WEBHOOK_CONSUMER_LAG_MESSAGES",
     "WEBHOOK_DELIVERIES_TOTAL",
     "WEBHOOK_DELIVERY_LATENCY_SECONDS",

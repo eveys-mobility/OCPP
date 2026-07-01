@@ -20,8 +20,9 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
+from uuid import UUID
 
 import httpx
 from aiokafka import AIOKafkaConsumer
@@ -30,11 +31,13 @@ from eveys_ocpp._generated.events.v1 import events_pb2
 from eveys_ocpp._ocpp_enums import ocpp_string_for
 from eveys_ocpp.metrics import registry as metrics_registry
 from eveys_ocpp.observability import get_logger
+from eveys_ocpp.persistence.repositories import insert_webhook_backlog
 from eveys_ocpp.runtime_overrides import get_override
 from eveys_ocpp.webhooks.signer import compute_signature
 
 if TYPE_CHECKING:
     from aiokafka.structs import ConsumerRecord
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
     from eveys_ocpp.settings import Settings
 
@@ -47,10 +50,23 @@ _BACKOFF_SECONDS: tuple[float, ...] = (1.0, 5.0, 30.0, 120.0, 600.0)
 
 
 class WebhookDispatcher:
-    """Tail event topics, sign, deliver. One instance per process."""
+    """Tail event topics, sign, deliver. One instance per process.
 
-    def __init__(self, settings: Settings) -> None:
+    Optional ``session_factory`` unlocks the durable backlog: when
+    the in-loop retry budget is exhausted the dispatcher inserts a
+    row into ``webhook_delivery_backlog`` for
+    :class:`WebhookBacklogDrainer` to pick up. Legacy callers
+    (tests, tools that don't touch Postgres) can pass ``None`` and
+    fall back to the pre-tail drop-on-exhaust behaviour.
+    """
+
+    def __init__(
+        self,
+        settings: Settings,
+        session_factory: async_sessionmaker[AsyncSession] | None = None,
+    ) -> None:
         self._settings = settings
+        self._session_factory = session_factory
         self._consumer: AIOKafkaConsumer | None = None
         self._http: httpx.AsyncClient | None = None
         self._shutdown = asyncio.Event()
@@ -294,23 +310,14 @@ class WebhookDispatcher:
                 ).inc()
                 return
 
-            if response.status_code == 429 or response.status_code >= 500:
-                log.warning(
-                    "webhook.delivery_attempt_failed",
-                    url=url,
-                    event_id=event_id,
-                    event_type=event_type,
-                    attempt=attempt,
-                    status=response.status_code,
-                )
-                if attempt >= max_attempts:
-                    break
-                await asyncio.sleep(_BACKOFF_SECONDS[attempt - 1])
-                continue
-
-            # 4xx (other than 429) — backend rejected. Don't retry.
-            log.error(
-                "webhook.delivery_rejected",
+            # Non-2xx: everything is retryable. The customer contract
+            # is "only 2xx = accepted"; a 4xx from the backend during a
+            # deploy (401 during token rotation, 502 during load-balancer
+            # flip) is still worth retrying rather than dropping the
+            # envelope forever. Retention aging in the backlog is now
+            # the ONLY path to `dead=true`.
+            log.warning(
+                "webhook.delivery_attempt_failed",
                 url=url,
                 event_id=event_id,
                 event_type=event_type,
@@ -318,10 +325,10 @@ class WebhookDispatcher:
                 status=response.status_code,
                 body=response.text[:200],
             )
-            metrics_registry.WEBHOOK_DELIVERIES_TOTAL.labels(
-                event_type=event_type, outcome="rejected"
-            ).inc()
-            return
+            if attempt >= max_attempts:
+                break
+            await asyncio.sleep(_BACKOFF_SECONDS[attempt - 1])
+            continue
 
         log.error(
             "webhook.delivery_failed",
@@ -333,6 +340,93 @@ class WebhookDispatcher:
         metrics_registry.WEBHOOK_DELIVERIES_TOTAL.labels(
             event_type=event_type, outcome="failed"
         ).inc()
+        await self._enqueue_backlog(
+            url=url,
+            body_bytes=body_bytes,
+            signature=signature,
+            event_id=event_id,
+            event_type=event_type,
+        )
+
+    async def _enqueue_backlog(
+        self,
+        *,
+        url: str,
+        body_bytes: bytes,
+        signature: str,
+        event_id: str,
+        event_type: str,
+    ) -> None:
+        """Persist an exhausted envelope into
+        ``webhook_delivery_backlog`` for the drainer to keep
+        retrying.
+
+        Silently no-ops when ``webhook_backlog_enabled`` is False or
+        no session factory was wired — restores the pre-tail
+        drop-on-exhaust behaviour for callers who explicitly want
+        it (e.g. tests that don't stand up Postgres).
+
+        The row's ``next_attempt_at`` is set to
+        ``now + backlog_poll_seconds`` so the drainer picks it up on
+        its next cycle instead of racing against the current one.
+        A parse failure on ``event_id`` (should never happen — the
+        Kafka events emit UUIDs) is logged and swallowed rather
+        than crashing the delivery loop.
+        """
+        if not self._settings.webhook_backlog_enabled:
+            return
+        if self._session_factory is None:
+            log.warning(
+                "webhook.backlog_no_session_factory",
+                event_id=event_id,
+                event_type=event_type,
+                detail=(
+                    "webhook_backlog_enabled=True but the dispatcher was "
+                    "constructed without a session_factory; envelope "
+                    "dropped. Wire the factory in __main__.py."
+                ),
+            )
+            return
+        try:
+            event_uuid = UUID(event_id)
+        except (TypeError, ValueError) as exc:
+            log.warning(
+                "webhook.backlog_bad_event_id",
+                event_id=event_id,
+                event_type=event_type,
+                error=str(exc),
+            )
+            return
+        next_attempt = datetime.now(UTC) + timedelta(
+            seconds=self._settings.webhook_backlog_poll_seconds
+        )
+        try:
+            async with self._session_factory() as session:
+                await insert_webhook_backlog(
+                    session,
+                    event_id=event_uuid,
+                    event_type=event_type,
+                    url=url,
+                    body=body_bytes,
+                    signature=signature,
+                    next_attempt_at=next_attempt,
+                )
+                await session.commit()
+        except Exception as exc:
+            log.exception(
+                "webhook.backlog_insert_failed",
+                event_id=event_id,
+                event_type=event_type,
+                error=str(exc),
+            )
+            return
+        metrics_registry.WEBHOOK_BACKLOG_ENQUEUED_TOTAL.labels(event_type=event_type).inc()
+        log.info(
+            "webhook.backlog_enqueued",
+            event_id=event_id,
+            event_type=event_type,
+            next_attempt_at=next_attempt.isoformat(),
+        )
 
     # ---- envelope → wire body ---------------------------------------------
 

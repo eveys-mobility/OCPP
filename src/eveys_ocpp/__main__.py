@@ -38,7 +38,7 @@ from eveys_ocpp.transport.grpc_server import OcppGatewayService
 from eveys_ocpp.transport.grpc_server import serve_forever as serve_grpc_forever
 from eveys_ocpp.transport.rest_server import serve_forever as serve_rest_forever
 from eveys_ocpp.transport.ws_server import serve_forever as serve_ws_forever
-from eveys_ocpp.webhooks import WebhookDispatcher
+from eveys_ocpp.webhooks import WebhookBacklogDrainer, WebhookDispatcher
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -214,11 +214,26 @@ async def _serve_all(
     # signed deliveries at backend-configured URLs. Only constructed
     # when `webhook_base_url` is set — empty disables the whole
     # subsystem (dev runs without a backend skip it cleanly).
+    #
+    # The optional `WebhookBacklogDrainer` sibling picks up envelopes
+    # the dispatcher failed to deliver in-loop and keeps retrying
+    # them on a coarser cadence — see webhooks/backlog_drainer.py.
+    # Both share the session factory so the enqueue-side (dispatcher)
+    # and the drain-side (drainer) speak to the same Postgres.
     webhook_dispatcher: WebhookDispatcher | None = None
+    webhook_backlog_drainer: WebhookBacklogDrainer | None = None
     if settings.webhook_base_url:
-        webhook_dispatcher = WebhookDispatcher(settings)
+        webhook_dispatcher = WebhookDispatcher(settings, session_factory=session_factory)
         await webhook_dispatcher.start()
         log.info("webhook_dispatcher.configured", base_url=settings.webhook_base_url)
+        if settings.webhook_backlog_enabled:
+            webhook_backlog_drainer = WebhookBacklogDrainer(
+                settings, session_factory=session_factory
+            )
+            await webhook_backlog_drainer.start()
+            log.info("webhook_backlog.configured")
+        else:
+            log.info("webhook_backlog.disabled")
     else:
         log.info("webhook_dispatcher.disabled")
 
@@ -293,6 +308,11 @@ async def _serve_all(
                         webhook_dispatcher.serve_forever(),
                         name="webhook_dispatcher",
                     )
+                if webhook_backlog_drainer is not None:
+                    tg.create_task(
+                        webhook_backlog_drainer.serve_forever(),
+                        name="webhook_backlog_drainer",
+                    )
                 # Drain orchestrator: idle until SIGTERM, then flips
                 # readiness, sleeps for LB propagation, then raises
                 # `_DrainTriggered` to break the TaskGroup. Disabled
@@ -320,6 +340,8 @@ async def _serve_all(
                 await event_producer.stop()
                 if webhook_dispatcher is not None:
                     await webhook_dispatcher.stop()
+                if webhook_backlog_drainer is not None:
+                    await webhook_backlog_drainer.stop()
                 if backend_client is not None:
                     await backend_client.aclose()
                 if ch_client is not None:

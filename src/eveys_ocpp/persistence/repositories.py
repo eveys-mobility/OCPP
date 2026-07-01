@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
+from uuid import UUID
 
 from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -31,6 +32,7 @@ from .models import (
     Reservation,
     SecurityEvent,
     Transaction,
+    WebhookDeliveryBacklog,
 )
 
 
@@ -2084,3 +2086,323 @@ async def list_authorizations(
         stmt = stmt.where(ChargePointAuthorization.status == status)
     result = await session.execute(stmt)
     return [_authorization_to_dict(auth, cp_id) for auth, cp_id in result.all()]
+
+
+# ---- Webhook delivery backlog (E3-9 tail) --------------------------------
+#
+# Called from webhooks/dispatcher.py (enqueue on exhaustion) and
+# webhooks/backlog_drainer.py (drain loop). All helpers take a
+# caller-owned AsyncSession; the caller commits.
+
+
+async def insert_webhook_backlog(
+    session: AsyncSession,
+    *,
+    event_id: UUID,
+    event_type: str,
+    url: str,
+    body: bytes,
+    signature: str,
+    next_attempt_at: datetime,
+) -> None:
+    """Enqueue an event the dispatcher couldn't deliver in-loop.
+
+    ``ON CONFLICT (event_id) DO NOTHING`` — a Kafka replay of the
+    same envelope must not double-enqueue. The offset commit that
+    follows a delivery attempt is at-least-once, so a crash between
+    "insert row" and "commit offset" would replay the envelope, and
+    the second insert would collide on the UNIQUE event_id. Silently
+    skipping is correct: the row already reflects the same failure
+    state.
+    """
+    stmt = pg_insert(WebhookDeliveryBacklog).values(
+        event_id=event_id,
+        event_type=event_type,
+        url=url,
+        body=body,
+        signature=signature,
+        next_attempt_at=next_attempt_at,
+    )
+    stmt = stmt.on_conflict_do_nothing(index_elements=[WebhookDeliveryBacklog.event_id])
+    await session.execute(stmt)
+
+
+def _backlog_row_to_dict(row: WebhookDeliveryBacklog) -> dict[str, Any]:
+    """Detach the ORM row so the drainer can use it after the session
+    closes. Every field the drainer needs, nothing session-bound."""
+    return {
+        "id": row.id,
+        "event_id": row.event_id,
+        "event_type": row.event_type,
+        "url": row.url,
+        "body": bytes(row.body),
+        "signature": row.signature,
+        "created_at": row.created_at,
+        "next_attempt_at": row.next_attempt_at,
+        "attempts": row.attempts,
+    }
+
+
+async def fetch_ready_webhook_backlog(
+    session: AsyncSession,
+    *,
+    now: datetime,
+    limit: int,
+) -> list[dict[str, Any]]:
+    """Rows the drainer should try next: ``next_attempt_at <= now``,
+    not dead, oldest-scheduled first. Bounded by ``limit`` so a
+    build-up doesn't produce an unbounded batch.
+    """
+    stmt = (
+        select(WebhookDeliveryBacklog)
+        .where(
+            and_(
+                WebhookDeliveryBacklog.next_attempt_at <= now,
+                WebhookDeliveryBacklog.dead.is_(False),
+            )
+        )
+        .order_by(WebhookDeliveryBacklog.next_attempt_at.asc())
+        .limit(limit)
+    )
+    result = await session.execute(stmt)
+    return [_backlog_row_to_dict(row) for row in result.scalars().all()]
+
+
+async def bump_webhook_backlog_attempt(
+    session: AsyncSession,
+    *,
+    backlog_id: UUID,
+    next_attempt_at: datetime,
+    last_error: str,
+) -> None:
+    """After a retryable failure: reschedule the row and record the
+    error. ``attempts`` is incremented atomically so a concurrent
+    drainer (multiple gateway pods) can't clobber the counter.
+    """
+    stmt = (
+        update(WebhookDeliveryBacklog)
+        .where(WebhookDeliveryBacklog.id == backlog_id)
+        .values(
+            attempts=WebhookDeliveryBacklog.attempts + 1,
+            next_attempt_at=next_attempt_at,
+            last_error=last_error,
+        )
+    )
+    await session.execute(stmt)
+
+
+async def mark_webhook_backlog_dead(
+    session: AsyncSession,
+    *,
+    backlog_id: UUID,
+    reason: str,
+) -> None:
+    """Flip a row to dead — either the backend permanently rejected
+    (non-429 4xx) or the row aged past the retention window. Dead
+    rows are ignored by the drainer; operators resurrect them with
+    ``UPDATE ... SET dead=false, next_attempt_at=now() WHERE
+    dead=true``.
+    """
+    stmt = (
+        update(WebhookDeliveryBacklog)
+        .where(WebhookDeliveryBacklog.id == backlog_id)
+        .values(
+            dead=True,
+            last_error=reason,
+            attempts=WebhookDeliveryBacklog.attempts + 1,
+        )
+    )
+    await session.execute(stmt)
+
+
+async def delete_webhook_backlog(
+    session: AsyncSession,
+    *,
+    backlog_id: UUID,
+) -> None:
+    """Remove a row after a successful delivery."""
+    stmt = delete(WebhookDeliveryBacklog).where(WebhookDeliveryBacklog.id == backlog_id)
+    await session.execute(stmt)
+
+
+async def get_webhook_backlog_gauges(
+    session: AsyncSession,
+    *,
+    now: datetime,
+) -> tuple[int, float]:
+    """Return ``(size, oldest_age_seconds)`` where size is the count
+    of not-dead rows and oldest_age_seconds is ``now - min(created_at)``
+    over the not-dead subset (0.0 when empty).
+
+    One round-trip via ``SELECT COUNT(*), MIN(created_at)``. Cheap
+    enough to call every drainer poll cycle; the drainer publishes
+    these into the two backlog gauges.
+    """
+    stmt = select(
+        func.count(WebhookDeliveryBacklog.id),
+        func.min(WebhookDeliveryBacklog.created_at),
+    ).where(WebhookDeliveryBacklog.dead.is_(False))
+    row = (await session.execute(stmt)).one()
+    size = int(row[0] or 0)
+    oldest = row[1]
+    if oldest is None:
+        return size, 0.0
+    if oldest.tzinfo is None:
+        oldest = oldest.replace(tzinfo=UTC)
+    age = (now - oldest).total_seconds()
+    return size, max(0.0, age)
+
+
+# ---- Admin queries for the /api/v1/webhook-backlog surface --------------
+#
+# Consumers: the FastAPI router at src/eveys_ocpp/api/webhook_backlog.py
+# and the Console UI that proxies through it. All read helpers project to
+# plain dicts so the caller can serialize without hanging onto session-
+# bound ORM objects.
+
+
+def _backlog_admin_row_to_dict(row: WebhookDeliveryBacklog) -> dict[str, Any]:
+    """Full detach shape for the admin surface. Keeps ``body`` out of
+    the list projection (it can be large); the single-row endpoint
+    picks it up via ``get_webhook_backlog_by_id`` which reuses this
+    helper AND also returns the body separately."""
+    return {
+        "id": row.id,
+        "event_id": row.event_id,
+        "event_type": row.event_type,
+        "url": row.url,
+        "signature": row.signature,
+        "created_at": row.created_at,
+        "next_attempt_at": row.next_attempt_at,
+        "attempts": row.attempts,
+        "last_error": row.last_error,
+        "dead": row.dead,
+    }
+
+
+async def list_webhook_backlog(
+    session: AsyncSession,
+    *,
+    dead: bool | None,
+    event_types: list[str] | None,
+    after_id: UUID | None,
+    limit: int,
+) -> list[dict[str, Any]]:
+    """List backlog rows for the admin API. Returns up to ``limit + 1``
+    rows so the caller can carve off the last one as the ``next_cursor``
+    sentinel.
+
+    Sort: dead rows first (operators are looking for those), then by
+    ``created_at ASC`` so the oldest issues stay on the first page even
+    across many pages. Cursor pagination keys on ``id`` — cheap and
+    stable, and dead-vs-not ordering is stable within the paginated
+    window because the ``dead`` bool is only ever flipped one way per
+    row in normal operation.
+    """
+    stmt = select(WebhookDeliveryBacklog)
+    if dead is True:
+        stmt = stmt.where(WebhookDeliveryBacklog.dead.is_(True))
+    elif dead is False:
+        stmt = stmt.where(WebhookDeliveryBacklog.dead.is_(False))
+    if event_types:
+        stmt = stmt.where(WebhookDeliveryBacklog.event_type.in_(event_types))
+    if after_id is not None:
+        stmt = stmt.where(WebhookDeliveryBacklog.id > after_id)
+    stmt = stmt.order_by(
+        WebhookDeliveryBacklog.dead.desc(),
+        WebhookDeliveryBacklog.created_at.asc(),
+        WebhookDeliveryBacklog.id.asc(),
+    ).limit(limit + 1)
+    result = await session.execute(stmt)
+    return [_backlog_admin_row_to_dict(row) for row in result.scalars().all()]
+
+
+async def get_webhook_backlog_by_id(
+    session: AsyncSession,
+    *,
+    backlog_id: UUID,
+) -> tuple[dict[str, Any], bytes] | None:
+    """Fetch one row for the single-item admin endpoint. Returns
+    ``(row_dict, body_bytes)`` so the router can base64-encode the
+    body without a second query. ``None`` when the row doesn't exist."""
+    stmt = select(WebhookDeliveryBacklog).where(WebhookDeliveryBacklog.id == backlog_id)
+    row = (await session.execute(stmt)).scalar_one_or_none()
+    if row is None:
+        return None
+    return _backlog_admin_row_to_dict(row), bytes(row.body)
+
+
+async def resurrect_webhook_backlog(
+    session: AsyncSession,
+    *,
+    backlog_id: UUID,
+) -> dict[str, Any] | None:
+    """Flip a dead row back to live and reschedule for immediate
+    delivery. Only mutates when the row is currently dead — a
+    conditional UPDATE keeps this idempotent (a second click doesn't
+    re-clear ``last_error``). Returns the updated row shape, or
+    ``None`` when the row doesn't exist or is already live (caller
+    disambiguates via a follow-up SELECT if needed)."""
+    now = datetime.now(UTC)
+    stmt = (
+        update(WebhookDeliveryBacklog)
+        .where(
+            and_(
+                WebhookDeliveryBacklog.id == backlog_id,
+                WebhookDeliveryBacklog.dead.is_(True),
+            )
+        )
+        .values(dead=False, next_attempt_at=now, last_error=None)
+        .returning(WebhookDeliveryBacklog)
+    )
+    result = await session.execute(stmt)
+    row = result.scalar_one_or_none()
+    if row is None:
+        return None
+    return _backlog_admin_row_to_dict(row)
+
+
+async def resurrect_dead_webhook_backlog(
+    session: AsyncSession,
+    *,
+    event_types: list[str] | None,
+) -> int:
+    """Bulk resurrect every dead row (optionally filtered by
+    event_type). Returns the number of rows re-armed. The drainer's
+    next poll picks them up. Idempotent — a second call is a no-op
+    when nothing is dead."""
+    now = datetime.now(UTC)
+    stmt = (
+        update(WebhookDeliveryBacklog)
+        .where(WebhookDeliveryBacklog.dead.is_(True))
+        .values(dead=False, next_attempt_at=now, last_error=None)
+    )
+    if event_types:
+        stmt = stmt.where(WebhookDeliveryBacklog.event_type.in_(event_types))
+    result = await session.execute(stmt)
+    # CursorResult.rowcount is documented but mypy sees the generic
+    # Result[Any] here; matches the same-file pattern for delete/update
+    # helpers around line 728 / 832.
+    rowcount: int = result.rowcount  # type: ignore[attr-defined]
+    return int(rowcount or 0)
+
+
+async def purge_webhook_backlog(
+    session: AsyncSession,
+    *,
+    backlog_id: UUID,
+) -> bool:
+    """Delete a dead row. Returns True when a row was actually
+    removed. Refuses to touch live rows — the API layer must gate
+    on ``dead=True`` before calling this (defence-in-depth: the
+    ``WHERE dead`` here catches a bug in the caller that would
+    otherwise nuke a pending delivery)."""
+    stmt = delete(WebhookDeliveryBacklog).where(
+        and_(
+            WebhookDeliveryBacklog.id == backlog_id,
+            WebhookDeliveryBacklog.dead.is_(True),
+        )
+    )
+    result = await session.execute(stmt)
+    rowcount: int = result.rowcount  # type: ignore[attr-defined]
+    return rowcount > 0

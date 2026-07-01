@@ -387,9 +387,12 @@ async def test_post_retries_on_5xx_then_succeeds() -> None:
 
 
 @pytest.mark.asyncio
-async def test_post_does_not_retry_on_4xx() -> None:
-    """400 / 401 / 403 / 404: backend rejected — retry would be wasted."""
-    d = WebhookDispatcher(_settings(webhook_max_attempts=5))
+async def test_post_retries_on_4xx() -> None:
+    """Under the "only 2xx = accepted" contract, 4xx codes are
+    retried just like 5xx. A backend that 401s during token rotation
+    or 400s during a rolling schema deploy still gets retried; the
+    envelope only lands in the backlog after the in-loop budget."""
+    d = WebhookDispatcher(_settings(webhook_max_attempts=3))
     d._http = MagicMock()
     d._http.post = AsyncMock(return_value=_resp(401))
 
@@ -402,11 +405,12 @@ async def test_post_does_not_retry_on_4xx() -> None:
             event_type="cp.boot",
         )
 
-    assert d._http.post.await_count == 1
+    # All three attempts fired against the 4xx — no early-exit path.
+    assert d._http.post.await_count == 3
 
 
 @pytest.mark.asyncio
-async def test_post_retries_on_429_unlike_other_4xx() -> None:
+async def test_post_retries_on_429_alongside_other_4xx() -> None:
     d = WebhookDispatcher(_settings(webhook_max_attempts=2))
     d._http = MagicMock()
     d._http.post = AsyncMock(side_effect=[_resp(429), _resp(200)])
@@ -667,3 +671,201 @@ async def test_dispatcher_signature_changes_when_body_changes() -> None:
     assert verify_signature(body_b, sig_b, secret) is True
     assert verify_signature(body_a, sig_b, secret) is False
     assert verify_signature(body_b, sig_a, secret) is False
+
+
+# ---- backlog enqueue on exhaustion ----------------------------------------
+
+
+def _make_session_factory() -> tuple[MagicMock, Any]:
+    """Return a ``(session_mock, session_factory)`` pair the dispatcher
+    accepts as its Postgres dependency. The factory context yields the
+    session so ``async with session_factory() as s:`` works."""
+    session = MagicMock()
+    session.commit = AsyncMock()
+    session.rollback = AsyncMock()
+
+    class _Ctx:
+        async def __aenter__(self) -> MagicMock:
+            return session
+
+        async def __aexit__(self, *exc: object) -> None:
+            return None
+
+    class _Factory:
+        def __call__(self) -> _Ctx:
+            return _Ctx()
+
+    return session, _Factory()
+
+
+@pytest.mark.asyncio
+async def test_post_enqueues_backlog_after_exhausted_retries() -> None:
+    """Backend 5xx-ing through every attempt: the dispatcher gives up
+    in-loop AND inserts one row into the backlog, both."""
+    session, factory = _make_session_factory()
+    d = WebhookDispatcher(
+        _settings(webhook_max_attempts=2, webhook_backlog_enabled=True),
+        session_factory=factory,
+    )
+    d._http = MagicMock()
+    d._http.post = AsyncMock(return_value=_resp(503))
+
+    valid_uuid = "00000000-0000-0000-0000-000000000001"
+    with (
+        patch("eveys_ocpp.webhooks.dispatcher.asyncio.sleep", AsyncMock()),
+        patch("eveys_ocpp.webhooks.dispatcher.insert_webhook_backlog", AsyncMock()) as mock_insert,
+    ):
+        await d._post_with_retry(
+            url="https://x/test",
+            body_bytes=b"{}",
+            signature="sha256=abc",
+            event_id=valid_uuid,
+            event_type="cp.boot",
+        )
+
+    assert d._http.post.await_count == 2
+    mock_insert.assert_awaited_once()
+    call = mock_insert.await_args
+    assert str(call.kwargs["event_id"]) == valid_uuid
+    assert call.kwargs["event_type"] == "cp.boot"
+    assert call.kwargs["url"] == "https://x/test"
+    assert call.kwargs["body"] == b"{}"
+    assert call.kwargs["signature"] == "sha256=abc"
+    session.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_post_skips_backlog_when_disabled() -> None:
+    """`webhook_backlog_enabled=False` restores the old drop-on-exhaust
+    behaviour — no insert attempt even with a factory wired."""
+    _session, factory = _make_session_factory()
+    d = WebhookDispatcher(
+        _settings(webhook_max_attempts=1, webhook_backlog_enabled=False),
+        session_factory=factory,
+    )
+    d._http = MagicMock()
+    d._http.post = AsyncMock(return_value=_resp(503))
+
+    with (
+        patch("eveys_ocpp.webhooks.dispatcher.asyncio.sleep", AsyncMock()),
+        patch("eveys_ocpp.webhooks.dispatcher.insert_webhook_backlog", AsyncMock()) as mock_insert,
+    ):
+        await d._post_with_retry(
+            url="https://x/test",
+            body_bytes=b"{}",
+            signature="sha256=abc",
+            event_id="00000000-0000-0000-0000-000000000002",
+            event_type="cp.boot",
+        )
+
+    mock_insert.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_post_skips_backlog_when_no_session_factory() -> None:
+    """Dispatcher constructed without a session_factory (legacy
+    callers, tests that don't touch Postgres): flag is on but there's
+    no place to write to. Should log + skip, never crash."""
+    d = WebhookDispatcher(_settings(webhook_max_attempts=1, webhook_backlog_enabled=True))
+    d._http = MagicMock()
+    d._http.post = AsyncMock(return_value=_resp(503))
+
+    with (
+        patch("eveys_ocpp.webhooks.dispatcher.asyncio.sleep", AsyncMock()),
+        patch("eveys_ocpp.webhooks.dispatcher.insert_webhook_backlog", AsyncMock()) as mock_insert,
+    ):
+        await d._post_with_retry(
+            url="https://x/test",
+            body_bytes=b"{}",
+            signature="sha256=abc",
+            event_id="00000000-0000-0000-0000-000000000003",
+            event_type="cp.boot",
+        )
+
+    mock_insert.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_post_does_not_enqueue_backlog_on_success() -> None:
+    """Delivered on first try — nothing to persist for the drainer."""
+    _session, factory = _make_session_factory()
+    d = WebhookDispatcher(
+        _settings(webhook_max_attempts=3, webhook_backlog_enabled=True),
+        session_factory=factory,
+    )
+    d._http = MagicMock()
+    d._http.post = AsyncMock(return_value=_resp(200))
+
+    with patch("eveys_ocpp.webhooks.dispatcher.insert_webhook_backlog", AsyncMock()) as mock_insert:
+        await d._post_with_retry(
+            url="https://x/test",
+            body_bytes=b"{}",
+            signature="sha256=abc",
+            event_id="00000000-0000-0000-0000-000000000004",
+            event_type="cp.boot",
+        )
+
+    mock_insert.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_post_enqueues_backlog_after_4xx_exhausts() -> None:
+    """Under the "only 2xx = accepted" contract, 4xx is retryable —
+    so the dispatcher walks its full budget against a persistent 400
+    and then enqueues into the backlog. Old semantics (4xx = permanent
+    reject, no backlog) is intentionally NOT preserved: the customer
+    would rather retry a bad-json 400 for 7 days than lose it."""
+    _session, factory = _make_session_factory()
+    d = WebhookDispatcher(
+        _settings(webhook_max_attempts=2, webhook_backlog_enabled=True),
+        session_factory=factory,
+    )
+    d._http = MagicMock()
+    d._http.post = AsyncMock(return_value=_resp(400))
+
+    with (
+        patch("eveys_ocpp.webhooks.dispatcher.asyncio.sleep", AsyncMock()),
+        patch("eveys_ocpp.webhooks.dispatcher.insert_webhook_backlog", AsyncMock()) as mock_insert,
+    ):
+        await d._post_with_retry(
+            url="https://x/test",
+            body_bytes=b"{}",
+            signature="sha256=abc",
+            event_id="00000000-0000-0000-0000-000000000005",
+            event_type="cp.boot",
+        )
+
+    # Both attempts fired against 400, THEN the backlog row landed.
+    assert d._http.post.await_count == 2
+    mock_insert.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_post_swallows_backlog_insert_errors() -> None:
+    """Postgres down during enqueue mustn't kill the delivery loop —
+    the envelope is already lost but the dispatcher keeps consuming."""
+    _session, factory = _make_session_factory()
+    d = WebhookDispatcher(
+        _settings(webhook_max_attempts=1, webhook_backlog_enabled=True),
+        session_factory=factory,
+    )
+    d._http = MagicMock()
+    d._http.post = AsyncMock(return_value=_resp(503))
+
+    with (
+        patch("eveys_ocpp.webhooks.dispatcher.asyncio.sleep", AsyncMock()),
+        patch(
+            "eveys_ocpp.webhooks.dispatcher.insert_webhook_backlog",
+            AsyncMock(side_effect=RuntimeError("db down")),
+        ) as mock_insert,
+    ):
+        # Should not raise even though the insert did.
+        await d._post_with_retry(
+            url="https://x/test",
+            body_bytes=b"{}",
+            signature="sha256=abc",
+            event_id="00000000-0000-0000-0000-000000000006",
+            event_type="cp.boot",
+        )
+
+    mock_insert.assert_awaited_once()

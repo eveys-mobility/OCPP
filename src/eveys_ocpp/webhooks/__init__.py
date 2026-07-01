@@ -13,7 +13,13 @@ existing TaskGroup.
 Spec: `docs/integration/03-webhooks.md`.
 """
 
+from eveys_ocpp.webhooks.backlog_drainer import WebhookBacklogDrainer
 from eveys_ocpp.webhooks.dispatcher import WebhookDispatcher
 from eveys_ocpp.webhooks.signer import compute_signature, verify_signature
 
-__all__ = ["WebhookDispatcher", "compute_signature", "verify_signature"]
+__all__ = [
+    "WebhookBacklogDrainer",
+    "WebhookDispatcher",
+    "compute_signature",
+    "verify_signature",
+]

@@ -270,6 +270,12 @@ services:
       EVEYS_OCPP_WEBHOOK_URL_CP_ONLINE: ${EVEYS_OCPP_WEBHOOK_URL_CP_ONLINE:-}
       EVEYS_OCPP_WEBHOOK_URL_CP_STATUS: ${EVEYS_OCPP_WEBHOOK_URL_CP_STATUS:-}
       EVEYS_OCPP_WEBHOOK_URL_TX_STARTED: ${EVEYS_OCPP_WEBHOOK_URL_TX_STARTED:-}
+      # Durable backlog tail (E3-9). Envelopes the dispatcher can't
+      # deliver in ~12.6 min of in-loop retries land in
+      # `webhook_delivery_backlog` and a background drainer keeps
+      # retrying them until they deliver or age out. Default true —
+      # override to `false` only as a rollback lever.
+      EVEYS_OCPP_WEBHOOK_BACKLOG_ENABLED: ${EVEYS_OCPP_WEBHOOK_BACKLOG_ENABLED:-true}
     depends_on:
       postgres: { condition: service_healthy }
       redis: { condition: service_healthy }

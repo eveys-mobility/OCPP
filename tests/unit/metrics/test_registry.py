@@ -30,7 +30,12 @@ from eveys_ocpp.metrics import registry as m
 # 58: +1 STOP_TRANSACTIONS_RECEIVED_TOTAL for SLO 4 denominator (#163)
 # 59: +1 OCPP_FRAMES_PUBLISH_FAILURES_TOTAL for cp.ocpp_frames best-effort drops (#212)
 # 60: +1 WS_AUTHORIZATION_TOTAL for device-authorization decisions (#0013)
-EXPECTED_METRIC_COUNT = 61
+# 61: +1 WEBHOOK_BACKLOG_SIZE for the durable-backlog tail (E3-9 tail)
+# 62: +1 WEBHOOK_BACKLOG_OLDEST_AGE_SECONDS  ,, ,,
+# 63: +1 WEBHOOK_BACKLOG_ENQUEUED_TOTAL      ,, ,,
+# 64: +1 WEBHOOK_BACKLOG_DRAIN_TOTAL         ,, ,,
+# 65: +1 WEBHOOK_BACKLOG_DEADLETTER_TOTAL    ,, ,,
+EXPECTED_METRIC_COUNT = 66
 
 
 def _gateway_metric_attrs() -> list[tuple[str, object]]:

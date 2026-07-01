@@ -14,17 +14,22 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
+from uuid import UUID
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     DateTime,
     ForeignKey,
+    Integer,
+    LargeBinary,
     Numeric,
     String,
     Text,
     UniqueConstraint,
     func,
 )
+from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -587,3 +592,52 @@ class PendingCertificateSigning(Base):
     approved_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
     rejected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     rejected_reason: Mapped[str | None] = mapped_column(String(512), nullable=True)
+
+
+class WebhookDeliveryBacklog(Base):
+    """Durable buffer for webhook events the dispatcher exhausted
+    in-loop retries on.
+
+    The dispatcher (``webhooks/dispatcher.py``) runs a bounded
+    exponential-backoff retry sequence (1 s, 5 s, 30 s, 2 min, 10 min —
+    ~12.6 min total). Anything the backend hasn't accepted by then
+    used to be dropped; it now lands here. The
+    ``WebhookBacklogDrainer`` picks up rows whose ``next_attempt_at``
+    has arrived, retries them on a coarser cadence (5 min → 6 h),
+    and either deletes them on success or flips ``dead=True`` when
+    the row ages past the retention window.
+
+    ``event_id`` mirrors the ``X-Eveys-Event-Id`` header we sent on
+    the failed attempts and is UNIQUE — the backend uses the same
+    value as its idempotency key, so a bug that double-enqueued
+    would still only produce one final delivery.
+
+    ``body`` is the exact bytes the dispatcher signed and POSTed;
+    reusing them (rather than re-serializing) keeps the stored
+    ``signature`` valid.
+    """
+
+    __tablename__ = "webhook_delivery_backlog"
+
+    id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True), server_default=func.gen_random_uuid(), primary_key=True
+    )
+    event_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), nullable=False, unique=True)
+    event_type: Mapped[str] = mapped_column(Text, nullable=False)
+    url: Mapped[str] = mapped_column(Text, nullable=False)
+    body: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    signature: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    # ``next_attempt_at`` is the drainer's poll key. Rows with
+    # ``next_attempt_at`` in the future sit idle; the drainer looks at
+    # them once the wall clock passes the value.
+    next_attempt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, server_default="0", nullable=False)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # True after the row aged past retention OR the backend returned a
+    # non-429 4xx (permanent reject). The drainer skips dead rows;
+    # operators resurrect them with ``UPDATE ... SET dead=false,
+    # next_attempt_at=now() WHERE dead=true`` when replaying.
+    dead: Mapped[bool] = mapped_column(Boolean, server_default="false", nullable=False)

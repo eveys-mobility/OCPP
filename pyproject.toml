@@ -51,6 +51,7 @@ dev = [
     "pyyaml>=6.0",                 # parse `deploy/prometheus/rules.yml` in the SLO sanity test (E4-8). Transitively present today via pre-commit, but declared here so the test stays green if pre-commit drops the dep.
     "pip-audit>=2.7",              # E5-8: scan resolved deps against the PyPI advisory DB. Local-runnable via `make audit`; CI runs on PR + daily schedule.
     "aiosqlite>=0.20",             # In-memory async SQLite for unit tests that need real ORM behaviour (FK cascades, IntegrityError, BigInteger PK quirks). Used by `tests/unit/transport/test_ws_server_basic_auth.py` and `tests/unit/transport/test_grpc_server.py` cert-mgmt + signed-firmware tests. Production runs on Postgres.
+    "respx>=0.21",                 # Drop-in httpx mocking for integration tests (tests/integration/*). The webhook backlog drainer's httpx.AsyncClient is intercepted without touching the network so a scenario can flip 503 → 200 mid-test.
 ]
 
 [project.scripts]

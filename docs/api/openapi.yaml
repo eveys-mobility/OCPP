@@ -1022,6 +1022,22 @@ components:
       - transaction_id
       title: RemoteStopRequest
       type: object
+    ReplayDeadBody:
+      description: 'Body for bulk-resurrect. Optional filter narrows the scope to
+
+        one or more event types; omit to replay every dead row.'
+      properties:
+        event_type:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          description: Optional list of event_type values to resurrect. Omit to replay
+            every dead row across all event types.
+          title: Event Type
+      title: ReplayDeadBody
+      type: object
     Reservation:
       properties:
         connector_id:
@@ -4516,5 +4532,186 @@ paths:
       summary: OCPP frame audit trail for one transaction
       tags:
       - transactions
+  /api/v1/webhook-backlog:
+    get:
+      operationId: list_backlog_route_api_v1_webhook_backlog_get
+      parameters:
+      - description: 'Filter by dead flag: `true` for dead-letter rows only, `false`
+          for live (still-retrying) rows only, omit for both.'
+        in: query
+        name: dead
+        required: false
+        schema:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          description: 'Filter by dead flag: `true` for dead-letter rows only, `false`
+            for live (still-retrying) rows only, omit for both.'
+          title: Dead
+      - description: Repeatable filter. Restricts the list to the given event types
+          (`cp.boot`, `tx.stopped`, ...).
+        in: query
+        name: event_type
+        required: false
+        schema:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          description: Repeatable filter. Restricts the list to the given event types
+            (`cp.boot`, `tx.stopped`, ...).
+          title: Event Type
+      - in: query
+        name: cursor
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Cursor
+      - in: query
+        name: limit
+        required: false
+        schema:
+          default: 50
+          maximum: 500
+          minimum: 1
+          title: Limit
+          type: integer
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response List Backlog Route Api V1 Webhook Backlog Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: List rows in the webhook delivery backlog
+      tags:
+      - webhook-backlog
+  /api/v1/webhook-backlog/replay-dead:
+    post:
+      operationId: replay_dead_backlog_route_api_v1_webhook_backlog_replay_dead_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              anyOf:
+              - $ref: '#/components/schemas/ReplayDeadBody'
+              - type: 'null'
+              title: Body
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Replay Dead Backlog Route Api V1 Webhook Backlog Replay
+                  Dead Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Bulk-resurrect every dead row (optionally filtered by event_type)
+      tags:
+      - webhook-backlog
+  /api/v1/webhook-backlog/{backlog_id}:
+    delete:
+      operationId: purge_backlog_route_api_v1_webhook_backlog__backlog_id__delete
+      parameters:
+      - in: path
+        name: backlog_id
+        required: true
+        schema:
+          title: Backlog Id
+          type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Purge Backlog Route Api V1 Webhook Backlog  Backlog
+                  Id  Delete
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Purge a dead row from the backlog
+      tags:
+      - webhook-backlog
+    get:
+      operationId: get_backlog_route_api_v1_webhook_backlog__backlog_id__get
+      parameters:
+      - in: path
+        name: backlog_id
+        required: true
+        schema:
+          title: Backlog Id
+          type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Get Backlog Route Api V1 Webhook Backlog  Backlog
+                  Id  Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Fetch a single backlog row including the pending body
+      tags:
+      - webhook-backlog
+  /api/v1/webhook-backlog/{backlog_id}/replay:
+    post:
+      operationId: replay_backlog_route_api_v1_webhook_backlog__backlog_id__replay_post
+      parameters:
+      - in: path
+        name: backlog_id
+        required: true
+        schema:
+          title: Backlog Id
+          type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Replay Backlog Route Api V1 Webhook Backlog  Backlog
+                  Id  Replay Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: 'Resurrect a dead row: re-arm for immediate delivery'
+      tags:
+      - webhook-backlog
 security:
 - bearerAuth: []
