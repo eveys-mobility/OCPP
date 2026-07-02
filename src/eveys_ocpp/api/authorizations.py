@@ -38,6 +38,7 @@ from eveys_ocpp.observability import get_logger
 from eveys_ocpp.persistence.db import session_scope
 from eveys_ocpp.persistence.repositories import (
     delete_charge_point,
+    mark_charge_point_authorized,
     upsert_charge_point_boot,
 )
 
@@ -169,6 +170,12 @@ async def authorize_route(request: Request, cp_id: str) -> dict[str, Any]:
             serial_number=row.get("serial_number"),
             boot_at=now,
         )
+        # Stamp the operator's decision. The auth gate keys off this
+        # column, not just row existence, so an operator-authorized
+        # row is now visible as authorized on the next WS upgrade;
+        # a stale row without this stamp keeps taking the pending
+        # branch.
+        await mark_charge_point_authorized(session, cp_id=cp_id, at=now)
 
     await _close_live_ws(request, cp_id, "authorization granted; reconnect")
     metrics_registry.AUTHORIZATION_ADMIN_TOTAL.labels(outcome=_ADMIN_OUTCOME_AUTHORIZED).inc()

@@ -22,7 +22,7 @@ iterator so the SUT's `async for` walks a fixed key set.
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock
 
@@ -335,12 +335,18 @@ async def test_list_pending_sorts_oldest_first(
     """Two keys, one newer than the other; list_pending returns the
     older one first so the operator UI shows long-waiting devices at
     the top."""
+    now = datetime.now(UTC)
     keys: list[str | bytes] = ["cp:pending:CP_NEW", "cp:pending:CP_OLD"]
     fake_redis.scan_iter = lambda **_kw: _AsyncIter(keys)
     fake_redis.mget = AsyncMock(
         return_value=[
-            json.dumps({"cp_id": "CP_NEW", "first_seen_at": "2026-07-02T12:00:00+00:00"}),
-            json.dumps({"cp_id": "CP_OLD", "first_seen_at": "2026-07-02T09:00:00+00:00"}),
+            json.dumps({"cp_id": "CP_NEW", "first_seen_at": now.isoformat()}),
+            json.dumps(
+                {
+                    "cp_id": "CP_OLD",
+                    "first_seen_at": (now - timedelta(minutes=30)).isoformat(),
+                }
+            ),
         ]
     )
 
@@ -359,7 +365,7 @@ async def test_list_pending_skips_expired_race(
     fake_redis.mget = AsyncMock(
         return_value=[
             None,
-            json.dumps({"cp_id": "CP_B", "first_seen_at": "2026-07-02T09:00:00+00:00"}),
+            json.dumps({"cp_id": "CP_B", "first_seen_at": datetime.now(UTC).isoformat()}),
         ]
     )
 
@@ -378,7 +384,7 @@ async def test_list_pending_skips_corrupt_json(
     fake_redis.mget = AsyncMock(
         return_value=[
             "not-json",
-            json.dumps({"cp_id": "CP_OK", "first_seen_at": "2026-07-02T09:00:00+00:00"}),
+            json.dumps({"cp_id": "CP_OK", "first_seen_at": datetime.now(UTC).isoformat()}),
         ]
     )
 
@@ -388,12 +394,41 @@ async def test_list_pending_skips_corrupt_json(
 
 
 @pytest.mark.asyncio
+async def test_list_pending_drops_and_deletes_expired_rows(
+    store: PendingAuthorizations, fake_redis: AsyncMock
+) -> None:
+    """Read-time TTL enforcement: a row older than the currently-
+    configured `pending_authorization_ttl_seconds` is filtered out AND
+    DELETEd, so an operator who lowered the TTL in .env doesn't see
+    ghost rows still riding their original longer Redis TTL."""
+    now = datetime.now(UTC)
+    # ttl is 3600 in the fixture; put one row two hours in the past.
+    fake_redis.scan_iter = lambda **_kw: _AsyncIter(["cp:pending:CP_STALE", "cp:pending:CP_FRESH"])
+    fake_redis.mget = AsyncMock(
+        return_value=[
+            json.dumps(
+                {
+                    "cp_id": "CP_STALE",
+                    "first_seen_at": (now - timedelta(hours=2)).isoformat(),
+                }
+            ),
+            json.dumps({"cp_id": "CP_FRESH", "first_seen_at": now.isoformat()}),
+        ]
+    )
+
+    rows = await store.list_pending()
+
+    assert [r["cp_id"] for r in rows] == ["CP_FRESH"]
+    fake_redis.delete.assert_awaited_once_with("cp:pending:CP_STALE")
+
+
+@pytest.mark.asyncio
 async def test_list_pending_normalises_bytes_keys(
     store: PendingAuthorizations, fake_redis: AsyncMock
 ) -> None:
     """Some redis-py client modes return bytes; SCAN handles both."""
     fake_redis.scan_iter = lambda **_kw: _AsyncIter([b"cp:pending:CP_B"])
-    payload = {"cp_id": "CP_B", "first_seen_at": "2026-07-02T09:00:00+00:00"}
+    payload = {"cp_id": "CP_B", "first_seen_at": datetime.now(UTC).isoformat()}
     fake_redis.mget = AsyncMock(return_value=[json.dumps(payload)])
 
     rows: list[dict[str, Any]] = await store.list_pending()

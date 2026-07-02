@@ -47,7 +47,7 @@ import contextlib
 import json
 import time
 from collections.abc import Iterator
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from eveys_ocpp.metrics import registry as metrics_registry
@@ -66,6 +66,26 @@ _KEY_PREFIX = "cp:pending:"
 
 def _key(cp_id: str) -> str:
     return f"{_KEY_PREFIX}{cp_id}"
+
+
+def _is_expired(row: dict[str, Any], *, now: datetime, max_age: timedelta) -> bool:
+    """True iff the row's `first_seen_at` is older than the currently-
+    configured TTL. Used to filter out rows whose Redis TTL still hasn't
+    fired (either because it was written before the config was lowered,
+    or because the key was persisted without a TTL). A row with no or
+    unparseable `first_seen_at` is treated as fresh — we don't have a
+    reason to reject it."""
+    raw = row.get("first_seen_at")
+    if not isinstance(raw, str):
+        return False
+    try:
+        first_seen = datetime.fromisoformat(raw)
+    except ValueError:
+        return False
+    if first_seen.tzinfo is None:
+        # Legacy rows written without a tz suffix — assume UTC.
+        first_seen = first_seen.replace(tzinfo=UTC)
+    return (now - first_seen) > max_age
 
 
 @contextlib.contextmanager
@@ -203,9 +223,22 @@ class PendingAuthorizations:
     async def list_pending(self) -> list[dict[str, Any]]:
         """Return every pending row currently in Redis.
 
-        SCAN over the prefix, then batched MGET on the matches. Cheap
-        at any realistic operator-facing size (pending queue is meant
-        to hold single- or double-digit devices at a time)."""
+        SCAN over the prefix, batched MGET on the matches, then filter
+        out any row whose age (`now - first_seen_at`) has exceeded the
+        currently-configured TTL. That last step self-heals two
+        surprises:
+
+        - Operator lowered `pending_authorization_ttl_seconds` in .env
+          and restarted the gateway. Existing Redis keys still carry
+          their original longer TTL — this filter drops them anyway,
+          matching the new configured window.
+        - A Redis persistence quirk (RDB replay, `PERSIST` mishap)
+          leaves an old key with no TTL. Same treatment.
+
+        Expired rows found here are also actively deleted so they
+        stop showing up on the next call. Deliberate: we don't want
+        the operator to see something the config says shouldn't be
+        there."""
         keys: list[str] = []
         with _timed_redis("scan"):
             async for k in self._redis.scan_iter(match=f"{_KEY_PREFIX}*", count=200):
@@ -215,15 +248,37 @@ class PendingAuthorizations:
             return []
         with _timed_redis("mget"):
             raw_values = await self._redis.mget(keys)
+
+        now = datetime.now(UTC)
+        max_age = timedelta(seconds=self._ttl_seconds)
         rows: list[dict[str, Any]] = []
+        expired_keys: list[str] = []
         for k, raw in zip(keys, raw_values, strict=True):
             if raw is None:
                 # Race: the key expired between SCAN and MGET. Skip.
                 continue
             try:
-                rows.append(json.loads(raw))
+                row = json.loads(raw)
             except json.JSONDecodeError:
                 log.warning("pending_authorizations.decode_failed", key=k)
+                continue
+            if _is_expired(row, now=now, max_age=max_age):
+                expired_keys.append(k)
+                continue
+            rows.append(row)
+
+        if expired_keys:
+            # Self-heal — drop everything the config says should be
+            # gone. One DEL round-trip, unconditionally best-effort.
+            try:
+                with _timed_redis("del"):
+                    await self._redis.delete(*expired_keys)
+            except Exception as exc:
+                log.warning(
+                    "pending_authorizations.expired_cleanup_failed",
+                    error=str(exc),
+                )
+
         # Deterministic order for the operator UI: oldest first, so a
         # long-waiting device doesn't get lost behind fresh ones.
         rows.sort(key=lambda r: r.get("first_seen_at", ""))

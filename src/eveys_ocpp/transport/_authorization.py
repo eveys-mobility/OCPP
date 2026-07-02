@@ -2,24 +2,27 @@
 
 Runs after the Basic Auth gate. Two branches:
 
-- The `cp_id` is already a row in `charge_points` → the operator has
-  authorized it (or it's the grandfathered pre-migration fleet); accept
-  the upgrade, connection runs normally, **IP rate limit is bypassed**
-  so a legitimate NAT'd fleet reconnecting rapidly never trips the ban.
-- The `cp_id` is not in `charge_points` → apply the IP rate limit
-  first (unknown devices are the only surface where a scanner or
-  abuser can burn our budget). If the IP is allowed, add the device to
-  the Redis pending list (`cp:pending:{cp_id}`) with the pending TTL
-  and accept the upgrade **flagged as pending** — the handler layer
-  reads that flag and returns CALLERROR for every inbound OCPP call
-  except BootNotification (which is Accepted but cached in Redis, not
-  written to Postgres) until an operator posts
-  `/authorizations/{cp_id}/authorize`.
+- The `cp_id` is authorized — `charge_points.authorized_at IS NOT
+  NULL`. Accept the upgrade, connection runs normally, **IP rate
+  limit is bypassed** so a legitimate NAT'd fleet reconnecting rapidly
+  never trips the ban. Deliberately NOT "row exists in charge_points"
+  — a legacy stub from before migration 0018 exists but has
+  `authorized_at IS NULL` and gets the pending treatment, same as a
+  brand-new device.
+- Anything else (no row OR row exists with authorized_at IS NULL) →
+  apply the IP rate limit first (unknown devices are the only surface
+  where a scanner or abuser can burn our budget). If the IP is
+  allowed, add the device to the Redis pending list
+  (`cp:pending:{cp_id}`) with the pending TTL and accept the upgrade
+  **flagged as pending** — the handler layer reads that flag and
+  returns CALLERROR for every inbound OCPP call except BootNotification
+  (which is Accepted but cached in Redis, not written to Postgres)
+  until an operator posts `/authorizations/{cp_id}/authorize`.
 
 The pending row's TTL is what removes stale entries — no sweeper
 needed. On operator authorize, the row is moved from Redis into
-`charge_points`; from that point the device follows the authorized
-branch on every subsequent upgrade.
+`charge_points` AND `authorized_at` is stamped; from that point the
+device follows the authorized branch on every subsequent upgrade.
 """
 
 from __future__ import annotations
@@ -30,7 +33,7 @@ from typing import TYPE_CHECKING
 
 from eveys_ocpp.metrics import registry as metrics_registry
 from eveys_ocpp.observability import get_logger
-from eveys_ocpp.persistence.repositories import get_charge_point_pk
+from eveys_ocpp.persistence.repositories import is_authorized_cp_id
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -91,7 +94,7 @@ async def check_and_record_authorization(
     `IpRateLimiter.check`)."""
     try:
         async with session_factory() as session:
-            existing_pk = await get_charge_point_pk(session, cp_id=cp_id)
+            authorized = await is_authorized_cp_id(session, cp_id=cp_id)
     except Exception as exc:
         log.warning(
             "authorization.db_error",
@@ -101,10 +104,10 @@ async def check_and_record_authorization(
         )
         return AuthorizationCheck(accepted=False, is_pending=False, outcome=OUTCOME_DB_ERROR)
 
-    if existing_pk is not None:
-        # Authorized fleet member. Bypass IP rate limit per the fleet
-        # design — legitimate reconnects, however aggressive, are not
-        # abuse.
+    if authorized:
+        # Authorized fleet member (`charge_points.authorized_at` set).
+        # Bypass IP rate limit per the fleet design — legitimate
+        # reconnects, however aggressive, are not abuse.
         return AuthorizationCheck(accepted=True, is_pending=False, outcome=OUTCOME_AUTHORIZED)
 
     # Unknown cp_id. Apply the IP rate limit before touching Redis so a

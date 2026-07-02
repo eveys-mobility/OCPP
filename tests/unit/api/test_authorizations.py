@@ -137,6 +137,8 @@ async def test_authorize_moves_pending_to_charge_points(
 
     upsert = AsyncMock()
     monkeypatch.setattr(routes, "upsert_charge_point_boot", upsert)
+    mark_authorized = AsyncMock(return_value=True)
+    monkeypatch.setattr(routes, "mark_charge_point_authorized", mark_authorized)
 
     response = await ac.post("/api/v1/authorizations/CP_A/authorize")
     assert response.status_code == 200
@@ -144,6 +146,7 @@ async def test_authorize_moves_pending_to_charge_points(
     assert body["cp_id"] == "CP_A"
     assert body["status"] == "authorized"
     assert isinstance(body["authorized_at"], str)
+    mark_authorized.assert_awaited_once()
 
     # Redis row is gone; seed hit the repo with the row's metadata.
     assert "CP_A" not in store._rows
@@ -163,6 +166,7 @@ async def test_authorize_unknown_cp_id_404(
 ) -> None:
     ac, _, _ = wired_app
     monkeypatch.setattr(routes, "upsert_charge_point_boot", AsyncMock())
+    monkeypatch.setattr(routes, "mark_charge_point_authorized", AsyncMock(return_value=True))
 
     response = await ac.post("/api/v1/authorizations/GHOST/authorize")
     assert response.status_code == 404
@@ -180,6 +184,7 @@ async def test_authorize_closes_live_ws(
     ac, store, connections = wired_app
     store._rows["CP_A"] = _pending_row("CP_A")
     monkeypatch.setattr(routes, "upsert_charge_point_boot", AsyncMock())
+    monkeypatch.setattr(routes, "mark_charge_point_authorized", AsyncMock(return_value=True))
 
     ws = MagicMock()
     ws.close = AsyncMock()

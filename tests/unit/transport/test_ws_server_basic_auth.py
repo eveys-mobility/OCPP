@@ -133,15 +133,15 @@ async def running_server(
         ws_port=port,
         ws_basic_auth_required=True,
     )
-    # These tests exercise the Basic Auth gate only — the pending store
-    # and IP rate limiter don't fire on the paths under test (the
-    # 401-on-missing/wrong-credentials branches return before
-    # authorization is consulted), so a MagicMock is enough. Passing
-    # `None` for the IP rate limiter takes the "not enabled" branch of
-    # `check_and_record_authorization`.
-    from unittest.mock import MagicMock
+    # These tests exercise the Basic Auth gate. The two rejection paths
+    # short-circuit before authorization is consulted, but the accept
+    # path runs the whole gate — so the pending store's `upsert` needs
+    # to be an AsyncMock (a bare MagicMock can't be awaited). The IP
+    # rate limiter is None to take the "not enabled" branch.
+    from unittest.mock import AsyncMock, MagicMock
 
     pending_store = MagicMock()
+    pending_store.upsert = AsyncMock(return_value={"cp_id": "CP_AUTH_TEST", "attempts": 1})
     task = asyncio.create_task(
         serve_forever(
             session_factory=session_factory_with_credential,

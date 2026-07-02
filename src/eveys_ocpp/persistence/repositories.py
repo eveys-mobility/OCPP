@@ -406,9 +406,44 @@ async def record_security_event(
 
 
 async def get_charge_point_pk(session: AsyncSession, *, cp_id: str) -> int | None:
-    """Look up the surrogate `id` for a charger by its `cp_id`."""
+    """Look up the surrogate `id` for a charger by its `cp_id`.
+
+    Does NOT check the authorization signal — callers that gate on
+    "is this device authorized?" must use `is_authorized_cp_id`
+    instead. Kept as a raw lookup for handlers that need the FK
+    (transactions, meter values) regardless of authorization state."""
     result = await session.execute(select(ChargePoint.id).where(ChargePoint.cp_id == cp_id))
     return result.scalar_one_or_none()
+
+
+async def is_authorized_cp_id(session: AsyncSession, *, cp_id: str) -> bool:
+    """Return True iff the charger has been explicitly authorized by
+    the operator — i.e., `charge_points.authorized_at IS NOT NULL`.
+
+    Distinct from `get_charge_point_pk`: a row can exist in
+    `charge_points` (e.g. an auth stub from before migration 0018)
+    without being authorized. The WS-edge auth gate uses this
+    stronger signal so a stub never falls through as an authorized
+    fleet member."""
+    result = await session.execute(
+        select(ChargePoint.id).where(
+            (ChargePoint.cp_id == cp_id) & (ChargePoint.authorized_at.is_not(None))
+        )
+    )
+    return result.scalar_one_or_none() is not None
+
+
+async def mark_charge_point_authorized(session: AsyncSession, *, cp_id: str, at: datetime) -> bool:
+    """Stamp `authorized_at` on an existing `charge_points` row. Returns
+    False if the row doesn't exist (caller must upsert first). Idempotent
+    — a re-authorization overwrites the earlier timestamp."""
+    result = await session.execute(
+        update(ChargePoint).where(ChargePoint.cp_id == cp_id).values(authorized_at=at)
+    )
+    # `rowcount` is typed as `int` on the concrete `CursorResult` that
+    # asyncpg returns, but `session.execute` is declared to return the
+    # more general `Result[Any]`. Cast at the boundary to satisfy mypy.
+    return int(getattr(result, "rowcount", 0)) > 0
 
 
 async def get_charge_point_status(

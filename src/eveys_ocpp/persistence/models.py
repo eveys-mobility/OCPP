@@ -74,6 +74,14 @@ class ChargePoint(Base):
     # history lives in the Kafka topic, not here.
     last_log_status: Mapped[str | None] = mapped_column(String(32))
 
+    # Set the moment an operator posts /authorize; NULL otherwise. The
+    # WS-edge authorization gate treats "row in charge_points AND
+    # authorized_at IS NOT NULL" as authorized — a legacy stub from
+    # before the auth rewrite (row exists, no authorization signal)
+    # does NOT fall through as authorized. See migration 0018 for the
+    # grandfather policy applied on upgrade.
+    authorized_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

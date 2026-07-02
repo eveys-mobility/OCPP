@@ -27,7 +27,7 @@ from eveys_ocpp.transport._ip_rate_limiter import IpRateLimitDecision
 
 def _make_session_factory() -> Any:
     """No-op async context manager — the SUT's session is only used to
-    call `get_charge_point_pk`, which is monkeypatched per test."""
+    call `is_authorized_cp_id`, which is monkeypatched per test."""
 
     class _Session:
         async def __aenter__(self) -> _Session:
@@ -66,7 +66,7 @@ async def test_authorized_cp_bypasses_ip_rate_limit(
 ) -> None:
     """An existing `charge_points` row → accepted, IP limiter is NOT
     consulted (per design: fleet reconnects must never be throttled)."""
-    monkeypatch.setattr(auth_mod, "get_charge_point_pk", AsyncMock(return_value=42))
+    monkeypatch.setattr(auth_mod, "is_authorized_cp_id", AsyncMock(return_value=True))
     limiter = _make_ip_limiter(allowed=False, outcome="blocked")
     pending = _make_pending_store()
 
@@ -94,7 +94,7 @@ async def test_unknown_cp_under_limit_is_pending_new(
 ) -> None:
     """No `charge_points` row + IP allowed + first attempt (attempts=1)
     → accepted flagged pending, outcome `pending_new`."""
-    monkeypatch.setattr(auth_mod, "get_charge_point_pk", AsyncMock(return_value=None))
+    monkeypatch.setattr(auth_mod, "is_authorized_cp_id", AsyncMock(return_value=False))
     limiter = _make_ip_limiter(allowed=True, outcome="allowed")
     pending = _make_pending_store(upsert_return={"cp_id": "CP_NEW", "attempts": 1})
 
@@ -121,7 +121,7 @@ async def test_unknown_cp_reconnect_is_pending_refreshed(
 ) -> None:
     """A pending device that reconnects → `attempts > 1` in the upsert
     return → outcome `pending_refreshed`."""
-    monkeypatch.setattr(auth_mod, "get_charge_point_pk", AsyncMock(return_value=None))
+    monkeypatch.setattr(auth_mod, "is_authorized_cp_id", AsyncMock(return_value=False))
     limiter = _make_ip_limiter(allowed=True, outcome="allowed")
     pending = _make_pending_store(upsert_return={"cp_id": "CP_NEW", "attempts": 3})
 
@@ -147,7 +147,7 @@ async def test_unknown_cp_over_ip_limit_is_blocked(
     """No `charge_points` row + IP over the per-minute cap → rejected
     with `ip_blocked`. The pending store is NOT touched (per design:
     the ban must not keep refreshing the pending TTL)."""
-    monkeypatch.setattr(auth_mod, "get_charge_point_pk", AsyncMock(return_value=None))
+    monkeypatch.setattr(auth_mod, "is_authorized_cp_id", AsyncMock(return_value=False))
     limiter = _make_ip_limiter(allowed=False, outcome="newly_blocked")
     pending = _make_pending_store()
 
@@ -173,7 +173,7 @@ async def test_no_ip_limiter_still_reaches_pending(
 ) -> None:
     """The IP limiter is optional (unit tests, dev without Redis).
     None means the gate skips straight to the pending upsert."""
-    monkeypatch.setattr(auth_mod, "get_charge_point_pk", AsyncMock(return_value=None))
+    monkeypatch.setattr(auth_mod, "is_authorized_cp_id", AsyncMock(return_value=False))
     pending = _make_pending_store(upsert_return={"cp_id": "CP_NEW", "attempts": 1})
 
     result = await auth_mod.check_and_record_authorization(
@@ -199,7 +199,7 @@ async def test_db_error_fails_closed(
     The gate cannot accept a device on a stale/absent DB read."""
     monkeypatch.setattr(
         auth_mod,
-        "get_charge_point_pk",
+        "is_authorized_cp_id",
         AsyncMock(side_effect=RuntimeError("kaboom")),
     )
     pending = _make_pending_store()
@@ -226,7 +226,7 @@ async def test_redis_error_on_pending_upsert_fails_closed(
     """The pending write is the durable half of the pending flow — if
     Redis is down we can't record the device, so the accept has nothing
     to hang on. Rejects with `redis_error`."""
-    monkeypatch.setattr(auth_mod, "get_charge_point_pk", AsyncMock(return_value=None))
+    monkeypatch.setattr(auth_mod, "is_authorized_cp_id", AsyncMock(return_value=False))
     pending = MagicMock()
     pending.upsert = AsyncMock(side_effect=RuntimeError("redis down"))
 
