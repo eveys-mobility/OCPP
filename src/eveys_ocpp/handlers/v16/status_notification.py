@@ -38,6 +38,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
+from ocpp.exceptions import SecurityError
 from ocpp.v16 import call_result
 
 from eveys_ocpp._generated.events.v1 import events_pb2
@@ -77,6 +78,13 @@ async def handle(
     **_: object,
 ) -> call_result.StatusNotification:
     bind_contextvars(cp_id=cp.id, action="StatusNotification", direction="rx")
+
+    # Pending-authorization gate — only BootNotification is honoured
+    # while the operator hasn't approved this cp_id.
+    if cp.is_pending:
+        raise SecurityError(
+            details={"reason": "authorization pending; operator has not authorized this cp_id"}
+        )
 
     metrics_registry.STATUS_NOTIFICATIONS_TOTAL.labels(status=status, error_code=error_code).inc()
     with time_handler("StatusNotification"):

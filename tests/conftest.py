@@ -148,6 +148,12 @@ def fake_cp(settings: Settings, fake_session_factory: Any) -> MagicMock:
     cp.event_producer = None
     cp.backend_client = None
     cp.authorize_cache = None
+    # Pending-authorization gate defaults to disabled — MagicMock would
+    # otherwise auto-populate `is_pending` with a truthy sentinel and
+    # send every handler down the CALLERROR early-return path. Tests
+    # that exercise the pending gate flip this to True explicitly.
+    cp.is_pending = False
+    cp.pending_store = None
     # Match the real EveysChargePoint.ocpp_version property — the
     # OCPP library only accepts ocpp1.6 today, so every fake_cp
     # carries that. Tests that exercise 2.0.1-specific paths set

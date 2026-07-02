@@ -43,6 +43,7 @@ if TYPE_CHECKING:
 
     from eveys_ocpp.events import EventProducer
     from eveys_ocpp.idempotency import IdempotencyCache
+    from eveys_ocpp.pending_authorizations import PendingAuthorizations
     from eveys_ocpp.platform import AuthorizeCache, BackendHTTPClient
     from eveys_ocpp.registry import Registry
     from eveys_ocpp.settings import Settings
@@ -75,6 +76,8 @@ class EveysChargePoint(Cpv16):
         backend_client: BackendHTTPClient | None = None,
         authorize_cache: AuthorizeCache | None = None,
         rate_limiter: RateLimiter | None = None,
+        pending_store: PendingAuthorizations | None = None,
+        is_pending: bool = False,
     ) -> None:
         super().__init__(cp_id, connection)
         self.session_factory = session_factory
@@ -85,6 +88,15 @@ class EveysChargePoint(Cpv16):
         self.backend_client = backend_client
         self.authorize_cache = authorize_cache
         self.rate_limiter = rate_limiter
+        # Pending-authorization gate. When True, the WS was accepted for
+        # the operator to see the device in the pending queue, but only
+        # the BootNotification is honoured — every other inbound OCPP
+        # CALL returns CALLERROR and never writes to Postgres. The
+        # pending_store handle is here so BootNotification can cache the
+        # vendor/model/firmware into the Redis pending row instead of
+        # upserting `charge_points`.
+        self.pending_store = pending_store
+        self.is_pending = is_pending
 
     @property
     def ocpp_version(self) -> str:

@@ -47,6 +47,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
+from ocpp.exceptions import SecurityError
 from ocpp.v16 import call, call_result
 from ocpp.v16.enums import RegistrationStatus
 
@@ -169,6 +170,24 @@ async def _handle_inner(
     received_at: datetime,
     set_outcome: object,
 ) -> call_result.BootNotification:
+    # Pending-authorization gate. When the WS was accepted for a device
+    # the operator hasn't approved yet, BootNotification is the only
+    # OCPP action allowed through — but its metadata is cached in the
+    # Redis pending row (so the operator's Console shows vendor / model
+    # / firmware for the decision), NOT upserted into `charge_points`,
+    # and NOT emitted as `cp.boot` (downstream consumers must not see
+    # boot events for a device that isn't part of the fleet yet).
+    if cp.is_pending:
+        return await _handle_pending_boot(
+            cp,
+            charge_point_vendor=charge_point_vendor,
+            charge_point_model=charge_point_model,
+            firmware_version=firmware_version,
+            charge_point_serial_number=charge_point_serial_number,
+            received_at=received_at,
+            set_outcome=set_outcome,
+        )
+
     # Replay gate (E2-11). If the cache says we've seen this exact
     # message_id within the TTL window, return the same response and
     # skip the DB write, backend call, and Kafka emit. A Redis outage
@@ -283,6 +302,66 @@ async def _handle_inner(
         _schedule_post_boot_configuration_push(cp)
 
     return _response(received_at, status, interval)
+
+
+async def _handle_pending_boot(
+    cp: EveysChargePoint,
+    *,
+    charge_point_vendor: str | None,
+    charge_point_model: str | None,
+    firmware_version: str | None,
+    charge_point_serial_number: str | None,
+    received_at: datetime,
+    set_outcome: object,
+) -> call_result.BootNotification:
+    """BootNotification path for a device the operator hasn't authorised.
+
+    Merges the vendor/model/firmware/serial into the Redis pending row
+    so the operator's queue UI has real metadata to show. Does not
+    touch Postgres, does not publish `cp.boot`, does not schedule the
+    post-boot ChangeConfiguration burst.
+
+    If the pending row's TTL expired between the WS upgrade and this
+    Boot arriving, the pending device has effectively been forgotten —
+    close the WS with 1008 and raise SecurityError, matching the
+    contract that pending devices never reach the fleet without an
+    operator decision.
+    """
+    if cp.pending_store is not None:
+        row = await cp.pending_store.record_boot(
+            cp_id=cp.id,
+            vendor=charge_point_vendor,
+            model=charge_point_model,
+            firmware=firmware_version,
+            serial_number=charge_point_serial_number,
+            now=received_at,
+        )
+        if row is None:
+            log.warning(
+                "boot_notification.pending_expired",
+                cp_id=cp.id,
+            )
+            await cp._connection.close(1008, "authorization pending expired")
+            raise SecurityError(
+                details={"reason": "authorization pending expired"},
+            )
+
+    log.info(
+        "boot_notification.pending_recorded",
+        cp_id=cp.id,
+        vendor=charge_point_vendor,
+        model=charge_point_model,
+        firmware=firmware_version,
+    )
+    metrics_registry.BOOT_NOTIFICATIONS_TOTAL.labels(decision="PendingAuthorization").inc()
+    if callable(set_outcome):
+        set_outcome("pending_authorization")
+
+    return _response(
+        received_at,
+        RegistrationStatus.accepted,
+        cp.settings.heartbeat_interval_seconds,
+    )
 
 
 def _post_boot_keys(cp: EveysChargePoint) -> list[tuple[str, str]]:

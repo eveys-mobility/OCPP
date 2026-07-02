@@ -41,3 +41,20 @@ async def test_does_not_raise_on_empty_data(fake_cp: Any) -> None:
     )
 
     assert result.status == DataTransferStatus.unknown_vendor_id
+
+
+@pytest.mark.asyncio
+async def test_pending_cp_raises_security_error(fake_cp: Any) -> None:
+    """A pending device must be refused with a CALLERROR and never
+    touch Postgres."""
+    from unittest.mock import MagicMock
+
+    from ocpp.exceptions import SecurityError
+
+    fake_cp.is_pending = True
+    fake_cp.session_factory = MagicMock(
+        side_effect=AssertionError("session_factory must not be used while pending")
+    )
+
+    with pytest.raises(SecurityError):
+        await data_transfer.handle(fake_cp, vendor_id="acme.fastcharge")

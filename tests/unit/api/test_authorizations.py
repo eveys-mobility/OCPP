@@ -1,8 +1,9 @@
-"""Unit tests for the operator device-authorization surface (#0013).
+"""Unit tests for the operator device-authorization surface.
 
-Covers GET /authorizations, POST .../approve, POST .../reject,
-POST .../revoke (including the live-WS force-disconnect).
-"""
+Covers GET /authorizations, POST .../authorize, POST .../reject,
+POST .../revoke — including the force-close of any live WS this pod
+holds for the cp_id (the load-bearing security guarantee versus
+"wait for next reconnect")."""
 
 from __future__ import annotations
 
@@ -22,33 +23,58 @@ from eveys_ocpp.settings import Settings
 from .conftest import AUTH_HEADER, TEST_TOKEN
 
 
-def _row(*, cp_id: str, status: str) -> dict[str, Any]:
-    """Repository row shape that the route's `_to_response` projects."""
-    now = datetime.now(UTC)
+class _FakePendingStore:
+    """In-memory stand-in for `PendingAuthorizations`.
+
+    Backed by a dict so tests can seed rows, assert what `list_pending`
+    sees, and check that `pop` / `remove` actually mutated state."""
+
+    def __init__(self, rows: dict[str, dict[str, Any]] | None = None) -> None:
+        self._rows: dict[str, dict[str, Any]] = dict(rows or {})
+
+    async def list_pending(self) -> list[dict[str, Any]]:
+        # Oldest-first, matching production semantics.
+        return sorted(
+            self._rows.values(),
+            key=lambda r: r.get("first_seen_at", ""),
+        )
+
+    async def pop(self, cp_id: str) -> dict[str, Any] | None:
+        return self._rows.pop(cp_id, None)
+
+    async def remove(self, cp_id: str) -> bool:
+        return self._rows.pop(cp_id, None) is not None
+
+
+def _pending_row(cp_id: str, *, vendor: str = "Eveys", attempts: int = 1) -> dict[str, Any]:
+    now = datetime.now(UTC).isoformat()
     return {
         "cp_id": cp_id,
-        "status": status,
-        "requested_at": now,
-        "decided_at": now if status != "pending" else None,
-        "decided_by": "ops@example.com" if status != "pending" else None,
-        "last_attempt_ip": "1.2.3.4",
-        "last_attempt_user_agent": "ua/test",
-        "last_attempt_at": now,
-        "updated_at": now,
+        "first_seen_at": now,
+        "last_seen_at": now,
+        "peer_ip": "1.2.3.4",
+        "user_agent": "ua/test",
+        "vendor": vendor,
+        "model": "Eveys-22kW",
+        "firmware": "1.0.0",
+        "serial_number": cp_id,
+        "attempts": attempts,
     }
 
 
 @pytest_asyncio.fixture
-async def client_with_connections(
+async def wired_app(
     settings: Settings,
     fake_session_factory: Any,
     fake_registry: MagicMock,
     fake_command_service: MagicMock,
     fake_ch_client: MagicMock,
-) -> AsyncIterator[tuple[httpx.AsyncClient, MagicMock]]:
-    """REST client that exposes a stub ConnectionMap on app.state.
-    Returns (client, connections_mock) so revoke tests can assert
-    `close()` was called."""
+) -> AsyncIterator[tuple[httpx.AsyncClient, _FakePendingStore, MagicMock]]:
+    """REST client with a fake pending store + a fake ConnectionMap.
+
+    Returns (client, pending_store, connections) so each test can
+    seed the store and assert the WS close behaviour independently."""
+    store = _FakePendingStore()
     connections = MagicMock()
     connections.get = MagicMock(return_value=None)  # default: no live WS
     app = make_app(
@@ -59,146 +85,238 @@ async def client_with_connections(
         command_service=fake_command_service,
         ch_client=fake_ch_client,
         connections=connections,
+        pending_store=store,
     )
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app),
         base_url="http://gw",
         headers={"Authorization": f"Bearer {TEST_TOKEN}"},
     ) as ac:
-        yield ac, connections
+        yield ac, store, connections
 
 
 # ---- GET /authorizations ---------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_list_returns_items(
-    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+async def test_list_returns_pending_rows(
+    wired_app: tuple[httpx.AsyncClient, _FakePendingStore, MagicMock],
 ) -> None:
-    monkeypatch.setattr(
-        routes,
-        "list_authorizations",
-        AsyncMock(return_value=[_row(cp_id="CP_001", status="pending")]),
-    )
-    response = await client.get("/api/v1/authorizations?status=pending")
+    ac, store, _ = wired_app
+    store._rows["CP_A"] = _pending_row("CP_A")
+    store._rows["CP_B"] = _pending_row("CP_B")
+
+    response = await ac.get("/api/v1/authorizations")
     assert response.status_code == 200
     body = response.json()
-    assert len(body["items"]) == 1
-    assert body["items"][0]["cp_id"] == "CP_001"
-    assert body["items"][0]["status"] == "pending"
-    # ISO-8601 timestamps, not Python objects.
-    assert isinstance(body["items"][0]["requested_at"], str)
+    assert {r["cp_id"] for r in body["items"]} == {"CP_A", "CP_B"}
 
 
 @pytest.mark.asyncio
-async def test_list_rejects_unknown_status(client: httpx.AsyncClient) -> None:
-    response = await client.get("/api/v1/authorizations?status=nonsense")
-    assert response.status_code == 400
-    assert response.json()["error_code"] == "BAD_REQUEST"
-
-
-# ---- POST /authorizations/{cp_id}/approve ---------------------------------
-
-
-@pytest.mark.asyncio
-async def test_approve_flips_status(
-    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+async def test_list_empty_when_no_pending(
+    wired_app: tuple[httpx.AsyncClient, _FakePendingStore, MagicMock],
 ) -> None:
-    decide = AsyncMock(return_value=_row(cp_id="CP_001", status="approved"))
-    monkeypatch.setattr(routes, "decide_authorization", decide)
+    ac, _, _ = wired_app
+    response = await ac.get("/api/v1/authorizations")
+    assert response.status_code == 200
+    assert response.json() == {"items": []}
 
-    response = await client.post("/api/v1/authorizations/CP_001/approve?actor=ops@example.com")
+
+# ---- POST /authorizations/{cp_id}/authorize -------------------------------
+
+
+@pytest.mark.asyncio
+async def test_authorize_moves_pending_to_charge_points(
+    wired_app: tuple[httpx.AsyncClient, _FakePendingStore, MagicMock],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Authorize pops the pending row and seeds `charge_points` via
+    `upsert_charge_point_boot` with the pending row's Boot metadata."""
+    ac, store, _ = wired_app
+    store._rows["CP_A"] = _pending_row("CP_A", vendor="Eveys")
+
+    upsert = AsyncMock()
+    monkeypatch.setattr(routes, "upsert_charge_point_boot", upsert)
+
+    response = await ac.post("/api/v1/authorizations/CP_A/authorize")
     assert response.status_code == 200
     body = response.json()
-    assert body["status"] == "approved"
-    decide.assert_awaited_once()
-    kwargs = decide.await_args.kwargs
-    assert kwargs["cp_id"] == "CP_001"
-    assert kwargs["new_status"] == "approved"
-    assert kwargs["decided_by"] == "ops@example.com"
+    assert body["cp_id"] == "CP_A"
+    assert body["status"] == "authorized"
+    assert isinstance(body["authorized_at"], str)
+
+    # Redis row is gone; seed hit the repo with the row's metadata.
+    assert "CP_A" not in store._rows
+    upsert.assert_awaited_once()
+    kwargs = upsert.await_args.kwargs
+    assert kwargs["cp_id"] == "CP_A"
+    assert kwargs["vendor"] == "Eveys"
+    assert kwargs["model"] == "Eveys-22kW"
+    assert kwargs["firmware_version"] == "1.0.0"
+    assert kwargs["serial_number"] == "CP_A"
 
 
 @pytest.mark.asyncio
-async def test_approve_unknown_cp_id_404(
-    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+async def test_authorize_unknown_cp_id_404(
+    wired_app: tuple[httpx.AsyncClient, _FakePendingStore, MagicMock],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(routes, "decide_authorization", AsyncMock(return_value=None))
-    response = await client.post("/api/v1/authorizations/GHOST/approve")
+    ac, _, _ = wired_app
+    monkeypatch.setattr(routes, "upsert_charge_point_boot", AsyncMock())
+
+    response = await ac.post("/api/v1/authorizations/GHOST/authorize")
     assert response.status_code == 404
     assert response.json()["error_code"] == "UNKNOWN_CP_ID"
 
 
 @pytest.mark.asyncio
-async def test_approve_validates_cp_id_length(client: httpx.AsyncClient) -> None:
-    """64-char ceiling matches the `charge_points.cp_id` column."""
-    too_long = "x" * 65
-    response = await client.post(f"/api/v1/authorizations/{too_long}/approve")
-    assert response.status_code == 400
+async def test_authorize_closes_live_ws(
+    wired_app: tuple[httpx.AsyncClient, _FakePendingStore, MagicMock],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pending authorize must force-close any live WS this pod is
+    hosting for the cp_id so the charger reconnects and takes the
+    authorized branch on its next upgrade."""
+    ac, store, connections = wired_app
+    store._rows["CP_A"] = _pending_row("CP_A")
+    monkeypatch.setattr(routes, "upsert_charge_point_boot", AsyncMock())
 
+    ws = MagicMock()
+    ws.close = AsyncMock()
+    cp = MagicMock()
+    cp.connection = ws
+    connections.get.return_value = cp
 
-# ---- POST /authorizations/{cp_id}/reject ---------------------------------
+    response = await ac.post("/api/v1/authorizations/CP_A/authorize")
+    assert response.status_code == 200
+    ws.close.assert_awaited_once()
+    args, _ = ws.close.await_args
+    assert args[0] == 1008
 
 
 @pytest.mark.asyncio
-async def test_reject_routes_to_repo(
-    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+async def test_authorize_validates_cp_id_length(
+    wired_app: tuple[httpx.AsyncClient, _FakePendingStore, MagicMock],
 ) -> None:
-    decide = AsyncMock(return_value=_row(cp_id="CP_001", status="rejected"))
-    monkeypatch.setattr(routes, "decide_authorization", decide)
+    """64-char ceiling matches the `charge_points.cp_id` column."""
+    ac, _, _ = wired_app
+    too_long = "x" * 65
+    response = await ac.post(f"/api/v1/authorizations/{too_long}/authorize")
+    assert response.status_code == 400
 
-    response = await client.post("/api/v1/authorizations/CP_001/reject")
+
+# ---- POST /authorizations/{cp_id}/reject ----------------------------------
+
+
+@pytest.mark.asyncio
+async def test_reject_removes_pending_row(
+    wired_app: tuple[httpx.AsyncClient, _FakePendingStore, MagicMock],
+) -> None:
+    ac, store, _ = wired_app
+    store._rows["CP_A"] = _pending_row("CP_A")
+
+    response = await ac.post("/api/v1/authorizations/CP_A/reject")
     assert response.status_code == 200
-    assert response.json()["status"] == "rejected"
-    assert decide.await_args.kwargs["new_status"] == "rejected"
+    assert response.json() == {"cp_id": "CP_A", "status": "rejected"}
+    assert "CP_A" not in store._rows
+
+
+@pytest.mark.asyncio
+async def test_reject_404_when_not_pending(
+    wired_app: tuple[httpx.AsyncClient, _FakePendingStore, MagicMock],
+) -> None:
+    ac, _, _ = wired_app
+    response = await ac.post("/api/v1/authorizations/GHOST/reject")
+    assert response.status_code == 404
+    assert response.json()["error_code"] == "UNKNOWN_CP_ID"
+
+
+@pytest.mark.asyncio
+async def test_reject_closes_live_ws(
+    wired_app: tuple[httpx.AsyncClient, _FakePendingStore, MagicMock],
+) -> None:
+    ac, store, connections = wired_app
+    store._rows["CP_A"] = _pending_row("CP_A")
+
+    ws = MagicMock()
+    ws.close = AsyncMock()
+    cp = MagicMock()
+    cp.connection = ws
+    connections.get.return_value = cp
+
+    response = await ac.post("/api/v1/authorizations/CP_A/reject")
+    assert response.status_code == 200
+    ws.close.assert_awaited_once()
 
 
 # ---- POST /authorizations/{cp_id}/revoke ---------------------------------
 
 
 @pytest.mark.asyncio
-async def test_revoke_closes_live_ws(
-    client_with_connections: tuple[httpx.AsyncClient, MagicMock],
+async def test_revoke_deletes_charge_point_row(
+    wired_app: tuple[httpx.AsyncClient, _FakePendingStore, MagicMock],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A revoke must force-close any live WS this pod holds for the
-    charger — that's the load-bearing security guarantee versus 'wait
-    for next reconnect'."""
-    ac, connections = client_with_connections
-    decide = AsyncMock(return_value=_row(cp_id="CP_001", status="revoked"))
-    monkeypatch.setattr(routes, "decide_authorization", decide)
+    ac, _, _ = wired_app
+    delete = AsyncMock(return_value=True)
+    monkeypatch.setattr(routes, "delete_charge_point", delete)
 
-    fake_connection = MagicMock()
-    fake_connection.close = AsyncMock()
-    fake_cp = MagicMock()
-    fake_cp.connection = fake_connection
-    connections.get.return_value = fake_cp
-
-    response = await ac.post("/api/v1/authorizations/CP_001/revoke")
+    response = await ac.post("/api/v1/authorizations/CP_A/revoke")
     assert response.status_code == 200
-    assert response.json()["status"] == "revoked"
+    assert response.json() == {"cp_id": "CP_A", "status": "revoked"}
+    delete.assert_awaited_once()
+    assert delete.await_args.kwargs["cp_id"] == "CP_A"
 
-    fake_connection.close.assert_awaited_once()
-    args, _ = fake_connection.close.await_args
+
+@pytest.mark.asyncio
+async def test_revoke_404_when_row_missing(
+    wired_app: tuple[httpx.AsyncClient, _FakePendingStore, MagicMock],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ac, _, _ = wired_app
+    monkeypatch.setattr(routes, "delete_charge_point", AsyncMock(return_value=False))
+
+    response = await ac.post("/api/v1/authorizations/GHOST/revoke")
+    assert response.status_code == 404
+    assert response.json()["error_code"] == "UNKNOWN_CP_ID"
+
+
+@pytest.mark.asyncio
+async def test_revoke_closes_live_ws(
+    wired_app: tuple[httpx.AsyncClient, _FakePendingStore, MagicMock],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The load-bearing security guarantee: a revoke must force-close
+    any live WS this pod holds, not wait for the next reconnect."""
+    ac, _, connections = wired_app
+    monkeypatch.setattr(routes, "delete_charge_point", AsyncMock(return_value=True))
+
+    ws = MagicMock()
+    ws.close = AsyncMock()
+    cp = MagicMock()
+    cp.connection = ws
+    connections.get.return_value = cp
+
+    response = await ac.post("/api/v1/authorizations/CP_A/revoke")
+    assert response.status_code == 200
+    ws.close.assert_awaited_once()
+    args, _ = ws.close.await_args
     assert args[0] == 1008
     assert "revoked" in args[1].lower()
 
 
 @pytest.mark.asyncio
 async def test_revoke_no_live_ws_still_succeeds(
-    client_with_connections: tuple[httpx.AsyncClient, MagicMock],
+    wired_app: tuple[httpx.AsyncClient, _FakePendingStore, MagicMock],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Revoking a charger that's not currently connected is a clean
-    200 — the DB state change is the durable effect."""
-    ac, connections = client_with_connections
-    monkeypatch.setattr(
-        routes,
-        "decide_authorization",
-        AsyncMock(return_value=_row(cp_id="CP_001", status="revoked")),
-    )
+    200 — the DB delete is the durable effect."""
+    ac, _, connections = wired_app
+    monkeypatch.setattr(routes, "delete_charge_point", AsyncMock(return_value=True))
     connections.get.return_value = None
 
-    response = await ac.post("/api/v1/authorizations/CP_001/revoke")
+    response = await ac.post("/api/v1/authorizations/CP_A/revoke")
     assert response.status_code == 200
 
 

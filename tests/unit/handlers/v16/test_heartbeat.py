@@ -121,3 +121,26 @@ async def test_heartbeat_publish_failure_is_swallowed(
     result = await heartbeat.handle(fake_cp)
 
     assert result is not None  # response still returned, exception logged
+
+
+@pytest.mark.asyncio
+async def test_pending_cp_raises_security_error(fake_cp: Any) -> None:
+    """A pending device must be refused with a CALLERROR and never
+    touch Postgres or Redis."""
+    from unittest.mock import MagicMock
+
+    from ocpp.exceptions import SecurityError
+
+    fake_cp.is_pending = True
+    fake_cp.session_factory = MagicMock(
+        side_effect=AssertionError("session_factory must not be used while pending")
+    )
+    fake_cp.registry = AsyncMock()
+    fake_cp.registry.refresh = AsyncMock(
+        side_effect=AssertionError("registry must not be touched while pending")
+    )
+
+    with pytest.raises(SecurityError):
+        await heartbeat.handle(fake_cp)
+
+    fake_cp.registry.refresh.assert_not_awaited()

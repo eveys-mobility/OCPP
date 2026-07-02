@@ -28,11 +28,13 @@ from eveys_ocpp.observability import (
     init_sentry,
     shutdown_tracing,
 )
+from eveys_ocpp.pending_authorizations import PendingAuthorizations
 from eveys_ocpp.persistence.db import make_engine, make_session_factory
 from eveys_ocpp.platform import AuthorizeCache, BackendHTTPClient
 from eveys_ocpp.registry import Registry
 from eveys_ocpp.settings import Settings, get_settings
 from eveys_ocpp.shutdown import DrainController
+from eveys_ocpp.transport._ip_rate_limiter import IpRateLimiter
 from eveys_ocpp.transport._rate_limiter import RateLimiter
 from eveys_ocpp.transport.grpc_server import OcppGatewayService
 from eveys_ocpp.transport.grpc_server import serve_forever as serve_grpc_forever
@@ -159,6 +161,8 @@ async def _serve_all(
     backend_client: BackendHTTPClient | None,
     authorize_cache: AuthorizeCache | None,
     rate_limiter: RateLimiter | None,
+    pending_store: PendingAuthorizations,
+    ip_rate_limiter: IpRateLimiter,
 ) -> None:
     """Run WS and gRPC servers concurrently; cancel both if either fails.
 
@@ -276,6 +280,8 @@ async def _serve_all(
                         backend_client=backend_client,
                         authorize_cache=authorize_cache,
                         rate_limiter=rate_limiter,
+                        pending_store=pending_store,
+                        ip_rate_limiter=ip_rate_limiter,
                     ),
                     name="ws_server",
                 )
@@ -300,6 +306,7 @@ async def _serve_all(
                             ch_client=ch_client,
                             drain_controller=drain_controller,
                             connections=connections,
+                            pending_store=pending_store,
                         ),
                         name="rest_server",
                     )
@@ -437,6 +444,22 @@ def main() -> None:
     else:
         log.info("rate_limiter.disabled")
 
+    # Pending-authorization Redis store + WS-upgrade IP rate limiter.
+    # The pending store holds unauthorized devices; the IP limiter gates
+    # WS upgrades from unknown cp_ids. Authorized fleet members bypass
+    # the IP limiter entirely (see transport/_authorization.py).
+    pending_store = PendingAuthorizations(redis_client, settings=settings)
+    ip_rate_limiter = IpRateLimiter(redis_client, settings=settings)
+    log.info(
+        "pending_authorizations.enabled",
+        ttl_seconds=settings.pending_authorization_ttl_seconds,
+    )
+    log.info(
+        "ip_rate_limiter.enabled",
+        max_per_minute=settings.ip_rate_limit_requests_per_minute,
+        block_seconds=settings.ip_rate_limit_block_seconds,
+    )
+
     # Backend HTTP client (E3-2, ADR-0023). Empty `backend_base_url`
     # leaves it None — the OCPP handlers fall back to their stub
     # behaviour, which is what the W1 / local-dev stack wants.
@@ -477,6 +500,8 @@ def main() -> None:
             backend_client=backend_client,
             authorize_cache=authorize_cache,
             rate_limiter=rate_limiter,
+            pending_store=pending_store,
+            ip_rate_limiter=ip_rate_limiter,
         )
     )
 

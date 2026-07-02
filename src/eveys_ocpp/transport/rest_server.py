@@ -28,6 +28,7 @@ if TYPE_CHECKING:
 
     from eveys_ocpp.clickhouse.read_client import ClickHouseReadClient
     from eveys_ocpp.connections import ConnectionMap
+    from eveys_ocpp.pending_authorizations import PendingAuthorizations
     from eveys_ocpp.registry import Registry
     from eveys_ocpp.settings import Settings
     from eveys_ocpp.shutdown import DrainController
@@ -46,6 +47,7 @@ async def serve_forever(
     ch_client: ClickHouseReadClient | None = None,
     drain_controller: DrainController | None = None,
     connections: ConnectionMap | None = None,
+    pending_store: PendingAuthorizations | None = None,
 ) -> None:
     """Build the FastAPI app, run uvicorn, return when the loop exits.
 
@@ -64,6 +66,7 @@ async def serve_forever(
         ch_client=ch_client,
         drain_controller=drain_controller,
         connections=connections,
+        pending_store=pending_store,
     )
 
     # SSE bus (ADR-0030). Off by default; when on, one Kafka consumer

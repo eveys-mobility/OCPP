@@ -35,7 +35,8 @@ from eveys_ocpp.metrics import registry as m
 # 63: +1 WEBHOOK_BACKLOG_ENQUEUED_TOTAL      ,, ,,
 # 64: +1 WEBHOOK_BACKLOG_DRAIN_TOTAL         ,, ,,
 # 65: +1 WEBHOOK_BACKLOG_DEADLETTER_TOTAL    ,, ,,
-EXPECTED_METRIC_COUNT = 66
+# 68: +1 AUTHORIZATION_ADMIN_TOTAL for operator authorize/reject/revoke actions
+EXPECTED_METRIC_COUNT = 68
 
 
 def _gateway_metric_attrs() -> list[tuple[str, object]]:

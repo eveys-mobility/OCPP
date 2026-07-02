@@ -126,3 +126,20 @@ async def test_ignores_extra_kwargs(fake_cp: Any, monkeypatch: pytest.MonkeyPatc
     )
     result = await sign_certificate.handle(fake_cp, csr=_DUMMY_CSR, request_id=123)
     assert isinstance(result, call_result.SignCertificate)
+
+
+@pytest.mark.asyncio
+async def test_pending_cp_raises_security_error(fake_cp: Any) -> None:
+    """A pending device must be refused with a CALLERROR and never
+    touch Postgres."""
+    from unittest.mock import MagicMock
+
+    from ocpp.exceptions import SecurityError
+
+    fake_cp.is_pending = True
+    fake_cp.session_factory = MagicMock(
+        side_effect=AssertionError("session_factory must not be used while pending")
+    )
+
+    with pytest.raises(SecurityError):
+        await sign_certificate.handle(fake_cp, csr=_DUMMY_CSR)

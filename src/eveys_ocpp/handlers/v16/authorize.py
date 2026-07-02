@@ -45,6 +45,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
+from ocpp.exceptions import SecurityError
 from ocpp.v16 import call_result
 from ocpp.v16.datatypes import IdTagInfo
 from ocpp.v16.enums import AuthorizationStatus
@@ -92,6 +93,16 @@ async def handle(
     **_: object,
 ) -> call_result.Authorize:
     bind_contextvars(cp_id=cp.id, action="Authorize", direction="rx")
+
+    # Pending-authorization gate. The operator hasn't approved this
+    # cp_id yet — only BootNotification is honoured; every other
+    # inbound CALL returns CALLERROR and never touches Postgres or
+    # the backend. `SecurityError` is untyped upstream (mobilityhouse/
+    # ocpp ships no `py.typed`); silencing the strict-check locally.
+    if cp.is_pending:
+        raise SecurityError(  # type: ignore[no-untyped-call]
+            details={"reason": "authorization pending; operator has not authorized this cp_id"}
+        )
 
     with time_handler("Authorize"):
         try:

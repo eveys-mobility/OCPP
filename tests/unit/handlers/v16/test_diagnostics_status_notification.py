@@ -99,3 +99,20 @@ async def test_publish_failure_does_not_crash_handler(
 
     result = await diagnostics_status_notification.handle(fake_cp, status="UploadFailed")
     assert isinstance(result, call_result.DiagnosticsStatusNotification)
+
+
+@pytest.mark.asyncio
+async def test_pending_cp_raises_security_error(fake_cp: Any) -> None:
+    """A pending device must be refused with a CALLERROR and never
+    touch Postgres."""
+    from unittest.mock import MagicMock
+
+    from ocpp.exceptions import SecurityError
+
+    fake_cp.is_pending = True
+    fake_cp.session_factory = MagicMock(
+        side_effect=AssertionError("session_factory must not be used while pending")
+    )
+
+    with pytest.raises(SecurityError):
+        await diagnostics_status_notification.handle(fake_cp, status="Uploading")

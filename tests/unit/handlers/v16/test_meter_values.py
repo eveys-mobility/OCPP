@@ -317,3 +317,29 @@ async def test_published_envelope_carries_proto_enum_values(fake_cp: Any) -> Non
     assert sv.measurand == events_pb2.MEASURAND_VOLTAGE
     assert sv.phase == events_pb2.PHASE_L1
     assert sv.unit == events_pb2.UNIT_V
+
+
+@pytest.mark.asyncio
+async def test_pending_cp_raises_security_error(fake_cp: Any) -> None:
+    """A pending device must be refused with a CALLERROR and never
+    reach the Kafka publish path — MeterValues bypasses Postgres, but
+    the gate still stops the event emit."""
+    from unittest.mock import MagicMock
+
+    from ocpp.exceptions import SecurityError
+
+    fake_cp.is_pending = True
+    fake_cp.session_factory = MagicMock(
+        side_effect=AssertionError("session_factory must not be used while pending")
+    )
+    fake_producer = AsyncMock()
+    fake_cp.event_producer = fake_producer
+
+    with pytest.raises(SecurityError):
+        await meter_values.handle(
+            fake_cp,
+            connector_id=1,
+            meter_value=[{"timestamp": "2026-07-02T16:00:00Z", "sampled_value": [_sample("1234")]}],
+        )
+
+    fake_producer.publish.assert_not_awaited()

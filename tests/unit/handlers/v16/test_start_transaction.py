@@ -321,3 +321,32 @@ async def test_invalid_id_tag_does_not_call_backend(
     assert result.id_tag_info.status == AuthorizationStatus.invalid
     fake_cp.backend_client.open_session.assert_not_awaited()
     insert.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_pending_cp_raises_security_error(fake_cp: Any) -> None:
+    """A pending device must be refused with a CALLERROR and never
+    touch Postgres or the backend."""
+    from unittest.mock import MagicMock
+
+    from ocpp.exceptions import SecurityError
+
+    fake_cp.is_pending = True
+    fake_cp.session_factory = MagicMock(
+        side_effect=AssertionError("session_factory must not be used while pending")
+    )
+    fake_cp.backend_client = AsyncMock()
+    fake_cp.backend_client.open_session = AsyncMock(
+        side_effect=AssertionError("backend must not be called while pending")
+    )
+
+    with pytest.raises(SecurityError):
+        await start_transaction.handle(
+            fake_cp,
+            connector_id=1,
+            id_tag="RFID_X",
+            meter_start=0,
+            timestamp="2026-04-29T00:00:00+00:00",
+        )
+
+    fake_cp.backend_client.open_session.assert_not_awaited()

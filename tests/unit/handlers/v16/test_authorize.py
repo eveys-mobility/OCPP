@@ -334,3 +334,29 @@ async def test_no_cache_wired_falls_through_directly(fake_cp: Any) -> None:
 
     result = await authorize.handle(fake_cp, id_tag="RFID_X")
     assert result.id_tag_info.status == AuthorizationStatus.accepted
+
+
+# ---- Pending-authorization gate ------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_pending_cp_raises_security_error(fake_cp: Any) -> None:
+    """A pending device must be refused with a CALLERROR and never
+    touch Postgres or the backend."""
+    from unittest.mock import MagicMock
+
+    from ocpp.exceptions import SecurityError
+
+    fake_cp.is_pending = True
+    fake_cp.session_factory = MagicMock(
+        side_effect=AssertionError("session_factory must not be used while pending")
+    )
+    fake_cp.backend_client = AsyncMock()
+    fake_cp.backend_client.authorize = AsyncMock(
+        side_effect=AssertionError("backend must not be called while pending")
+    )
+
+    with pytest.raises(SecurityError):
+        await authorize.handle(fake_cp, id_tag="RFID_X")
+
+    fake_cp.backend_client.authorize.assert_not_awaited()

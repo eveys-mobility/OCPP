@@ -18,10 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from .models import (
-    AUTH_STATUS_PENDING,
-    AUTH_STATUSES,
     ChargePoint,
-    ChargePointAuthorization,
     ChargePointCertificate,
     ChargePointCredential,
     ChargingProfile,
@@ -1890,202 +1887,30 @@ async def delete_charge_point_credential(session: AsyncSession, *, cp_id: str) -
     return bool(rowcount and rowcount > 0)
 
 
-# ---- #0013: per-charger authorization allowlist ---------------------------
+# ---- Device authorization: charger deletion -------------------------------
+#
+# Authorization state now lives in Redis (`cp:pending:{cp_id}`, see
+# `eveys_ocpp/pending_authorizations.py`). The only Postgres-side write
+# from the operator surface is the revocation delete: an authorized
+# charger is any row in `charge_points`, so revoke = drop that row.
 
 
-def _authorization_to_dict(row: ChargePointAuthorization, cp_id: str) -> dict[str, Any]:
-    """Project the ORM row to the dict shape the REST layer returns.
+async def delete_charge_point(session: AsyncSession, *, cp_id: str) -> bool:
+    """Delete a charger row by `cp_id`. Returns True when a row was
+    removed, False when it didn't exist.
 
-    The natural-key `cp_id` is joined-in by the caller (the ORM table
-    only stores the surrogate `charge_point_id`). Keeping the dict
-    shape here means the REST layer doesn't import ORM types.
+    Powers the operator revoke endpoint — the presence of a row is what
+    the WS auth gate reads to distinguish authorized fleet members from
+    unknown devices, so deleting the row *is* the revocation.
+    Cascades to child tables (transactions, credentials, reservations,
+    etc.) via the FK `ondelete='CASCADE'` on each child.
     """
-    return {
-        "cp_id": cp_id,
-        "status": row.status,
-        "requested_at": row.requested_at,
-        "decided_at": row.decided_at,
-        "decided_by": row.decided_by,
-        "last_attempt_ip": row.last_attempt_ip,
-        "last_attempt_user_agent": row.last_attempt_user_agent,
-        "last_attempt_at": row.last_attempt_at,
-        "updated_at": row.updated_at,
-    }
+    from sqlalchemy.engine import CursorResult
 
-
-async def get_authorization(session: AsyncSession, *, cp_id: str) -> dict[str, Any] | None:
-    """Return the authorization row for a charger, or `None` if there
-    is no `charge_points` row yet (first-ever sighting).
-
-    Called on every WS pre-handshake, so kept to one indexed lookup.
-    """
-    stmt = (
-        select(ChargePointAuthorization, ChargePoint.cp_id)
-        .join(ChargePoint, ChargePoint.id == ChargePointAuthorization.charge_point_id)
-        .where(ChargePoint.cp_id == cp_id)
-    )
-    result = await session.execute(stmt)
-    row = result.first()
-    if row is None:
-        return None
-    auth, joined_cp_id = row
-    return _authorization_to_dict(auth, joined_cp_id)
-
-
-async def record_authorization_attempt(
-    session: AsyncSession,
-    *,
-    cp_id: str,
-    peer_ip: str | None,
-    user_agent: str | None,
-    now: datetime,
-) -> dict[str, Any]:
-    """Upsert a `pending` authorization row OR refresh the
-    `last_attempt_*` fields of an existing row.
-
-    First-ever sighting: we also need a `charge_points` row to FK
-    against. The WS pre-handshake runs *before* BootNotification, so
-    the charger may not have a `charge_points` row yet — create a
-    minimal one (just `cp_id`), the BootNotification handler fills
-    `vendor` / `model` / etc. when it lands.
-
-    Returns the authorization row dict (after the upsert). The caller
-    uses `status` to decide whether to accept the WS upgrade.
-
-    The function does *not* commit; the caller controls the session
-    boundary so `record_authorization_attempt` + the matching WS
-    accept/reject stay consistent under contention.
-    """
-    # 1. Ensure the charge_points row exists. Empty insert with just
-    # cp_id; ON CONFLICT DO NOTHING because BootNotification's upsert
-    # owns the rest of the columns. We need RETURNING id for the FK,
-    # so a follow-up SELECT covers the conflict case.
-    insert_cp = (
-        pg_insert(ChargePoint)
-        .values(cp_id=cp_id)
-        .on_conflict_do_nothing(index_elements=[ChargePoint.cp_id])
-        .returning(ChargePoint.id)
-    )
-    inserted = (await session.execute(insert_cp)).scalar_one_or_none()
-    if inserted is not None:
-        cp_pk = inserted
-    else:
-        cp_pk_row = await session.execute(select(ChargePoint.id).where(ChargePoint.cp_id == cp_id))
-        cp_pk = cp_pk_row.scalar_one()
-
-    # 2. Upsert the authorization row. A brand-new row defaults to
-    # `pending`; an existing row keeps its current status (the
-    # operator's prior decision is sticky) and just refreshes the
-    # `last_attempt_*` columns.
-    insert_auth = (
-        pg_insert(ChargePointAuthorization)
-        .values(
-            charge_point_id=cp_pk,
-            status=AUTH_STATUS_PENDING,
-            requested_at=now,
-            last_attempt_ip=peer_ip,
-            last_attempt_user_agent=user_agent,
-            last_attempt_at=now,
-        )
-        .on_conflict_do_update(
-            index_elements=[ChargePointAuthorization.charge_point_id],
-            set_={
-                "last_attempt_ip": peer_ip,
-                "last_attempt_user_agent": user_agent,
-                "last_attempt_at": now,
-                "updated_at": func.now(),
-            },
-        )
-    )
-    await session.execute(insert_auth)
-
-    # 3. Read back the (possibly-updated) row and return it.
-    row = await session.execute(
-        select(ChargePointAuthorization).where(ChargePointAuthorization.charge_point_id == cp_pk)
-    )
-    auth = row.scalar_one()
-    return _authorization_to_dict(auth, cp_id)
-
-
-async def decide_authorization(
-    session: AsyncSession,
-    *,
-    cp_id: str,
-    new_status: str,
-    decided_by: str,
-    now: datetime,
-) -> dict[str, Any] | None:
-    """Move a charger's authorization to `approved` / `rejected` /
-    `revoked`. Returns the projected row dict on success, `None` when
-    the charger is unknown (REST surfaces as 404).
-
-    Idempotent: calling `approve` on an already-approved row is a
-    no-op that still refreshes `decided_at` / `decided_by` — the
-    operator console can re-confirm without a race.
-    """
-    if new_status not in AUTH_STATUSES or new_status == AUTH_STATUS_PENDING:
-        # `pending` is not a decision; reject the bad input early so a
-        # buggy caller can't reset a decided row back to pending.
-        raise ValueError(f"invalid decision status: {new_status!r}")
-
-    cp_pk = await get_charge_point_pk(session, cp_id=cp_id)
-    if cp_pk is None:
-        return None
-
-    stmt = (
-        update(ChargePointAuthorization)
-        .where(ChargePointAuthorization.charge_point_id == cp_pk)
-        .values(status=new_status, decided_at=now, decided_by=decided_by)
-        .returning(ChargePointAuthorization)
-    )
-    result = await session.execute(stmt)
-    row = result.scalar_one_or_none()
-    if row is None:
-        # No authorization row yet (charger created via legacy path
-        # without a record_authorization_attempt). Insert one so the
-        # decision sticks.
-        await session.execute(
-            pg_insert(ChargePointAuthorization).values(
-                charge_point_id=cp_pk,
-                status=new_status,
-                requested_at=now,
-                decided_at=now,
-                decided_by=decided_by,
-            )
-        )
-        result = await session.execute(
-            select(ChargePointAuthorization).where(
-                ChargePointAuthorization.charge_point_id == cp_pk
-            )
-        )
-        row = result.scalar_one()
-    return _authorization_to_dict(row, cp_id)
-
-
-async def list_authorizations(
-    session: AsyncSession,
-    *,
-    status: str | None = None,
-    limit: int = 200,
-) -> list[dict[str, Any]]:
-    """List authorization rows, newest-requested first. Optional
-    `status` filter for the dominant "pending only" console query.
-    Hard cap on `limit` so a buggy caller can't paginate-by-yes.
-    """
-    if limit <= 0 or limit > 500:
-        limit = 200
-    stmt = (
-        select(ChargePointAuthorization, ChargePoint.cp_id)
-        .join(ChargePoint, ChargePoint.id == ChargePointAuthorization.charge_point_id)
-        .order_by(ChargePointAuthorization.requested_at.desc())
-        .limit(limit)
-    )
-    if status is not None:
-        if status not in AUTH_STATUSES:
-            return []
-        stmt = stmt.where(ChargePointAuthorization.status == status)
-    result = await session.execute(stmt)
-    return [_authorization_to_dict(auth, cp_id) for auth, cp_id in result.all()]
+    result = await session.execute(delete(ChargePoint).where(ChargePoint.cp_id == cp_id))
+    if isinstance(result, CursorResult):
+        return bool(result.rowcount)
+    return False  # pragma: no cover — DELETE always yields CursorResult
 
 
 # ---- Webhook delivery backlog (E3-9 tail) --------------------------------

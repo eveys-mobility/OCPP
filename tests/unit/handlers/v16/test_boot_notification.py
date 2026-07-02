@@ -565,3 +565,72 @@ async def test_meter_value_sample_interval_push_failure_does_not_propagate(
     await task
     assert task.done()
     assert task.exception() is None
+
+
+# ---- Pending-authorization gate ------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_pending_boot_records_metadata_and_skips_postgres(
+    fake_cp: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When `is_pending=True`, BootNotification merges metadata into the
+    Redis pending row and returns Accepted — no Postgres upsert, no
+    `cp.boot` Kafka emit, no post-boot ChangeConfiguration push."""
+    upsert = AsyncMock()
+    monkeypatch.setattr(boot_notification, "upsert_charge_point_boot", upsert)
+
+    fake_cp.is_pending = True
+    fake_cp.pending_store = AsyncMock()
+    fake_cp.pending_store.record_boot = AsyncMock(return_value={"cp_id": "TEST_CP_001"})
+    fake_cp.event_producer = AsyncMock()
+    fake_cp.event_producer.publish = AsyncMock()
+
+    result = await boot_notification.handle(
+        fake_cp,
+        charge_point_vendor="ACME",
+        charge_point_model="X1",
+        firmware_version="1.0.0",
+        charge_point_serial_number="SN001",
+    )
+
+    assert isinstance(result, call_result.BootNotification)
+    assert result.status == "Accepted"
+    assert result.interval == fake_cp.settings.heartbeat_interval_seconds
+    fake_cp.pending_store.record_boot.assert_awaited_once()
+    kwargs = fake_cp.pending_store.record_boot.await_args.kwargs
+    assert kwargs["cp_id"] == "TEST_CP_001"
+    assert kwargs["vendor"] == "ACME"
+    assert kwargs["model"] == "X1"
+    assert kwargs["firmware"] == "1.0.0"
+    assert kwargs["serial_number"] == "SN001"
+    # No Postgres write, no Kafka emit, no post-boot push task attached.
+    upsert.assert_not_awaited()
+    fake_cp.event_producer.publish.assert_not_awaited()
+    assert "_meter_value_push_task" not in fake_cp.__dict__
+
+
+@pytest.mark.asyncio
+async def test_pending_boot_closes_ws_when_row_expired(
+    fake_cp: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If the Redis pending row TTL expired between the WS upgrade and
+    this Boot, `record_boot` returns None. The handler must close the
+    WS with 1008 and raise SecurityError so the CALLERROR reaches the
+    charger before the socket dies."""
+    from ocpp.exceptions import SecurityError
+
+    upsert = AsyncMock()
+    monkeypatch.setattr(boot_notification, "upsert_charge_point_boot", upsert)
+
+    fake_cp.is_pending = True
+    fake_cp.pending_store = AsyncMock()
+    fake_cp.pending_store.record_boot = AsyncMock(return_value=None)
+    fake_cp._connection = MagicMock()
+    fake_cp._connection.close = AsyncMock()
+
+    with pytest.raises(SecurityError):
+        await boot_notification.handle(fake_cp, charge_point_vendor="ACME")
+
+    fake_cp._connection.close.assert_awaited_once_with(1008, "authorization pending expired")
+    upsert.assert_not_awaited()

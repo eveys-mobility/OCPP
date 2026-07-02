@@ -528,3 +528,31 @@ async def test_publish_failure_does_not_crash_handler(
 
     # Charger still gets a clean reply; broker failure logged but not raised.
     assert result.id_tag_info.status == AuthorizationStatus.accepted
+
+
+@pytest.mark.asyncio
+async def test_pending_cp_raises_security_error(fake_cp: Any) -> None:
+    """A pending device must be refused with a CALLERROR and never
+    touch Postgres or the backend."""
+    from unittest.mock import MagicMock
+
+    from ocpp.exceptions import SecurityError
+
+    fake_cp.is_pending = True
+    fake_cp.session_factory = MagicMock(
+        side_effect=AssertionError("session_factory must not be used while pending")
+    )
+    fake_cp.backend_client = AsyncMock()
+    fake_cp.backend_client.close_session = AsyncMock(
+        side_effect=AssertionError("backend must not be called while pending")
+    )
+
+    with pytest.raises(SecurityError):
+        await stop_transaction.handle(
+            fake_cp,
+            transaction_id=1,
+            meter_stop=100,
+            timestamp="2026-05-05T15:14:30.000+00:00",
+        )
+
+    fake_cp.backend_client.close_session.assert_not_awaited()

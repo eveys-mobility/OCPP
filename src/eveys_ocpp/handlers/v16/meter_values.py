@@ -47,6 +47,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from ocpp.exceptions import SecurityError
 from ocpp.v16 import call_result
 
 from eveys_ocpp._generated.events.v1 import events_pb2
@@ -130,6 +131,13 @@ async def handle(
 ) -> call_result.MeterValues:
     """Charger-initiated periodic samples. Forward to Kafka."""
     bind_contextvars(cp_id=cp.id, action="MeterValues", direction="rx")
+
+    # Pending-authorization gate — only BootNotification is honoured
+    # while the operator hasn't approved this cp_id.
+    if cp.is_pending:
+        raise SecurityError(
+            details={"reason": "authorization pending; operator has not authorized this cp_id"}
+        )
 
     metrics_registry.METER_VALUES_TOTAL.inc()
     with time_handler("MeterValues"):

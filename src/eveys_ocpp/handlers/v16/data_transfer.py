@@ -24,6 +24,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from ocpp.exceptions import SecurityError
 from ocpp.v16 import call_result
 from ocpp.v16.enums import DataTransferStatus
 
@@ -45,6 +46,14 @@ async def handle(
     data: str | None = None,
 ) -> call_result.DataTransfer:
     bind_contextvars(cp_id=cp.id, action="DataTransfer", direction="rx")
+
+    # Pending-authorization gate — only BootNotification is honoured
+    # while the operator hasn't approved this cp_id. `SecurityError`
+    # is untyped upstream (mobilityhouse/ocpp ships no `py.typed`).
+    if cp.is_pending:
+        raise SecurityError(  # type: ignore[no-untyped-call]
+            details={"reason": "authorization pending; operator has not authorized this cp_id"}
+        )
 
     with time_handler("DataTransfer"):
         try:

@@ -24,6 +24,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
+from ocpp.exceptions import SecurityError
 from ocpp.v16 import call_result
 
 from eveys_ocpp._generated.events.v1 import events_pb2
@@ -52,6 +53,13 @@ def _build_envelope(*, cp_id: str, payload: events_pb2.CpHeartbeat, occurred_at:
 
 async def handle(cp: EveysChargePoint) -> call_result.Heartbeat:
     bind_contextvars(cp_id=cp.id, action="Heartbeat", direction="rx")
+
+    # Pending-authorization gate — only BootNotification is honoured
+    # while the operator hasn't approved this cp_id.
+    if cp.is_pending:
+        raise SecurityError(
+            details={"reason": "authorization pending; operator has not authorized this cp_id"}
+        )
 
     metrics_registry.HEARTBEATS_TOTAL.inc()
     with time_handler("Heartbeat"):

@@ -52,6 +52,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
+from ocpp.exceptions import SecurityError
 from ocpp.v16 import call_result
 from ocpp.v16.datatypes import IdTagInfo
 from ocpp.v16.enums import AuthorizationStatus
@@ -130,6 +131,13 @@ async def handle(
         direction="rx",
         transaction_id=transaction_id,
     )
+
+    # Pending-authorization gate — only BootNotification is honoured
+    # while the operator hasn't approved this cp_id.
+    if cp.is_pending:
+        raise SecurityError(
+            details={"reason": "authorization pending; operator has not authorized this cp_id"}
+        )
 
     # Counted regardless of what happens next — SLO 4 (transaction
     # durability) needs the denominator to include stops that fail

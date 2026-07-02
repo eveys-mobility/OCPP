@@ -2454,29 +2454,110 @@ class Settings(BaseSettings):
             "stability": "structural",
         },
     )
-    auth_pending_grace_seconds: int = Field(
-        default=180,
+    pending_authorization_ttl_seconds: int = Field(
+        default=3600,
         description=(
-            "Window (in seconds) granted to a charger whose "
-            "authorization is `pending` — first-seen devices and "
-            "devices an operator has not yet decided on. The WS upgrade "
-            "is accepted so an operator can see vendor / model / serial "
-            "from the BootNotification while deciding, but a force-"
-            "disconnect timer starts at upgrade time. If the operator "
-            "has not posted `/authorizations/{cp_id}/approve` by the "
-            "deadline the WS is closed with code 1008 and subsequent "
-            "upgrade attempts are rejected with 401 until a decision "
-            "is made."
+            "Time (in seconds) a first-seen device can sit on the "
+            "pending-authorization list before it auto-expires. The "
+            "pending record lives in Redis under `cp:pending:{cp_id}`. "
+            "The TTL is anchored at `first_seen_at` and is NOT refreshed "
+            "by reconnects — a chatty charger can't keep the row alive "
+            "past this ceiling. The operator has up to this long to "
+            "post `/authorizations/{cp_id}/authorize`; after that the "
+            "row is gone and the next upgrade starts a fresh one. Note "
+            "that the pending WS itself has a much shorter TTL (see "
+            "`pending_ws_ttl_seconds`) — a device can be pending for "
+            "an hour but its WS gets force-closed after one minute; "
+            "the charger reconnects and the pending row is still there."
         ),
-        ge=10,
-        le=3600,
+        ge=60,
+        le=86400,
         json_schema_extra={
             "category": "auth",
             "impact": (
                 "Too short and a slow operator misses the window; too "
-                "long and an unapproved charger sends OCPP traffic for "
-                "minutes. 180 s (the default) is the documented "
-                "trade-off in the device-authorization design."
+                "long and forgotten pending rows crowd the operator view. "
+                "3600 s (the default) matches the operator SLA in the "
+                "device-authorization design."
+            ),
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+    pending_ws_ttl_seconds: int = Field(
+        default=60,
+        description=(
+            "How long (in seconds) a pending device's WS is held open "
+            "before the gateway force-closes it. Distinct from "
+            "`pending_authorization_ttl_seconds` (which bounds the row "
+            "in Redis, defaulting to 1 h) — a pending WS shouldn't "
+            "squat that long. On force-close the Redis pending row is "
+            "NOT deleted, so the operator still has the remaining "
+            "authorization window; the next reconnect starts a new "
+            "one-minute pending WS with the same Redis row underneath. "
+            "During the pending WS window the BootNotification response "
+            "is Accepted and Boot metadata is cached into Redis; every "
+            "other inbound OCPP CALL returns CALLERROR."
+        ),
+        ge=30,
+        le=3600,
+        json_schema_extra={
+            "category": "auth",
+            "impact": (
+                "Longer means more RAM per pending WS (an idle socket "
+                "+ a task) and a larger DoS surface; shorter means the "
+                "charger reconnects more often, which counts against "
+                "the IP rate limit for unknown cp_ids. 60 s is the "
+                "documented default — just enough for one BootNotification "
+                "round-trip so an operator sees vendor/model/firmware "
+                "in the pending queue."
+            ),
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+    ip_rate_limit_requests_per_minute: int = Field(
+        default=100,
+        description=(
+            "WS-upgrade requests per minute allowed from a single source "
+            "IP before that IP is banned. Counted in Redis under "
+            "`ws:ip:count:{ip}` (60 s TTL); on overrun a ban key "
+            "`ws:ip:block:{ip}` is set with `ip_rate_limit_block_seconds` "
+            "TTL and every WS upgrade from that IP returns 429 until it "
+            "expires. Only WS upgrades count — REST admin traffic is "
+            "unaffected."
+        ),
+        ge=1,
+        le=100_000,
+        json_schema_extra={
+            "category": "auth",
+            "impact": (
+                "Bounds how noisy a single IP can be at the WS edge. Too "
+                "low and a legitimate NAT'd fleet trips the ban; too high "
+                "and a scanner or misconfigured charger keeps hammering "
+                "unnoticed. 100/min is the documented default."
+            ),
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+    ip_rate_limit_block_seconds: int = Field(
+        default=3600,
+        description=(
+            "How long (in seconds) a source IP stays banned after "
+            "tripping the WS-upgrade rate limit. Enforced by the "
+            "`ws:ip:block:{ip}` key's TTL in Redis; the ban clears "
+            "automatically at expiry."
+        ),
+        ge=60,
+        le=86400,
+        json_schema_extra={
+            "category": "auth",
+            "impact": (
+                "Longer bans deter persistent abuse; shorter bans "
+                "recover faster from a false positive. 3600 s pairs with "
+                "the pending TTL so a banned IP doesn't leave a dangling "
+                "pending row after."
             ),
             "secret": False,
             "stability": "tunable",

@@ -28,9 +28,11 @@ if TYPE_CHECKING:
     from eveys_ocpp.connections import ConnectionMap
     from eveys_ocpp.events import EventProducer
     from eveys_ocpp.idempotency import IdempotencyCache
+    from eveys_ocpp.pending_authorizations import PendingAuthorizations
     from eveys_ocpp.platform import AuthorizeCache, BackendHTTPClient
     from eveys_ocpp.registry import Registry
     from eveys_ocpp.settings import Settings
+    from eveys_ocpp.transport._ip_rate_limiter import IpRateLimiter
     from eveys_ocpp.transport._rate_limiter import RateLimiter
 
 log = get_logger(__name__)
@@ -38,72 +40,69 @@ log = get_logger(__name__)
 OCPP_SUBPROTOCOL = Subprotocol("ocpp1.6")
 
 
-# Pending-authorization deadlines stamped in `_process_request` and
-# read back in `_on_connect`. Keyed by `id(connection)` because that's
-# the only stable handle shared between the two callbacks. Entries are
-# cleaned up by `_on_connect` itself; in the (very rare) case where
-# `_process_request` accepts but `_on_connect` never runs (e.g. a
-# transport-level abort between handshake and handler dispatch), the
-# entry sits until process restart — bounded by realistic upgrade rate.
-_PENDING_DEADLINES: dict[int, datetime] = {}
+# Handoff between `_process_request` and `_on_connect`: the set of
+# connection IDs whose upgrade was accepted but flagged as pending.
+# Keyed by `id(connection)` because that's the only stable handle
+# shared between the two callbacks. Entries are removed by
+# `_on_connect` on read; in the rare case where `_process_request`
+# accepts but `_on_connect` never runs (transport abort between
+# handshake and handler dispatch) the id sits until process restart —
+# bounded by realistic upgrade rate.
+_PENDING_CONNS: set[int] = set()
 
 
-async def _force_close_if_unapproved(
+async def _force_close_if_still_pending(
     connection: ServerConnection,
     *,
     cp_id: str,
-    deadline: datetime,
+    ttl_seconds: int,
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
-    """Background task that fires at the pending-authorization deadline
-    and closes the WS unless an operator has approved by then.
+    """Background task that fires `ttl_seconds` (usually 60 s via
+    `pending_ws_ttl_seconds`) after a pending WS connects and closes
+    it unless the operator has authorized in the interim.
 
-    Re-checks the DB at firing time rather than trusting the deadline
+    Does NOT delete the Redis pending row on close — the operator's
+    decision window is much longer than the WS window (1 h vs 1 min
+    by default), so the charger reconnects, the auth gate finds the
+    same pending row, and it gets a fresh 1-minute WS. The row goes
+    away only via operator action or its own Redis TTL.
+
+    Rechecks Postgres at firing time rather than trusting the flag
     stamped at upgrade time — covers the case where the operator
-    approved at second 179. If the row was approved or revoked
-    (revoke handles its own close), we no-op.
-    """
-    delay = (deadline - datetime.now(UTC)).total_seconds()
-    if delay > 0:
-        try:
-            await asyncio.sleep(delay)
-        except asyncio.CancelledError:
-            # Normal disconnect cancelled the task — nothing to do.
-            return
+    authorized right before the timer fired. If the charger has moved
+    into `charge_points` we leave the connection alone."""
+    try:
+        await asyncio.sleep(ttl_seconds)
+    except asyncio.CancelledError:
+        return
 
-    # Re-read the authorization. If it's been approved we leave the
-    # connection alone; otherwise close 1008 with a stable reason
-    # phrase so the operator sees the cause in the log.
-    from eveys_ocpp.persistence.repositories import (
-        AUTH_STATUS_APPROVED,
-        get_authorization,
-    )
+    from eveys_ocpp.persistence.repositories import get_charge_point_pk
 
     try:
         async with session_factory() as session:
-            row = await get_authorization(session, cp_id=cp_id)
+            pk = await get_charge_point_pk(session, cp_id=cp_id)
     except Exception as exc:
         log.warning(
-            "authorization.deadline_db_error",
+            "authorization.pending_ttl_db_error",
             cp_id=cp_id,
             error_type=type(exc).__name__,
             error=str(exc),
         )
-        # Fail closed: a DB error at deadline still terminates the
-        # connection, consistent with the upgrade-time `db_error`
-        # outcome.
-        await connection.close(1008, "authorization deadline: db error")
+        # Fail closed: a DB error at TTL expiry still terminates the
+        # connection so a pending WS can't squat past its TTL just
+        # because we couldn't read Postgres.
+        await connection.close(1008, "authorization pending TTL: db error")
         return
 
-    if row is not None and row["status"] == AUTH_STATUS_APPROVED:
+    if pk is not None:
+        # Operator authorized during the TTL window; the next reconnect
+        # will take the authorized branch cleanly. Leave this
+        # connection as-is.
         return
 
-    log.info(
-        "authorization.deadline_closed",
-        cp_id=cp_id,
-        status=row["status"] if row else "unknown",
-    )
-    await connection.close(1008, "authorization deadline expired")
+    log.info("authorization.pending_ttl_closed", cp_id=cp_id)
+    await connection.close(1008, "authorization pending TTL expired")
 
 
 async def _publish_lifecycle_event(
@@ -214,6 +213,7 @@ async def _on_connect(
     backend_client: BackendHTTPClient | None = None,
     authorize_cache: AuthorizeCache | None = None,
     rate_limiter: RateLimiter | None = None,
+    pending_store: PendingAuthorizations,
 ) -> None:
     """Per-connection coroutine. Lives for the duration of the WS."""
     if connection.subprotocol != OCPP_SUBPROTOCOL:
@@ -237,21 +237,32 @@ async def _on_connect(
     metrics_registry.WS_CONNECTS_TOTAL.inc()
     metrics_registry.WS_CONNECTIONS_ACTIVE.inc()
 
-    # Pending-authorization deadline (#0013). Stamped by
-    # `_process_request`; nil for already-approved chargers. Spawn the
-    # force-close task before any other awaits so the timer is armed
-    # even if the connection runs long.
-    pending_deadline = _PENDING_DEADLINES.pop(id(connection), None)
+    # Pending-authorization TTL. Stamped by `_process_request`; falsy
+    # for already-authorized chargers. Spawn the force-close task
+    # before any other awaits so the timer is armed even if the
+    # connection runs long.
+    is_pending = False
+    try:
+        _PENDING_CONNS.remove(id(connection))
+        is_pending = True
+    except KeyError:
+        pass
     deadline_task: asyncio.Task[None] | None = None
-    if pending_deadline is not None:
+    if is_pending:
+        # WS TTL (default 60 s) is separate from the Redis pending TTL
+        # (default 1 h). We close the socket fast — a pending WS is
+        # nearly useless work-wise (every non-Boot CALL is CALLERRORed)
+        # but still costs a task + a file descriptor — while leaving
+        # the Redis row alive so an operator can still authorize during
+        # the longer window. The charger's own retry drives reconnects.
         deadline_task = asyncio.create_task(
-            _force_close_if_unapproved(
+            _force_close_if_still_pending(
                 connection,
                 cp_id=cp_id,
-                deadline=pending_deadline,
+                ttl_seconds=settings.pending_ws_ttl_seconds,
                 session_factory=session_factory,
             ),
-            name=f"auth-deadline-{cp_id}",
+            name=f"auth-pending-ws-ttl-{cp_id}",
         )
 
     # Offline-duration window closes on the connect side. Read-and-
@@ -305,6 +316,8 @@ async def _on_connect(
         backend_client=backend_client,
         authorize_cache=authorize_cache,
         rate_limiter=rate_limiter,
+        pending_store=pending_store,
+        is_pending=is_pending,
     )
     if connections is not None:
         connections.add(cp)
@@ -369,6 +382,7 @@ async def serve_forever(
     *,
     session_factory: async_sessionmaker[AsyncSession],
     settings: Settings,
+    pending_store: PendingAuthorizations,
     registry: Registry | None = None,
     connections: ConnectionMap | None = None,
     event_producer: EventProducer | None = None,
@@ -376,6 +390,7 @@ async def serve_forever(
     backend_client: BackendHTTPClient | None = None,
     authorize_cache: AuthorizeCache | None = None,
     rate_limiter: RateLimiter | None = None,
+    ip_rate_limiter: IpRateLimiter | None = None,
 ) -> None:
     """Start the WS server and block until cancelled.
 
@@ -402,6 +417,7 @@ async def serve_forever(
             backend_client=backend_client,
             authorize_cache=authorize_cache,
             rate_limiter=rate_limiter,
+            pending_store=pending_store,
         )
 
     # E5-5 — mTLS context when the operator has wired one. None
@@ -476,27 +492,44 @@ async def serve_forever(
             peer_ip=peer_ip,
             user_agent=user_agent,
             session_factory=session_factory,
-            settings=settings,
+            pending_store=pending_store,
+            ip_rate_limiter=ip_rate_limiter,
             now=datetime.now(UTC),
         )
         metrics_registry.WS_AUTHORIZATION_TOTAL.labels(outcome=auth.outcome).inc()
         if not auth.accepted:
             log.info("ws.authorization_rejected", cp_id=cp_id, outcome=auth.outcome)
+            # IP-block rejections are 429; everything else (db_error,
+            # redis_error) is 401. The `Retry-After` on 429 matches the
+            # remaining ban window's coarse ceiling — good-enough hint
+            # to a well-behaved client without asking Redis for the exact
+            # remaining TTL.
+            if auth.outcome == "ip_blocked":
+                return Response(
+                    status_code=429,
+                    reason_phrase="Too Many Requests",
+                    headers=Headers(
+                        [
+                            ("X-Authorization-Status", auth.outcome),
+                            ("Retry-After", str(settings.ip_rate_limit_block_seconds)),
+                        ]
+                    ),
+                    body=b"",
+                )
             return Response(
                 status_code=401,
                 reason_phrase="Unauthorized",
                 headers=Headers([("X-Authorization-Status", auth.outcome)]),
                 body=b"",
             )
-        if auth.pending_deadline is not None:
+        if auth.is_pending:
             # Stash for `_on_connect` to read. Logged loud so the
             # operator sees it without scraping metrics.
-            _PENDING_DEADLINES[id(connection)] = auth.pending_deadline
+            _PENDING_CONNS.add(id(connection))
             log.info(
                 "ws.authorization_pending_accepted",
                 cp_id=cp_id,
                 outcome=auth.outcome,
-                deadline=auth.pending_deadline.isoformat(),
             )
         return None
 

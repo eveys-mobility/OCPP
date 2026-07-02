@@ -610,86 +610,36 @@ async def test_aggregate_transactions_emits_group_when_split_by_cp_id() -> None:
     assert out[0]["duration_seconds_total"] == 60
 
 
-# ---- Device authorizations (#0013) ---------------------------------------
-
-
-def _build_auth_row(*, status: str, requested_at: datetime) -> MagicMock:
-    """Stub `ChargePointAuthorization` ORM row with just the fields the
-    repository projector reads."""
-    row = MagicMock()
-    row.status = status
-    row.requested_at = requested_at
-    row.decided_at = None
-    row.decided_by = None
-    row.last_attempt_ip = "1.2.3.4"
-    row.last_attempt_user_agent = "ua/1"
-    row.last_attempt_at = requested_at
-    row.updated_at = requested_at
-    return row
+# ---- Device authorizations (Redis pending + charge_points delete) ---------
 
 
 @pytest.mark.asyncio
-async def test_get_authorization_returns_none_when_unknown() -> None:
-    result_obj = MagicMock()
-    result_obj.first.return_value = None
-    session = AsyncMock()
-    session.execute = AsyncMock(return_value=result_obj)
+async def test_delete_charge_point_returns_true_when_row_deleted() -> None:
+    """`rowcount > 0` means Postgres actually removed a row — that's
+    the "yes, revoke landed" signal the REST layer reads."""
+    from sqlalchemy.engine import CursorResult
 
-    assert await repositories.get_authorization(session, cp_id="GHOST") is None
+    cursor = MagicMock(spec=CursorResult)
+    cursor.rowcount = 1
+    session = AsyncMock()
+    session.execute = AsyncMock(return_value=cursor)
+
+    assert await repositories.delete_charge_point(session, cp_id="CP_A") is True
 
 
 @pytest.mark.asyncio
-async def test_get_authorization_projects_row() -> None:
-    now = datetime.now(UTC)
-    auth_row = _build_auth_row(status="approved", requested_at=now)
-    result_obj = MagicMock()
-    result_obj.first.return_value = (auth_row, "CP_001")
+async def test_delete_charge_point_returns_false_when_row_missing() -> None:
+    """Idempotent-in-the-False-case: revoking a cp_id that was never
+    in the fleet is still a valid client action (the REST layer maps
+    False to 404)."""
+    from sqlalchemy.engine import CursorResult
+
+    cursor = MagicMock(spec=CursorResult)
+    cursor.rowcount = 0
     session = AsyncMock()
-    session.execute = AsyncMock(return_value=result_obj)
+    session.execute = AsyncMock(return_value=cursor)
 
-    out = await repositories.get_authorization(session, cp_id="CP_001")
-    assert out is not None
-    assert out["cp_id"] == "CP_001"
-    assert out["status"] == "approved"
-
-
-@pytest.mark.asyncio
-async def test_decide_authorization_rejects_pending_status() -> None:
-    """`pending` is not a decision; passing it must raise so a buggy
-    caller can't reset a decided row."""
-    session = AsyncMock()
-    with pytest.raises(ValueError, match="invalid decision status"):
-        await repositories.decide_authorization(
-            session,
-            cp_id="CP_001",
-            new_status="pending",
-            decided_by="ops",
-            now=datetime.now(UTC),
-        )
-
-
-@pytest.mark.asyncio
-async def test_decide_authorization_returns_none_when_charger_unknown(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(repositories, "get_charge_point_pk", AsyncMock(return_value=None))
-    session = AsyncMock()
-    out = await repositories.decide_authorization(
-        session,
-        cp_id="GHOST",
-        new_status="approved",
-        decided_by="ops",
-        now=datetime.now(UTC),
-    )
-    assert out is None
-
-
-@pytest.mark.asyncio
-async def test_list_authorizations_short_circuits_unknown_status() -> None:
-    session = AsyncMock()
-    out = await repositories.list_authorizations(session, status="nonsense")
-    assert out == []
-    session.execute.assert_not_called()
+    assert await repositories.delete_charge_point(session, cp_id="GHOST") is False
 
 
 @pytest.mark.asyncio

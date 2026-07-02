@@ -1763,29 +1763,14 @@ paths:
       - admin
   /api/v1/authorizations:
     get:
+      description: 'Return the Redis pending queue. Only pending devices are
+
+        tracked; authorized fleet lives in `/api/v1/charge-points` and
+
+        rejected / revoked devices have no persistent state (rejected drops
+
+        the Redis row; revoked drops the `charge_points` row).'
       operationId: list_authorizations_route_api_v1_authorizations_get
-      parameters:
-      - description: Filter by status. One of `pending`, `approved`, `rejected`, `revoked`.
-          Omit to list all (capped at the server's page size).
-        in: query
-        name: status
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          description: Filter by status. One of `pending`, `approved`, `rejected`,
-            `revoked`. Omit to list all (capped at the server's page size).
-          title: Status
-      - in: query
-        name: limit
-        required: false
-        schema:
-          default: 200
-          maximum: 500
-          minimum: 1
-          title: Limit
-          type: integer
       responses:
         '200':
           content:
@@ -1795,18 +1780,26 @@ paths:
                 title: Response List Authorizations Route Api V1 Authorizations Get
                 type: object
           description: Successful Response
-        '422':
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-          description: Validation Error
-      summary: List device authorizations
+      summary: List devices currently pending operator authorization
       tags:
       - authorizations
-  /api/v1/authorizations/{cp_id}/approve:
+  /api/v1/authorizations/{cp_id}/authorize:
     post:
-      operationId: approve_route_api_v1_authorizations__cp_id__approve_post
+      description: 'Move a pending device from Redis into `charge_points`.
+
+
+        The pending row''s Boot metadata seeds the new `charge_points` row so
+
+        the operator UI has vendor / model / firmware / serial without
+
+        waiting for the next BootNotification. Any live WS is force-closed
+
+        so the charger reconnects and takes the authorized branch
+
+        (`_authorization.py`) on its next upgrade — no half-state where
+
+        the DB says authorized but the connection is still flagged pending.'
+      operationId: authorize_route_api_v1_authorizations__cp_id__authorize_post
       parameters:
       - in: path
         name: cp_id
@@ -1820,7 +1813,7 @@ paths:
             application/json:
               schema:
                 additionalProperties: true
-                title: Response Approve Route Api V1 Authorizations  Cp Id  Approve
+                title: Response Authorize Route Api V1 Authorizations  Cp Id  Authorize
                   Post
                 type: object
           description: Successful Response
@@ -1830,11 +1823,18 @@ paths:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
           description: Validation Error
-      summary: Approve a charger so it can connect
+      summary: Authorize a pending device so it can join the fleet
       tags:
       - authorizations
   /api/v1/authorizations/{cp_id}/reject:
     post:
+      description: 'Drop the pending row for `cp_id`. Not sticky — a fresh WS
+
+        upgrade from the same cp_id creates a new pending row (with a fresh
+
+        TTL). Operators use reject to clear the queue of an obviously-wrong
+
+        entry; recurring rejects live in the IP rate limiter''s ban list.'
       operationId: reject_route_api_v1_authorizations__cp_id__reject_post
       parameters:
       - in: path
@@ -1859,11 +1859,21 @@ paths:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
           description: Validation Error
-      summary: Reject a charger; future upgrades return 401
+      summary: Reject a pending device; TTL restarts on next Boot
       tags:
       - authorizations
   /api/v1/authorizations/{cp_id}/revoke:
     post:
+      description: 'Remove an authorized device from the fleet.
+
+
+        Deletes the `charge_points` row so the WS auth gate no longer
+
+        recognises the cp_id, then force-closes any live WS this pod is
+
+        hosting. On the next reconnect the device follows the unknown /
+
+        pending branch as if it were a brand-new charger.'
       operationId: revoke_route_api_v1_authorizations__cp_id__revoke_post
       parameters:
       - in: path
@@ -1888,8 +1898,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
           description: Validation Error
-      summary: Revoke an approved charger; force-disconnects any live WS and rejects
-        future upgrades
+      summary: Revoke an already-authorized device; force-closes any live WS
       tags:
       - authorizations
   /api/v1/charge-points:

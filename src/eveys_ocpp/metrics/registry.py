@@ -153,7 +153,15 @@ OCPP_HANDLER_ERRORS_TOTAL: Counter = Counter(
 BOOT_NOTIFICATIONS_TOTAL: Counter = Counter(
     "eveys_ocpp_boot_notifications_total",
     "BootNotifications handled, grouped by the gateway's decision.",
-    labelnames=("decision",),  # Accepted / Pending / Rejected
+    # Accepted / Pending / Rejected are the three OCPP RegistrationStatus
+    # outcomes. `PendingAuthorization` is the gateway-internal state for
+    # a device the operator has not yet authorised: the WS is open, the
+    # Boot was cached into the pending-authorizations Redis row, but
+    # nothing was written to Postgres and no OCPP RegistrationStatus was
+    # returned (the handler still replies Accepted so the charger can
+    # sit and heartbeat; the `PendingAuthorization` label lets ops
+    # distinguish it from a normal Accepted on dashboards).
+    labelnames=("decision",),
 )
 BOOT_REPLAYS_TOTAL: Counter = Counter(
     "eveys_ocpp_boot_replays_total",
@@ -268,12 +276,32 @@ WS_BASIC_AUTH_TOTAL: Counter = Counter(
 )
 WS_AUTHORIZATION_TOTAL: Counter = Counter(
     "eveys_ocpp_ws_authorization_total",
-    "WS-edge device-authorization decisions (#0013). `outcome` is a "
-    "closed enum: approved, pending_new, pending_within_window, "
-    "pending_expired, rejected, revoked, db_error. A non-zero "
-    "`pending_expired` rate means an operator missed the approval "
-    "window — the charger is being kicked off; raise the cadence on "
-    "the Pending Approvals view.",
+    "WS-edge device-authorization decisions. `outcome` is a closed "
+    "enum: authorized, pending_new, pending_refreshed, redis_error. "
+    "The pending queue lives in Redis with the "
+    "`pending_authorization_ttl_seconds` TTL — a `redis_error` rate "
+    "means the limiter is degraded and every unknown charger is "
+    "falling through as pending; page on it.",
+    labelnames=("outcome",),
+)
+WS_IP_RATE_LIMIT_TOTAL: Counter = Counter(
+    "eveys_ocpp_ws_ip_rate_limit_total",
+    "WS-upgrade IP rate limiter decisions. `outcome` is a closed "
+    "enum: allowed, blocked, newly_blocked, redis_error. A rising "
+    "`newly_blocked` rate is either an actual abuser or a NAT'd "
+    "fleet outgrowing the per-minute cap — tune "
+    "`ip_rate_limit_requests_per_minute` accordingly.",
+    labelnames=("outcome",),
+)
+AUTHORIZATION_ADMIN_TOTAL: Counter = Counter(
+    "eveys_ocpp_authorization_admin_total",
+    "Operator-driven device-authorization actions on `/api/v1/"
+    "authorizations/{cp_id}/{authorize,reject,revoke}`. `outcome` is "
+    "a closed enum: authorized, rejected, revoked, not_found. Kept "
+    "separate from `WS_AUTHORIZATION_TOTAL` because these are human "
+    "actions and mixing the two would blur the alerting signal — a "
+    "spike here is an operator working the pending queue; a spike "
+    "there is a fleet-side event.",
     labelnames=("outcome",),
 )
 
@@ -578,6 +606,7 @@ REST_REQUEST_LATENCY_SECONDS: Histogram = Histogram(
 
 
 __all__ = [
+    "AUTHORIZATION_ADMIN_TOTAL",
     "AUTHORIZE_CACHE_HITS_TOTAL",
     "AUTHORIZE_CACHE_MISSES_TOTAL",
     "AUTHORIZE_TOTAL",
@@ -644,6 +673,7 @@ __all__ = [
     "WS_CONNECTS_TOTAL",
     "WS_DISCONNECTS_TOTAL",
     "WS_HANDSHAKE_FAILURES_TOTAL",
+    "WS_IP_RATE_LIMIT_TOTAL",
     "WS_MESSAGES_IN_TOTAL",
     "WS_MESSAGES_OUT_TOTAL",
 ]
