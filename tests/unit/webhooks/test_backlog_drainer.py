@@ -78,8 +78,14 @@ def _row(
     url: str = "https://backend.example/webhooks/cp-boot",
 ) -> dict[str, Any]:
     """A single backlog row shaped the way the drainer expects (the
-    same tuple ``_backlog_row_to_dict`` returns from repositories)."""
-    now = datetime(2026, 7, 1, 12, 0, 0, tzinfo=UTC)
+    same tuple ``_backlog_row_to_dict`` returns from repositories).
+
+    `created_at` / `next_attempt_at` default to `datetime.now(UTC)` so
+    a fresh row survives the drainer's retention-window check without
+    each test having to remember to pass a live timestamp. Tests that
+    need an aged row (retention aging path) override `created_at`
+    explicitly."""
+    now = datetime.now(UTC)
     return {
         "id": uuid4(),
         "event_id": event_id or uuid4(),
