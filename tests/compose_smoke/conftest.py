@@ -382,8 +382,9 @@ def _compose_stack() -> Iterator[None]:
             "eveys_ocpp",
             "-c",
             (
-                "INSERT INTO charge_points (cp_id) VALUES ('COMPOSE_SMOKE_CP') "
-                "ON CONFLICT (cp_id) DO NOTHING;"
+                "INSERT INTO charge_points (cp_id, authorized_at) "
+                "VALUES ('COMPOSE_SMOKE_CP', now()) "
+                "ON CONFLICT (cp_id) DO UPDATE SET authorized_at = EXCLUDED.authorized_at;"
             ),
         ],
         check=False,

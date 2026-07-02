@@ -732,8 +732,9 @@ async def test_remote_start_routes_across_two_pods_with_real_ws(redis_client: Re
     async with pod_a_db.begin() as _conn:
         await _conn.execute(
             sa.text(
-                "INSERT INTO charge_points (cp_id) VALUES ('CP_TWOPOD_REAL') "
-                "ON CONFLICT (cp_id) DO NOTHING"
+                "INSERT INTO charge_points (cp_id, authorized_at) "
+                "VALUES ('CP_TWOPOD_REAL', now()) "
+                "ON CONFLICT (cp_id) DO UPDATE SET authorized_at = EXCLUDED.authorized_at"
             )
         )
 

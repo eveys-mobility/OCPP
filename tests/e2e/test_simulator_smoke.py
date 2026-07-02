@@ -52,12 +52,12 @@ async def _seed_fleet_cp_ids(prefix: str, count: int) -> None:
     Idempotent."""
     engine = create_async_engine(_TEST_DB_URL)
     try:
-        values = ", ".join(f"('{prefix}_{i:06d}')" for i in range(count))
+        values = ", ".join(f"('{prefix}_{i:06d}', now())" for i in range(count))
         async with engine.begin() as conn:
             await conn.execute(
                 sa.text(
-                    f"INSERT INTO charge_points (cp_id) VALUES {values} "
-                    "ON CONFLICT (cp_id) DO NOTHING"
+                    f"INSERT INTO charge_points (cp_id, authorized_at) VALUES {values} "
+                    "ON CONFLICT (cp_id) DO UPDATE SET authorized_at = EXCLUDED.authorized_at"
                 )
             )
     finally:

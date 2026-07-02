@@ -275,10 +275,13 @@ async def _seed_authorized_cp_ids_from_module_source(
     async with db_engine.begin() as conn:
         # Batched INSERT ... VALUES (), (), ... ON CONFLICT DO NOTHING.
         # Avoids a round-trip per row (15+ cp_ids at last count).
-        values = ", ".join(f"('{cp}')" for cp in sorted(cp_ids))
+        # ON CONFLICT DO UPDATE so a rerun of the fixture forces the
+        # authorized_at back on any row that predates it.
+        values = ", ".join(f"('{cp}', now())" for cp in sorted(cp_ids))
         await conn.execute(
             sa.text(
-                f"INSERT INTO charge_points (cp_id) VALUES {values} ON CONFLICT (cp_id) DO NOTHING"
+                f"INSERT INTO charge_points (cp_id, authorized_at) VALUES {values} "
+                "ON CONFLICT (cp_id) DO UPDATE SET authorized_at = EXCLUDED.authorized_at"
             )
         )
 
