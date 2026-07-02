@@ -362,6 +362,41 @@ def _compose_stack() -> Iterator[None]:
             f"clickhouse migrator failed:\n  stdout: {chmig.stdout}\n  stderr: {chmig.stderr}"
         )
 
+    # Phase 5: pre-authorize the smoke charger. Under the new auth
+    # model an unknown cp_id lands on the Redis pending list and every
+    # non-Boot CALL is CALLERRORed until an operator authorizes — the
+    # smoke test drives Boot -> Authorize -> StartTx -> ..., which
+    # would fail on Authorize without a `charge_points` row up front.
+    # Direct psql insert (via docker exec) mirrors what an operator's
+    # bootstrap script would do; keeps this tier honest to the "no
+    # test-only endpoints" rule.
+    seed = subprocess.run(
+        [
+            "docker",
+            "exec",
+            "eveys-ocpp-postgres",
+            "psql",
+            "-U",
+            "eveys",
+            "-d",
+            "eveys_ocpp",
+            "-c",
+            (
+                "INSERT INTO charge_points (cp_id) VALUES ('COMPOSE_SMOKE_CP') "
+                "ON CONFLICT (cp_id) DO NOTHING;"
+            ),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if seed.returncode != 0:
+        _compose("down", "--volumes", "--remove-orphans")
+        pytest.fail(
+            f"seeding COMPOSE_SMOKE_CP into charge_points failed:\n"
+            f"  stdout: {seed.stdout}\n  stderr: {seed.stderr}"
+        )
+
     yield
 
     # Always tear down — leaving a stack up between sessions makes the

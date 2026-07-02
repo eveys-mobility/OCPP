@@ -709,7 +709,10 @@ async def test_remote_start_routes_across_two_pods_with_real_ws(redis_client: Re
     _kafka_host = os.environ.get("E2E_KAFKA_HOST", "localhost")
     os.environ.setdefault("EVEYS_OCPP_KAFKA_BROKERS", f"{_kafka_host}:9092")
 
+    from redis.asyncio import Redis as _Redis
+
     from eveys_ocpp.events import KafkaEventProducer
+    from eveys_ocpp.pending_authorizations import PendingAuthorizations
     from eveys_ocpp.persistence.db import make_engine, make_session_factory
     from eveys_ocpp.registry import Registry
     from eveys_ocpp.settings import get_settings
@@ -761,7 +764,12 @@ async def test_remote_start_routes_across_two_pods_with_real_ws(redis_client: Re
     ws_task: asyncio.Task[None] | None = None
     pod_b_grpc_server = None
     try:
-        # Bring up pod A's WS server.
+        # Bring up pod A's WS server. Pending store + IP RL are
+        # required kwargs since the auth rewrite; this test only
+        # exercises already-authorized chargers, so a live-Redis
+        # pending store and no IP limiter is enough.
+        _pending_redis = _Redis.from_url(pod_a_settings.redis_url, decode_responses=True)
+        _pending_store = PendingAuthorizations(_pending_redis, settings=pod_a_settings)
         ws_task = asyncio.create_task(
             serve_ws_forever(
                 session_factory=pod_a_session_factory,
@@ -769,6 +777,8 @@ async def test_remote_start_routes_across_two_pods_with_real_ws(redis_client: Re
                 registry=pod_a_registry,
                 connections=pod_a_connections,
                 event_producer=pod_a_event_producer,
+                pending_store=_pending_store,
+                ip_rate_limiter=None,
             )
         )
         await asyncio.sleep(0.2)  # give the server a beat to bind

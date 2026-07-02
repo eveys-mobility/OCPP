@@ -172,6 +172,7 @@ async def running_service() -> AsyncIterator[None]:
 
     from eveys_ocpp.connections import ConnectionMap
     from eveys_ocpp.events import KafkaEventProducer
+    from eveys_ocpp.pending_authorizations import PendingAuthorizations
     from eveys_ocpp.persistence.db import make_engine, make_session_factory
     from eveys_ocpp.registry import Registry
     from eveys_ocpp.settings import get_settings
@@ -187,6 +188,15 @@ async def running_service() -> AsyncIterator[None]:
     event_producer = KafkaEventProducer.from_settings(settings)
     await event_producer.start()
 
+    # The pending-auth store + IP rate limiter are required kwargs on
+    # `serve_forever` now, but this smoke stack only exercises already-
+    # authorized chargers, so a store rooted in the same Redis and a
+    # `None` IP limiter is enough.
+    from redis.asyncio import Redis as _Redis
+
+    _redis_for_pending = _Redis.from_url(settings.redis_url, decode_responses=True)
+    pending_store = PendingAuthorizations(_redis_for_pending, settings=settings)
+
     ws_task = asyncio.create_task(
         serve_ws_forever(
             session_factory=session_factory,
@@ -194,6 +204,8 @@ async def running_service() -> AsyncIterator[None]:
             registry=registry,
             connections=connections,
             event_producer=event_producer,
+            pending_store=pending_store,
+            ip_rate_limiter=None,
         )
     )
     command_service = OcppGatewayService(
