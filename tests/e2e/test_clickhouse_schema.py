@@ -3,7 +3,7 @@
 Runs `apply_pending` against the live ClickHouse in compose/CI, then
 verifies all five expected tables exist with the right column shape.
 
-Skipped when ClickHouse isn't reachable (dev laptop with no compose
+Skipped when ClickHouse isn't reachable (dev workstation with no compose
 stack); hard-fails on missing-but-required service when
 ``E2E_REQUIRE=1`` is set (CI). Same skip-vs-fail policy the rest of
 the e2e suite uses.

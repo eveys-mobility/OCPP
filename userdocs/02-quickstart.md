@@ -1,6 +1,6 @@
 # Quickstart — boot a charger, send a command, see an event
 
-**Audience.** A developer trying the gateway for the first time. Docker Desktop on a laptop is enough.
+**Audience.** A developer trying the gateway for the first time. Docker Engine + Compose v2 on any workstation is enough.
 
 **What this answers.** Bring the stack up, point a simulated charger at it, send a `RemoteStart` over REST, and watch the matching event land in Kafka.
 
@@ -27,7 +27,7 @@ Four containers come up alongside the gateway. You don't need to know their inte
 
 | Tool | Why |
 |---|---|
-| Docker Desktop 4.30+ (or Docker Engine + Compose v2) | Brings up the stack. |
+| Docker Engine + Compose v2 (Desktop 4.30+ or Linux server install) | Brings up the stack. |
 | `make` | One-liner targets. |
 | Python 3.13 + [`uv`](https://docs.astral.sh/uv/) | The simulator runs as a Python module. `uv` installs deps in seconds. |
 | `curl` | For the REST call. Anything that POSTs JSON will do. |

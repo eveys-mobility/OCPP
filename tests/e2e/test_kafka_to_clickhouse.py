@@ -35,7 +35,7 @@ _CH_HOST = os.environ.get("E2E_CH_HOST", "localhost")
 _CH_HTTP_PORT = int(os.environ.get("E2E_CH_HTTP_PORT", "8124"))
 # Native ClickHouse port. The container always listens on 9000 (CI's
 # tests:e2e job reaches it as clickhouse:9000, the in-process compose
-# stack uses container-side 9000 too). Dev laptops that run ClickHouse
+# stack uses container-side 9000 too). Dev workstations that run ClickHouse
 # via `make compose-up` need to override this to 9001 because the
 # compose docker-compose.yml host-maps 9000→9001 to avoid colliding
 # with IDE tools that squat on 9000 (see deploy/compose/docker-compose.yml

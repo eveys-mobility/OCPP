@@ -113,7 +113,7 @@ The runtime stack is:
 - **ClickHouse** for time-series telemetry (meter readings, status history). Optional but recommended at scale.
 - **Envoy** in front of the pods, providing TLS termination and ring-hash routing on `cp_id`.
 
-The Quickstart ([`02-quickstart.md`](./02-quickstart.md)) brings all of these up locally on a laptop via Docker Compose in about 30 seconds.
+The Quickstart ([`02-quickstart.md`](./02-quickstart.md)) brings all of these up locally via Docker Compose in about 30 seconds.
 
 ---
 

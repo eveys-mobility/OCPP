@@ -48,7 +48,7 @@ def _result(status: str, **info: object) -> AuthorizeResult:
 
 @pytest.mark.asyncio
 async def test_accepts_when_no_backend_client_wired(fake_cp: Any) -> None:
-    """W1 / dev-laptop path: backend_client is None → stub Accepted.
+    """W1 / local-dev path: backend_client is None → stub Accepted.
     Lets the protocol layer be tested end-to-end without a backend."""
     fake_cp.backend_client = None
 

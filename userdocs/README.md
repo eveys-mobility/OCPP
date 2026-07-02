@@ -21,7 +21,7 @@ If a page mentions a file path under `src/eveys_ocpp/...`, it's because you may 
 ### "I just want to try it." (~30 minutes)
 
 1. [`01-what-is-this.md`](./01-what-is-this.md) — what the project is and what OCPP is in 60 seconds.
-2. [`02-quickstart.md`](./02-quickstart.md) — Docker Compose, simulator charger, send a command, watch an event. Ten minutes if your laptop already has Docker.
+2. [`02-quickstart.md`](./02-quickstart.md) — Docker Compose, simulator charger, send a command, watch an event. Ten minutes if your workstation already has Docker.
 3. [`03-architecture.md`](./03-architecture.md) — one diagram, one page. Now you know what you ran.
 
 ### "I'm building a backend integration." (~2 hours, repeat as needed)

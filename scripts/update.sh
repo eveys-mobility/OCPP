@@ -4,8 +4,8 @@
 # Rebuilds the gateway image, applies Alembic migrations (via the
 # migrate-postgres service), and recreates the long-running services
 # (`ocpp` + `clickhouse-ingestor`) so the gateway never starts ahead
-# of its schema. Works on a laptop (Docker Desktop) and on a VM
-# running plain Docker + Compose.
+# of its schema. Works anywhere Docker Engine + Compose v2 runs
+# (workstation, VM, bare-metal Linux server).
 #
 # Scope: this script updates the **gateway only**. The Console (web +
 # server) has its own updater at eveys-console/scripts/updater.sh —

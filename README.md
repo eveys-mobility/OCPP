@@ -33,8 +33,9 @@ before declaring itself ready. On a fresh system it takes around a
 minute.
 
 ```bash
-brew install python@3.13 uv             # macOS prereqs (Linux: use the equivalents)
-                                        # `make doctor` lists anything else missing
+# Prereqs: Python 3.13 and uv — install via your platform's package
+# manager (apt/dnf/pacman/brew) or see https://docs.astral.sh/uv/getting-started/.
+# `make doctor` lists anything else missing.
 git clone git@github.com:eveys-mobility/OCPP.git
 cd OCPP
 cp .env.example .env                    # then edit the placeholder tokens

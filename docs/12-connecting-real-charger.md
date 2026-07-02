@@ -172,9 +172,9 @@ Then the charger dials `wss://<host>:9443/<cp_id>` — Caddy terminates TLS with
 
 ### 5.3 Network reachability
 
-- **Same LAN**: find your machine's LAN IP (`ipconfig getifaddr en0` on macOS, `hostname -I` on Linux) and put it in the charger's CSMS URL.
+- **Same LAN**: find your machine's LAN IP (`hostname -I` on Linux, `ipconfig getifaddr en0` on macOS) and put it in the charger's CSMS URL.
 - **Charger off-site**: open an `ngrok` TCP tunnel: `ngrok tcp 19000` (or `9000` if running outside compose). The charger dials `ws://<random>.ngrok.io:<random>/<cp_id>`. Free tier rotates the URL per session.
-- **macOS firewall** may prompt to allow the eveys/ocpp container to accept incoming connections. Approve it.
+- **Host firewall** may block the port. macOS may prompt to allow the eveys/ocpp container to accept incoming connections — approve it. On Linux, open the port in `ufw` / `firewalld`.
 
 ### 5.4 Sanity check with a charger simulator
 
@@ -335,7 +335,7 @@ Activity flows through Kafka *before* it reaches ClickHouse — useful for plumb
 | `cp.boot` | BootNotification accepted/pending/rejected | Very low (once per charger boot) |
 | `tx.started` | StartTransaction (financial event) | Low |
 
-Tail one with `kcat` (install via `brew install kcat` or `apt install kafkacat`):
+Tail one with `kcat` (install via `apt install kafkacat`, `dnf install kcat`, `brew install kcat`, or see [github.com/edenhill/kcat](https://github.com/edenhill/kcat)):
 
 ```bash
 kcat -C -b localhost:9092 -t cp.meter -c 5 -e -q | jq

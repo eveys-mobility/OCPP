@@ -142,11 +142,11 @@ doctor:
 
 $(VENV)/bin/python:
 	@if [ -z "$(UV)" ]; then \
-		echo "ERROR: uv not found on PATH — run 'brew install uv' (see make doctor)"; \
+		echo "ERROR: uv not found on PATH — install per https://docs.astral.sh/uv/getting-started/ (see make doctor)"; \
 		exit 1; \
 	fi
 	@if [ -z "$(PYTHON)" ]; then \
-		echo "ERROR: Python 3.13 not found — run 'brew install python@3.13'"; \
+		echo "ERROR: Python 3.13 not found — install via your platform's package manager (apt/dnf/brew) or https://www.python.org/downloads/"; \
 		exit 1; \
 	fi
 	$(UV) venv --python $(PYTHON) $(VENV)
@@ -161,7 +161,7 @@ install: $(VENV)/bin/python
 	@# `core.hooksPath` is set, even to the default `.git/hooks`. That's
 	@# a tooling-side opt-out, not an installation failure — treat it
 	@# as benign and print the same hint pre-commit prints. Without
-	@# this guard, every `make install` on a laptop with that config
+	@# this guard, every `make install` on a workstation with that config
 	@# returns 1, which cascades through every dependent target
 	@# (`lint`, `types`, `openapi-export-check`, …).
 	@if [ -f .pre-commit-config.yaml ] && [ -d .git ]; then \
@@ -350,8 +350,8 @@ print(' '.join(names))" 2>/dev/null); \
 # the schema_migrations table. See ADR-0020.
 #
 # Default HTTP port is 8124 to match docker-compose's host mapping. The
-# canonical CH HTTP port is 8123, but a Homebrew `clickhouse server`
-# already running on the laptop will steal it (loopback bind wins over
+# canonical CH HTTP port is 8123, but a host-side `clickhouse server`
+# already running on the workstation will steal it (loopback bind wins over
 # docker's `*:8123`) and migrations silently target the wrong server.
 # CI overrides this via E2E_CH_HTTP_PORT=8123 because the GitHub
 # Actions runner binds CH directly on 8123 with no collision risk.
@@ -377,7 +377,7 @@ e2e: _require-nonprod install
 # Postgres + ClickHouse schemas, runs `tests/compose_smoke/` against
 # the running stack, tears down. Catches the bug class that ships
 # green through unit + integration tests but breaks `docker compose up`
-# on a fresh dev laptop or in production. See `docs/10-testing-strategy.md`.
+# on a fresh dev workstation or in production. See `docs/10-testing-strategy.md`.
 #
 # Slower than `make tests` (~ 90s); not run as part of `make tests` so
 # the fast inner loop stays fast. CI runs it on MRs that touch

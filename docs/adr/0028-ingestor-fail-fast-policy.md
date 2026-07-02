@@ -60,7 +60,7 @@ defaulting to **10**.
   Rejected: any single transient failure would mark the pod unhealthy
   and Kubernetes would restart it, defeating the "ride out a CH GC
   pause" property. The probe approach also doesn't help docker compose
-  on a laptop, which has no built-in liveness concept beyond the
+  on a workstation, which has no built-in liveness concept beyond the
   process exit code.
 
 - **Bail on the first failure.** Rejected: a one-shot CH timeout or a
@@ -78,7 +78,7 @@ defaulting to **10**.
   as the *only* mechanism. We do want the metric (E4-1's
   `eveys_ocpp_ingestor_flush_failures_total`), but a metric with no
   alert is invisible, an alert depends on alertmanager being healthy,
-  and neither helps the laptop developer who hasn't wired up
+  and neither helps the local developer who hasn't wired up
   monitoring. Process-exit is the universally-observable signal.
 
 ## Consequences

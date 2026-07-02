@@ -61,8 +61,8 @@ services:
       KAFKA_PROCESS_ROLES: "broker,controller"
       KAFKA_CONTROLLER_QUORUM_VOTERS: "1@localhost:9093"
       # Two PLAINTEXT listeners on different ports so a single broker can
-      # serve both host-side clients (laptop running pytest, an IDE, the
-      # `python -m eveys_ocpp` dev loop) AND in-compose-network clients
+      # serve both host-side clients (workstation running pytest, an IDE,
+      # the `python -m eveys_ocpp` dev loop) AND in-compose-network clients
       # (the `ocpp` and `clickhouse-ingestor` containers).
       #
       # An advertised listener is what the broker tells the client to
@@ -71,8 +71,10 @@ services:
       # follow-up metadata response sends them to `localhost`, which
       # inside their own container is themselves — connection refused.
       # Hence the dual layout: HOST://*:9092 advertised as `localhost:9092`
-      # for `host.docker.internal`-style host access, INTERNAL://*:29092
-      # advertised as `kafka:29092` for the docker network.
+      # for host-side access (Docker Desktop resolves that via
+      # `host.docker.internal`; on Linux the `extra_hosts` mapping on
+      # the `ocpp` service below wires the same name to `host-gateway`),
+      # INTERNAL://*:29092 advertised as `kafka:29092` for the docker network.
       KAFKA_LISTENERS: "HOST://:9092,INTERNAL://:29092,CONTROLLER://:9093"
       KAFKA_ADVERTISED_LISTENERS: "HOST://localhost:9092,INTERNAL://kafka:29092"
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,HOST:PLAINTEXT,INTERNAL:PLAINTEXT"
@@ -103,7 +105,7 @@ services:
     container_name: eveys-ocpp-clickhouse
     ports:
       # HTTP remapped to 8124: the canonical 8123 is squatted by any
-      # Homebrew `clickhouse server` already running on the laptop
+      # host-side `clickhouse server` already running on the workstation
       # (loopback bind wins over docker's `*:8123`). When the
       # collision happened our `make ch-migrate` silently targeted
       # the wrong server and the stack went into a confusing split-
@@ -173,7 +175,7 @@ services:
     # connections under load. A real migration failure still exits
     # cleanly after 5 attempts and blocks `ocpp` from starting (since
     # consumers wait on `service_completed_successfully`, not just
-    # `started`); 5 × ~10s is enough headroom on a laptop without
+    # `started`); 5 × ~10s is enough headroom on a workstation without
     # masking a genuinely-broken migration for too long.
     restart: on-failure:5
     depends_on:
@@ -222,8 +224,11 @@ services:
       - "9100:9100"      # Prometheus metrics (lands with E4-1)
       - "8080:8080"      # Backend-facing REST surface (ADR-0026)
     # Make the developer's host backend (e.g. https://toger.test or
-    # http://localhost) reachable from inside the container. On Docker
-    # Desktop macOS / Windows, host-gateway resolves to the host's NIC.
+    # http://localhost) reachable from inside the container. Docker
+    # Desktop resolves `host.docker.internal` natively; the explicit
+    # `host-gateway` mapping below makes the same names resolve on
+    # Linux Docker Engine, where `host.docker.internal` is otherwise
+    # undefined.
     extra_hosts:
       - "toger.test:host-gateway"
       - "host.docker.internal:host-gateway"
@@ -232,7 +237,7 @@ services:
       EVEYS_OCPP_REDIS_URL: redis://redis:6379/0
       # Use the INTERNAL listener — see the `kafka` service for why both
       # exist. `localhost:9092` (the default in `Settings`) only works
-      # for processes running on the laptop, not for sibling containers.
+      # for processes running on the host, not for sibling containers.
       EVEYS_OCPP_KAFKA_BROKERS: kafka:29092
       EVEYS_OCPP_CLICKHOUSE_HOST: clickhouse
       EVEYS_OCPP_CLICKHOUSE_PORT: "9000"
@@ -251,7 +256,7 @@ services:
       # `/api/v1/docs` — the production posture is governed by Helm /
       # k8s, not this file. AUTH_DISABLED stays `false`: keep the
       # bearer-token path exercised in dev (Swagger UI's "Authorize"
-      # button is the documented dev-laptop UX; see `make get-token`).
+      # button is the documented local-dev UX; see `make get-token`).
       EVEYS_OCPP_REST_OPENAPI_ENABLED: ${EVEYS_OCPP_REST_OPENAPI_ENABLED:-true}
       EVEYS_OCPP_REST_AUTH_DISABLED: ${EVEYS_OCPP_REST_AUTH_DISABLED:-false}
       EVEYS_OCPP_BACKEND_BASE_URL: ${EVEYS_OCPP_BACKEND_BASE_URL:-}
@@ -324,7 +329,7 @@ services:
     environment:
       # `kafka:29092` is the INTERNAL listener — the only one that
       # advertises a hostname reachable from inside the compose network.
-      # The `:9092` advertisement is for laptop-side clients only.
+      # The `:9092` advertisement is for host-side clients only.
       EVEYS_OCPP_KAFKA_BROKERS: "kafka:29092"
       EVEYS_OCPP_CLICKHOUSE_HOST: "clickhouse"
       EVEYS_OCPP_CLICKHOUSE_PORT: "9000"

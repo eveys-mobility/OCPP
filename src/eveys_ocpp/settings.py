@@ -165,7 +165,7 @@ class Settings(BaseSettings):
     rest_auth_disabled: bool = Field(
         default=False,
         description=(
-            "Disable bearer-token validation entirely. Dev / laptop / "
+            "Disable bearer-token validation entirely. Dev / local / "
             "unit-test convenience only — never set in production."
         ),
         json_schema_extra={
@@ -379,7 +379,7 @@ class Settings(BaseSettings):
             "impact": (
                 "Wrong broker → producer cannot start, gateway exits at "
                 "boot. Inside the compose network use the INTERNAL listener "
-                "(`kafka:29092`); from a laptop use `localhost:9092`."
+                "(`kafka:29092`); from the host use `localhost:9092`."
             ),
             "secret": False,
             "stability": "structural",

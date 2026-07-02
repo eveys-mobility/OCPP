@@ -148,7 +148,7 @@ async def run_quick(target_url: str, prometheus_url: str) -> ScenarioResult:
 async def run_full(target_url: str, prometheus_url: str) -> ScenarioResult:
     """Full-scale shape — the spec's headline numbers. Requires a
     production-shaped stack (3+ gateway pods, beefy DB, etc.). Run
-    on staging, not on a laptop."""
+    on staging, not on a workstation."""
     return await run(
         BootStormConfig(
             count=10_000,

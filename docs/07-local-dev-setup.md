@@ -1,6 +1,6 @@
 # 07 — Local development setup
 
-> How to bring the full `eveys/ocpp` stack up on an engineer's laptop and verify it before writing code. Covers the data plane (Postgres, Redis, Kafka, ClickHouse) via docker-compose, plus a k3d/kind path for testing Kubernetes-specific behavior (Helm charts, Envoy config, Pod Disruption Budgets).
+> How to bring the full `eveys/ocpp` stack up on an engineer's workstation and verify it before writing code. Covers the data plane (Postgres, Redis, Kafka, ClickHouse) via docker-compose, plus a k3d/kind path for testing Kubernetes-specific behavior (Helm charts, Envoy config, Pod Disruption Budgets).
 
 This document is the **single source of truth for local development**. If a step here doesn't work, fix the doc — don't pass tribal knowledge by Slack.
 
@@ -18,17 +18,16 @@ This doc does **not** cover production or staging setup. Production decisions (c
 
 ## Prerequisites
 
-| Tool | Minimum version | Purpose | macOS install |
+| Tool | Minimum version | Purpose | Install |
 |---|---|---|---|
-| Python | 3.13 | Runtime (per [ADR-0001](./adr/0001-python-asyncio-stack.md)) | `brew install python@3.13` |
-| Docker Desktop | 4.30+ | Container runtime | [docker.com](https://www.docker.com/products/docker-desktop/) |
-| Docker Compose | v2 (built into Docker Desktop) | Multi-container orchestration | (bundled) |
-| `make` | any recent | Task runner | (bundled with Xcode CLT) |
-| `git` | 2.30+ | VCS | `brew install git` (Apple's bundled git also works) |
-| `uv` | 0.5+ | Python package manager | `brew install uv` |
-| `kubectl` | 1.30+ | k8s CLI (for k3d/kind path only) | `brew install kubectl` |
-| `helm` | 3.15+ | k8s chart tool (for k3d/kind path only) | `brew install helm` |
-| `k3d` *or* `kind` | latest | Local k8s (for k3d/kind path only) | `brew install k3d` or `brew install kind` |
+| Python | 3.13 | Runtime (per [ADR-0001](./adr/0001-python-asyncio-stack.md)) | Platform package manager (apt/dnf/brew) or [python.org](https://www.python.org/downloads/) |
+| Docker Engine + Compose v2 | 24.0+ / v2 | Container runtime + multi-container orchestration | [docs.docker.com/engine/install](https://docs.docker.com/engine/install/) (Desktop or Linux server) |
+| `make` | any recent | Task runner | Platform package manager (build-essential / Xcode CLT / etc.) |
+| `git` | 2.30+ | VCS | Platform package manager or [git-scm.com](https://git-scm.com/downloads) |
+| `uv` | 0.5+ | Python package manager | [docs.astral.sh/uv](https://docs.astral.sh/uv/getting-started/) |
+| `kubectl` | 1.30+ | k8s CLI (for k3d/kind path only) | [kubernetes.io/docs/tasks/tools](https://kubernetes.io/docs/tasks/tools/#kubectl) |
+| `helm` | 3.15+ | k8s chart tool (for k3d/kind path only) | [helm.sh/docs/intro/install](https://helm.sh/docs/intro/install/) |
+| `k3d` *or* `kind` | latest | Local k8s (for k3d/kind path only) | [k3d.io](https://k3d.io/) or [kind.sigs.k8s.io](https://kind.sigs.k8s.io/) |
 
 Optional but recommended:
 
@@ -37,7 +36,7 @@ Optional but recommended:
 | [`kcat`](https://github.com/edenhill/kcat) | Kafka CLI for inspecting topics |
 | [`pgcli`](https://www.pgcli.com/) | Better Postgres REPL |
 | [`redis-cli`](https://redis.io/docs/latest/develop/connect/cli/) | Redis REPL (bundled with `redis` brew formula) |
-| [`clickhouse-client`](https://clickhouse.com/docs/en/interfaces/cli) | ClickHouse REPL (Homebrew installs it as the `clickhouse` multi-call binary; invoke as `clickhouse client`) |
+| [`clickhouse-client`](https://clickhouse.com/docs/en/interfaces/cli) | ClickHouse REPL (some package managers ship it as the `clickhouse` multi-call binary; invoke as `clickhouse client`) |
 
 To check everything at once, from the repository root:
 
@@ -83,7 +82,7 @@ Slower (~5 minutes cold start). Not the default.
 
 > **Note**: ClickHouse native protocol normally listens on `9000`. Our service also wants `9000` inside its container for the WebSocket port. The compose file remaps both onto host ports to avoid the collision: ClickHouse native to `9001`, gateway WS to **`19000`** (container `9000` for both, host published differently).
 >
-> ClickHouse HTTP (canonical `8123`) is also remapped — to **`8124`** — so that a Homebrew `clickhouse server` already running on the laptop (common on machines that touch other ClickHouse projects) can't quietly intercept queries: the loopback bind on the Homebrew side wins over docker's `*:8123`, and migrations end up in the wrong server with no error. `make doctor` flags the collision; `make ch-migrate` defaults to `8124`. CI environments that don't run a host-side CH override via `E2E_CH_HTTP_PORT=8123`.
+> ClickHouse HTTP (canonical `8123`) is also remapped — to **`8124`** — so that a host-side `clickhouse server` already running on the workstation (common on machines that touch other ClickHouse projects) can't quietly intercept queries: the loopback bind on the host side wins over docker's `*:8123`, and migrations end up in the wrong server with no error. `make doctor` flags the collision; `make ch-migrate` defaults to `8124`. CI environments that don't run a host-side CH override via `E2E_CH_HTTP_PORT=8123`.
 
 ### Bring it up
 
@@ -338,7 +337,7 @@ These are **hardcoded for local development**. Real credentials are managed by t
 | Kafka | (none) | (none) | PLAINTEXT, no SASL |
 | ClickHouse | `default` | (none) | DB: `eveys_ocpp` |
 
-> **Never copy these credentials into staging or production.** They exist for laptop development only. The compose file marks them with a comment to prevent confusion.
+> **Never copy these credentials into staging or production.** They exist for local development only. The compose file marks them with a comment to prevent confusion.
 
 ---
 
@@ -392,7 +391,7 @@ The `error` field in that log carries the ClickHouse error code. The common caus
 
 | ClickHouse error | What's wrong | Fix |
 |---|---|---|
-| `Code: 60. DB::Exception: Table eveys_ocpp.cp_status does not exist` | Schema not applied to the CH instance the ingestor reaches | `make ch-migrate`. If that says "up to date" but tables are missing, check for a [Homebrew-CH port collision](#manual-checks) — `lsof -iTCP:8123 -sTCP:LISTEN` on the host. |
+| `Code: 60. DB::Exception: Table eveys_ocpp.cp_status does not exist` | Schema not applied to the CH instance the ingestor reaches | `make ch-migrate`. If that says "up to date" but tables are missing, check for a [host-side CH port collision](#manual-checks) — `lsof -iTCP:8123 -sTCP:LISTEN` on the host. |
 | `Code: 53. DB::Exception: ... Type mismatch in column ...` | Ingestor and CH disagree on column types (proto evolution mid-deploy) | Check that `src/eveys_ocpp/clickhouse/ddl/` matches the row extractors in `src/eveys_ocpp/clickhouse/ingestor.py`. Roll the ingestor image and the CH schema together. |
 | `Code: 192. DB::Exception: Unknown user 'eveys_writer'` | CH user/role mis-provisioned | Verify `CLICKHOUSE_USER` env var matches a real user in CH. |
 | Network errors (`Connection refused`, `getaddrinfo failed`) | Ingestor pointed at the wrong host or CH not yet healthy | Check `make compose-status` shows `clickhouse` `healthy`; ingestor depends on it but a startup race can still bite. |
@@ -419,9 +418,9 @@ Then re-import:
 k3d image import eveys-ocpp:dev -c eveys-ocpp
 ```
 
-### macOS firewall blocks docker-compose ports
+### Host firewall blocks docker-compose ports
 
-System Settings → Network → Firewall → Options → allow `Docker` to accept incoming connections. Affects only LAN sharing scenarios — purely-local development is unaffected.
+On macOS: System Settings → Network → Firewall → Options → allow `Docker` to accept incoming connections. On Linux, open the relevant ports in `ufw` / `firewalld` (or disable the firewall for the local subnet). Affects only LAN sharing scenarios — purely-local development is unaffected.
 
 ### `make compose-smoke` (or `pytest tests/e2e/`) fails on the WebSocket step
 

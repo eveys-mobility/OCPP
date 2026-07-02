@@ -26,7 +26,7 @@ open http://localhost:8080/api/v1/redoc
 curl http://localhost:8080/api/v1/openapi.json | jq .
 ```
 
-Auth still applies to `/api/v1/openapi.json`, `/api/v1/docs`, and `/api/v1/redoc` — only token-bearers can read the spec. Use `EVEYS_OCPP_REST_AUTH_DISABLED=true` for laptop dev (the boot-time `rest_auth.disabled=True` log line makes a forgotten flip obvious in any review).
+Auth still applies to `/api/v1/openapi.json`, `/api/v1/docs`, and `/api/v1/redoc` — only token-bearers can read the spec. Use `EVEYS_OCPP_REST_AUTH_DISABLED=true` for local dev (the boot-time `rest_auth.disabled=True` log line makes a forgotten flip obvious in any review).
 
 ## Quickstart — static spec
 
@@ -73,7 +73,7 @@ The spec served here is the **same** `docs/api/openapi.json` that `make openapi-
 | `make swagger-serve` (this PR) | Browse the contract without a running gateway. Cheapest UI. |
 | Runtime Swagger UI (`/api/v1/docs` on a running gateway) | Verify *this specific deploy*'s contract — useful when investigating drift between an old build and the latest spec. |
 | `docs/api/openapi.yaml` import to Postman | Generate a request collection for manual testing. |
-| `editor.swagger.io` paste | Quick view from any laptop without cloning the repo. |
+| `editor.swagger.io` paste | Quick view from any workstation without cloning the repo. |
 
 ## What's in the spec
 

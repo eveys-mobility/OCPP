@@ -97,9 +97,9 @@ Settle → drop 50% of WS connections → measure recovery. Asserts:
 
 ## Where the simulator runs
 
-10k chargers from one machine is right at the edge for a laptop (websockets per-connection memory + asyncio task overhead). The v0 rig assumes **single-machine** operation.
+10k chargers from one machine is right at the edge for a workstation (websockets per-connection memory + asyncio task overhead). The v0 rig assumes **single-machine** operation.
 
-- Laptop: aim for **`--quick` only** (10 chargers).
+- Workstation: aim for **`--quick` only** (10 chargers).
 - Staging box: **`--full`** with up to ~10k chargers depending on RAM/CPU. A 32 GB / 8-core box is a sensible minimum; the workload is I/O-bound, not CPU-bound.
 
 Multi-machine simulator orchestration is a Phase 4 follow-up; if `--full` on one box can't reach 10k, file an issue referencing this section and we'll spec it out.

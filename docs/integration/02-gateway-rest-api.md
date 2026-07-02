@@ -117,7 +117,7 @@ older than the feature). For the full reconnect history use
 entry per connector with the most recent `StatusNotification` data
 sourced from ClickHouse `cp_status`. Empty array (`[]`) when the
 charger has never sent a `StatusNotification`, when the gateway is
-running without a ClickHouse client wired (tests, dev laptops), or
+running without a ClickHouse client wired (tests, dev workstations), or
 when ClickHouse is briefly unavailable — the route degrades gracefully
 rather than 500.
 

@@ -40,7 +40,7 @@ The drill scenarios stop and start docker compose services (`docker compose stop
     --target wss://ocpp.staging.example.com
 ```
 
-Same commands, larger fleet sizes and longer outage / recovery windows. The `--target` argument points the simulator at any reachable WS URL; the `docker compose ...` operations target whatever the **local** compose file resolves to. Running `--full` against a remote target is only useful when the target's stack lives on the same host as the runner (e.g. an SRE laptop with a port-forwarded tunnel into staging) — for true multi-pod staging drills, run the scenarios from inside the cluster (a debug pod) so `docker compose` resolves to the cluster's local services.
+Same commands, larger fleet sizes and longer outage / recovery windows. The `--target` argument points the simulator at any reachable WS URL; the `docker compose ...` operations target whatever the **local** compose file resolves to. Running `--full` against a remote target is only useful when the target's stack lives on the same host as the runner (e.g. an SRE workstation with a port-forwarded tunnel into staging) — for true multi-pod staging drills, run the scenarios from inside the cluster (a debug pod) so `docker compose` resolves to the cluster's local services.
 
 ## What "pass" means per scenario
 

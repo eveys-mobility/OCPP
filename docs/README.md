@@ -15,7 +15,7 @@ Documentation for **eveys/ocpp**, the OCPP gateway service of the Eveys EV-charg
 | 04 | [Contributing & workflow](./04-contributing.md) | Branches, MRs, reviews, releases, AI-assisted development rules | Engineers |
 | 05 | [Architecture decisions](./05-architecture-decisions.md) | Index of ADRs (Architecture Decision Records) | Engineers, future-us |
 | 06 | [Implementation plan](./06-implementation-plan.md) | Week-by-week schedule (W0–W13) mapping tasks to calendar | Tech lead, engineers, manager |
-| 07 | [Local development setup](./07-local-dev-setup.md) | Bring the full stack up on a laptop (docker-compose + k3d/kind) | Engineers (day 1) |
+| 07 | [Local development setup](./07-local-dev-setup.md) | Bring the full stack up on a workstation (docker-compose + k3d/kind) | Engineers (day 1) |
 | 08 | [OCPP conformance matrix](./08-ocpp-conformance.md) | Per-test-case (Appendix C TC ID) → handler → status; the cert-grade record | Engineers, QA, OCTT examiners, auditors |
 | 09 | [Certification readiness](./09-certification-readiness.md) | Cert-program playbook: streams, PICS prep, lab engagement, exit gate | TL, manager, QA |
 | 10 | [Testing strategy](./10-testing-strategy.md) | The four-tier test trust ladder — what each CI job guarantees and what bug class it catches (see ADR-0024) | Engineers, anyone debugging a CI failure |
@@ -64,7 +64,7 @@ This document set is rendered as a static HTML site by **Sphinx** with the **MyS
 - Python 3.10 or newer on `PATH` (Python 3.13 is the project target — see [ADR-0001](./adr/0001-python-asyncio-stack.md))
 - A working network connection on first build (to install Sphinx and extensions)
 
-The Makefile creates a self-contained `docs/.venv/` so the build does not depend on the engineer's system Python or any project-level virtualenv. The macOS system Python (3.8) is too old for modern Sphinx, so this isolation matters.
+The Makefile creates a self-contained `docs/.venv/` so the build does not depend on the engineer's system Python or any project-level virtualenv. Some distros ship an old system Python (e.g. 3.8) that is too old for modern Sphinx, so this isolation matters.
 
 ### Local build
 
@@ -77,7 +77,7 @@ make html      # renders the site to docs/_build/html/ (depends on `install`)
 
 Open `docs/_build/html/README.html` in a browser to view the rendered site.
 
-If a Python 3.10+ interpreter is not on `PATH`, `make install` exits with a clear error pointing at the project Python target. On macOS, install Python 3.13 via Homebrew (`brew install python@3.13`) — it lands at `/opt/homebrew/bin/python3.13` and the Makefile picks it up automatically.
+If a Python 3.10+ interpreter is not on `PATH`, `make install` exits with a clear error pointing at the project Python target. Install Python 3.13 via your platform's package manager (`apt install python3.13`, `dnf install python3.13`, `brew install python@3.13`, etc.) or [python.org](https://www.python.org/downloads/) — the Makefile picks up the first `python3.13` on `PATH` automatically.
 
 To override the interpreter (for example, to test on 3.12), pass `PYTHON=` explicitly:
 
@@ -98,12 +98,12 @@ make html
 python3 -m http.server 8000 --bind 0.0.0.0 --directory _build/html
 ```
 
-The site is then reachable at `http://<host-LAN-IP>:8000/` for anyone on the same network. Find the host's LAN IP with `ipconfig getifaddr en0` (macOS) or `hostname -I` (Linux). Stop the server with `Ctrl+C`.
+The site is then reachable at `http://<host-LAN-IP>:8000/` for anyone on the same network. Find the host's LAN IP with `hostname -I` (Linux) or `ipconfig getifaddr en0` (macOS). Stop the server with `Ctrl+C`.
 
 Caveats:
 
 - The teammate must be on the same network — RFC1918 addresses (`10.x`, `192.168.x`, `172.16-31.x`) are not reachable from the public internet.
-- macOS may prompt to allow Python to accept incoming connections — accept it.
+- The host firewall may prompt to allow Python to accept incoming connections — accept it (macOS) or open the port in `ufw` / `firewalld` (Linux).
 - For sharing outside the LAN or for a persistent URL, use the CI artifact path below instead.
 
 ### Cleanup

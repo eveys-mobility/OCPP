@@ -13,7 +13,7 @@ Per the contract `docs/integration/02-gateway-rest-api.md`:
 - `connectors[]` carries the most recent StatusNotification per
   connector (sourced from ClickHouse `cp_status`). Empty when no
   StatusNotifications have been recorded yet, or when the gateway
-  is running without a ClickHouse client wired (tests, dev laptops).
+  is running without a ClickHouse client wired (tests, dev workstations).
 - `last_status` is kept as a single-string convenience for callers
   that don't need per-connector resolution. For multi-connector
   chargers it is **last-write-wins** across connectors and should
@@ -62,7 +62,7 @@ async def _enrich_with_presence(request: Request, cp_dict: dict[str, Any]) -> di
     """Attach `online` + `pod_id` from the Redis registry.
 
     The Redis-less local stack runs without a registry (tests, dev
-    laptops); in that case we report `online=False` and `pod_id=None`.
+    workstations); in that case we report `online=False` and `pod_id=None`.
     Operators see the same shape, just without the presence fields
     populated."""
     registry = request.app.state.registry

@@ -52,7 +52,7 @@ its **next reconnect attempt fails 401**, which combined with step
 
 ### 1a. Generate a fresh bcrypt hash
 
-Any bcrypt-producing tool works. Most operator laptops have one of:
+Any bcrypt-producing tool works. Most operator workstations have one of:
 
 ```bash
 # Python (always available where the gateway is deployed):

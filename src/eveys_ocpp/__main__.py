@@ -439,7 +439,7 @@ def main() -> None:
 
     # Backend HTTP client (E3-2, ADR-0023). Empty `backend_base_url`
     # leaves it None — the OCPP handlers fall back to their stub
-    # behaviour, which is what the W1 / dev-laptop stack wants.
+    # behaviour, which is what the W1 / local-dev stack wants.
     backend_client: BackendHTTPClient | None = None
     authorize_cache: AuthorizeCache | None = None
     if settings.backend_base_url:

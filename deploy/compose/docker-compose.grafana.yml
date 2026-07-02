@@ -11,7 +11,7 @@
 # (see `deploy/grafana/README.md § Mounting into Grafana (Kubernetes)`).
 #
 # Dev posture choices:
-#   - Anonymous Admin role so you don't juggle a login on a laptop.
+#   - Anonymous Admin role so you don't juggle a login in local dev.
 #     Never use this in production.
 #   - The CH plugin is pulled fresh on first boot (`GF_INSTALL_PLUGINS`).
 #     Network-required first-time only; the volume caches it.
@@ -73,7 +73,7 @@ services:
       # Pulls the ClickHouse plugin on first boot. Cached on the
       # `grafana-data` volume thereafter.
       GF_INSTALL_PLUGINS: grafana-clickhouse-datasource
-      # Anonymous Admin so a laptop doesn't have to juggle a login.
+      # Anonymous Admin so local dev doesn't have to juggle a login.
       # NEVER set this in production.
       GF_AUTH_ANONYMOUS_ENABLED: "true"
       GF_AUTH_ANONYMOUS_ORG_ROLE: Admin

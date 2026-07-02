@@ -75,18 +75,18 @@ printf "Reference: docs/07-local-dev-setup.md\n\n"
 printf "%sRequired tools%s\n" "$BOLD" "$RESET"
 
 check_required "Python 3.13" "python3.13" "3.13.0" \
-    "brew install python@3.13" \
+    "your platform's package manager (apt/dnf/brew) or https://www.python.org/downloads/" \
     "python3.13 --version 2>&1 | awk '{print \$2}'"
 
 check_required "Docker"      "docker"     "24.0.0" \
-    "Docker Desktop from docker.com" \
+    "Docker Engine + Compose v2 — see https://docs.docker.com/engine/install/" \
     "docker --version | sed -E 's/.*version ([0-9.]+).*/\\1/'"
 
 # Docker Compose is a docker subcommand in v2; check separately for clarity.
 if command -v docker >/dev/null 2>&1; then
     compose_version=$(docker compose version --short 2>/dev/null || echo "")
     if [ -z "$compose_version" ]; then
-        miss "Compose" "docker compose v2 not available — update Docker Desktop"
+        miss "Compose" "docker compose v2 not available — upgrade Docker Engine / Compose v2"
     elif version_ge "$compose_version" "2.0.0"; then
         ok "Compose" "$compose_version (≥ 2.0.0)"
     else
@@ -97,11 +97,11 @@ else
 fi
 
 check_required "git"         "git"        "2.30.0" \
-    "brew install git" \
+    "your platform's package manager (apt/dnf/brew) or https://git-scm.com/downloads" \
     "git --version | awk '{print \$3}'"
 
 check_required "uv"          "uv"         "0.5.0" \
-    "brew install uv" \
+    "https://docs.astral.sh/uv/getting-started/" \
     "uv --version | awk '{print \$2}'"
 
 # ---- k8s path (Path B in 07-local-dev-setup.md) ------------------------------
@@ -110,11 +110,11 @@ printf "\n%sKubernetes path (Path B — k3d/kind)%s\n" "$BOLD" "$RESET"
 note "" "Required only if you'll test Helm charts, Envoy, or other k8s-specific behavior."
 
 check_required "kubectl"     "kubectl"    "1.30.0" \
-    "brew install kubectl" \
+    "https://kubernetes.io/docs/tasks/tools/#kubectl" \
     "kubectl version --client -o yaml 2>/dev/null | awk '/gitVersion/ {gsub(/[v\"]/,\"\",\$2); print \$2; exit}'"
 
 check_required "helm"        "helm"       "3.15.0" \
-    "brew install helm" \
+    "https://helm.sh/docs/intro/install/" \
     "helm version --short 2>/dev/null | sed -E 's/^v([0-9.]+).*/\\1/'"
 
 # Either k3d OR kind is acceptable.
@@ -125,25 +125,25 @@ elif command -v kind >/dev/null 2>&1; then
     kind_version=$(kind version 2>/dev/null | sed -E 's/.*v([0-9.]+).*/\1/')
     ok "kind"      "$kind_version (k3d not required)"
 else
-    miss "k3d/kind" "neither installed — install one: brew install k3d (or kind)"
+    miss "k3d/kind" "neither installed — install one: https://k3d.io/ or https://kind.sigs.k8s.io/"
 fi
 
 # ---- optional ----------------------------------------------------------------
 
 printf "\n%sOptional tools%s\n" "$BOLD" "$RESET"
 
-check_optional "kcat"        "kcat"       "brew install kcat"
-check_optional "pgcli"       "pgcli"      "brew install pgcli"
-check_optional "redis-cli"   "redis-cli"  "brew install redis"
+check_optional "kcat"        "kcat"       "apt-get install kafkacat / dnf install kcat / brew install kcat"
+check_optional "pgcli"       "pgcli"      "apt-get install pgcli / dnf install pgcli / brew install pgcli"
+check_optional "redis-cli"   "redis-cli"  "apt-get install redis-tools / dnf install redis / brew install redis"
 
 # clickhouse-client may be a standalone binary (official package) or a
-# subcommand of the Homebrew bundled `clickhouse` multi-call binary.
+# subcommand of the bundled `clickhouse` multi-call binary.
 if command -v clickhouse-client >/dev/null 2>&1; then
     ok "clickhouse-client" "installed"
 elif command -v clickhouse >/dev/null 2>&1; then
-    ok "clickhouse-client" "available as 'clickhouse client' (Homebrew)"
+    ok "clickhouse-client" "available as 'clickhouse client' (multi-call binary)"
 else
-    warn "clickhouse-client" "not installed (optional) — install: brew install --cask clickhouse"
+    warn "clickhouse-client" "not installed (optional) — install: https://clickhouse.com/docs/en/install"
 fi
 
 # ---- runtime sanity checks ---------------------------------------------------
@@ -159,22 +159,22 @@ if docker info >/dev/null 2>&1; then
     elif [ "$docker_mem_gb" -ge 4 ]; then
         warn "Docker memory" "${docker_mem_gb} GB (recommended: 6 GB for the full stack with ClickHouse)"
     else
-        miss "Docker memory" "${docker_mem_gb} GB (need ≥ 4 GB; bump in Docker Desktop → Settings → Resources)"
+        miss "Docker memory" "${docker_mem_gb} GB (need ≥ 4 GB; bump in Docker Desktop → Settings → Resources, or raise the VM/daemon memory limit on Linux)"
     fi
 else
-    miss "Docker daemon" "not running — start Docker Desktop"
+    miss "Docker daemon" "not running — start Docker Engine / Desktop"
 fi
 
 # Host-port collisions with the compose stack.
 #
 # `make compose-up` publishes a fixed set of ports. If something on the
-# laptop is already bound to one of them (a Homebrew clickhouse server,
+# host is already bound to one of them (a host-side clickhouse server,
 # a stray Postgres, a previous `python -m http.server`), the docker
-# binding either fails outright or — on macOS for loopback addresses —
-# the existing process wins and our queries silently target the wrong
-# server. The latter is what bit us in issue #24, where a Homebrew CH
-# on `localhost:8123` swallowed our migrations and the docker CH stayed
-# empty.
+# binding either fails outright or — on some platforms for loopback
+# addresses — the existing process wins and our queries silently target
+# the wrong server. The latter is what bit us in issue #24, where a
+# host-side CH on `localhost:8123` swallowed our migrations and the
+# docker CH stayed empty.
 #
 # We probe TCP listen state (not just open sockets) so a `curl` that
 # just connected and closed doesn't trigger a false positive.
@@ -212,7 +212,7 @@ if [ "$collisions" -eq 0 ]; then
     ok  "ports" "no collisions on the 9 ports compose publishes"
 fi
 
-# Free disk space at the repo root. Local laptop dev needs ~10 GB for
+# Free disk space at the repo root. Local dev needs ~10 GB for
 # Docker images + volumes; k3d/k8s testing wants more headroom.
 disk_avail_kb=$(df -k . 2>/dev/null | awk 'NR==2 {print $4}' || echo 0)
 disk_avail_gb=$(( disk_avail_kb / 1024 / 1024 ))

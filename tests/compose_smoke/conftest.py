@@ -65,18 +65,18 @@ _EXPECTED_CONTAINERS = (
 HOST_WS_PORT = 19000
 HOST_PG_PORT = 55432
 # Compose remaps CH HTTP from the canonical 8123 to 8124 to dodge a
-# Homebrew `clickhouse server` already on the laptop (issue #24).
+# host-side `clickhouse server` already on the workstation (issue #24).
 HOST_CH_HTTP_PORT = 8124
 # Backend-facing REST surface (ADR-0026). 1:1 host:container so curl
 # from the host works without translation.
 HOST_REST_PORT = 8080
 
-# Where the published ports actually answer. On a laptop this is
+# Where the published ports actually answer. Locally this is
 # `localhost`. Under GitLab Docker-in-Docker the test process and the
 # Docker daemon live in different network namespaces — the daemon
 # publishes ports on the dind sidecar, which the job container reaches
 # via the service alias (`docker` by default). CI sets this to
-# `docker`; defaults stay laptop-friendly.
+# `docker`; defaults stay local-dev-friendly.
 PUBLISHED_HOST = os.environ.get("COMPOSE_SMOKE_PUBLISHED_HOST", "localhost")
 
 # Host-side DSN for alembic to run against the compose Postgres. Inside
@@ -101,7 +101,7 @@ def _gate() -> None:
         pytest.skip(msg, allow_module_level=True)
 
     if not enabled:
-        # Local-laptop default: the smoke tier needs an opt-in because
+        # Local-dev default: the smoke tier needs an opt-in because
         # `make tests` should never spend 90 s building a Docker image
         # the developer might not even have built. `make compose-smoke`
         # sets COMPOSE_SMOKE=1.

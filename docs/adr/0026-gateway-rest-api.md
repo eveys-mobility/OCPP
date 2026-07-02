@@ -64,7 +64,7 @@ Validation rules:
 - Empty allowlist + `REST_AUTH_DISABLED=false` (the default) → reject
   every request with `401 UNAUTHORIZED`. Production safe-by-default.
 - Empty allowlist + `REST_AUTH_DISABLED=true` → accept all requests,
-  no header check. **Dev / laptop / unit-test convenience only**;
+  no header check. **Dev / local / unit-test convenience only**;
   the flag is loud (`stability=dev-only` in the metadata) and the
   start-up log line says `rest_auth.disabled=True` so a forgotten flip
   shows up in any log review.

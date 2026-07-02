@@ -104,7 +104,7 @@ Concretely:
   to document it.
 - **Compose-mode complexity skipped**. Compose dev stays plain
   WS. That's a deliberate trade-off — adding compose-mode mTLS
-  introduces friction with no security gain at the dev-laptop
+  introduces friction with no security gain at the local-dev
   scope. The Tier-3 compose-smoke tests therefore don't
   exercise mTLS; an integration drill against staging is the
   right validation.

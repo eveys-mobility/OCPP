@@ -55,7 +55,7 @@ Custom shapes: build a `BehaviourProfile` directly and pass it to
 
 ## Acceptance scope
 
-The simulator's design target is **1k chargers on one laptop** for
+The simulator's design target is **1k chargers on one workstation** for
 E4-6's local-stack baseline. Multi-node simulator runs (10k+) are a
 Phase 4 follow-up if the load test demands more than one box can
 produce.

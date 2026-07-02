@@ -1,7 +1,7 @@
 """Integration-test conftest.
 
 Same rules as ``tests/e2e/`` — the test opts into a real Postgres and
-skips cleanly when it isn't reachable, so ``make tests`` on a laptop
+skips cleanly when it isn't reachable, so ``make tests`` on a workstation
 without ``docker compose up`` stays green.
 
 Two fixtures:
@@ -62,7 +62,7 @@ async def postgres_session_factory() -> AsyncIterator[async_sessionmaker[AsyncSe
 
     engine = create_async_engine(_TEST_DB_URL)
     # Verify schema. If the table doesn't exist, the migration hasn't
-    # been applied — skip rather than fail so a laptop without
+    # been applied — skip rather than fail so a workstation without
     # `alembic upgrade head` doesn't produce a scary error.
     async with engine.connect() as conn:
         try:

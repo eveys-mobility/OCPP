@@ -31,7 +31,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from websockets.asyncio.client import connect
 
 # Data-plane hosts. Default to `localhost` (`make compose-up` on a dev
-# laptop). In GitLab CI, where the stack runs as `services:` sidecars, the
+# workstation). In GitLab CI, where the stack runs as `services:` sidecars, the
 # pipeline overrides these via env to the service aliases (e.g. `postgres`).
 _PG_HOST = os.environ.get("E2E_PG_HOST", "localhost")
 # Compose remaps Postgres from 5432 → 55432 on the host to dodge a host
@@ -42,8 +42,8 @@ _REDIS_HOST = os.environ.get("E2E_REDIS_HOST", "localhost")
 _REDIS_PORT = int(os.environ.get("E2E_REDIS_PORT", "16379"))
 _KAFKA_HOST = os.environ.get("E2E_KAFKA_HOST", "localhost")
 _CH_HOST = os.environ.get("E2E_CH_HOST", "localhost")
-# Compose remaps CH HTTP from 8123 to 8124 to dodge a Homebrew
-# `clickhouse server` already on the laptop (see issue #24). CI binds
+# Compose remaps CH HTTP from 8123 to 8124 to dodge a host-side
+# `clickhouse server` already on the workstation (see issue #24). CI binds
 # CH directly on 8123, so it overrides via E2E_CH_HTTP_PORT=8123.
 _CH_HTTP_PORT = int(os.environ.get("E2E_CH_HTTP_PORT", "8124"))
 
@@ -127,7 +127,7 @@ async def running_service() -> AsyncIterator[None]:
     Skips the entire test if the schema isn't applied — the test relies on
     `charge_points` and `transactions` tables existing.
     """
-    # If schema isn't applied: skip on dev laptop, hard-fail in CI. CI runs
+    # If schema isn't applied: skip on dev workstation, hard-fail in CI. CI runs
     # `alembic upgrade head` before pytest (see tests:e2e in .gitlab-ci.yml);
     # if that step silently no-op'd, this test would otherwise green-skip.
     engine = create_async_engine(_TEST_DB_URL)

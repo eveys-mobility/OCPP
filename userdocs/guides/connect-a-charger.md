@@ -1,6 +1,6 @@
 # Connect a charger
 
-**Audience.** A site engineer or integrator pointing an OCPP 1.6 charger at this gateway for the first time. The charger itself can be a real piece of hardware on a workbench or a simulator on the same laptop.
+**Audience.** A site engineer or integrator pointing an OCPP 1.6 charger at this gateway for the first time. The charger itself can be a real piece of hardware on a workbench or a simulator on the same workstation.
 
 **What this answers.** What URL the charger uses, how Basic Auth works, what a successful boot looks like, and the most common failures with the fix for each.
 
@@ -187,7 +187,7 @@ docker logs eveys-ocpp 2>&1 | jq 'select(.cp_id == "CP_ACME_42")'
 kubectl -n eveys-ocpp logs -l app=eveys-ocpp -f | jq 'select(.cp_id == "CP_ACME_42")'
 ```
 
-If you can't reproduce the issue, the simulator can drive an arbitrary sequence of CALLs at the gateway from your laptop — useful for proving the gateway works in isolation when the charger keeps crashing. See [`../02-quickstart.md`](../02-quickstart.md) §4 for the one-liner.
+If you can't reproduce the issue, the simulator can drive an arbitrary sequence of CALLs at the gateway from your workstation — useful for proving the gateway works in isolation when the charger keeps crashing. See [`../02-quickstart.md`](../02-quickstart.md) §4 for the one-liner.
 
 ---
 

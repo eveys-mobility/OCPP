@@ -31,7 +31,7 @@ def _settings(**overrides: Any) -> Settings:
     # `_env_file=None` so a developer's local `.env` (which may set
     # `webhook_url_cp_boot=...` overrides for their dev backend) doesn't
     # leak in and fail this test. CI has no `.env` checked in, so this
-    # only manifests on local laptops; the explicit None makes the test
+    # only manifests on local workstations; the explicit None makes the test
     # behave the same in both environments.
     return Settings(_env_file=None, **base)
 

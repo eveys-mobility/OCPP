@@ -591,7 +591,7 @@ def _postgres_reachable() -> bool:
 
 
 def _maybe_skip_if_postgres_missing() -> None:
-    """Skip on dev laptop, hard-fail in CI. Same E2E_REQUIRE pattern as
+    """Skip on dev workstation, hard-fail in CI. Same E2E_REQUIRE pattern as
     the module-level Redis check."""
     if _postgres_reachable():
         return

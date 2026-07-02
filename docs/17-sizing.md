@@ -373,7 +373,7 @@ eventually want fail-safety.
 | Ubuntu 22.04 LTS or Debian 12 | Tested baseline; any modern Linux works |
 | Docker / containerd | k3s defaults to containerd |
 | `k3s` for single-node and small clusters | Substantially less control-plane RAM than full kubeadm |
-| `helm` ≥ 3.16 on the operator's laptop | For deploying `deploy/helm/eveys-ocpp/` |
+| `helm` ≥ 3.16 on the operator's workstation | For deploying `deploy/helm/eveys-ocpp/` |
 | Cert source picked | cert-manager + Let's Encrypt is the usual answer; or a manually-managed TLS Secret |
 
 ## Growth path past 1000 CP

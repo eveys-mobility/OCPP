@@ -48,7 +48,7 @@ def _redis_reachable() -> bool:
         return True
 
 
-# When Redis is unreachable we either skip (dev laptop) or hard-fail (CI).
+# When Redis is unreachable we either skip (dev workstation) or hard-fail (CI).
 # A required-but-missing Redis on the unit job would otherwise let the bus
 # module's coverage silently fall below the 80% gate.
 if not _redis_reachable():

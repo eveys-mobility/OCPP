@@ -51,7 +51,7 @@ is held open for Phase 4.
 ### Tier 3 in detail
 
 `tests/compose_smoke/` is not a unit test, not a pytest fixture against
-sidecars. It does the following from a developer laptop or CI runner
+sidecars. It does the following from a developer workstation or CI runner
 that has Docker installed:
 
 1. Run `docker compose -f deploy/compose/docker-compose.yml up -d --build`
@@ -115,7 +115,7 @@ Without Tier 3 the first six rows ship green.
 - Tier 3 is heavier to debug than a unit test. A failure shows up as
   "container exited", and the developer needs to read container logs.
   We mitigate by capturing all container logs as CI artifacts (so a
-  failure on a remote runner produces the same signal as on a laptop).
+  failure on a remote runner produces the same signal as locally).
 
 ### Rejected alternatives
 

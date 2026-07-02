@@ -1,6 +1,6 @@
 # Envoy edge config — compose-mode (E5-1, ADR-0007).
 #
-# This is the dev-laptop variant. It accepts plain ws:// on :19000 (the
+# This is the local-dev variant. It accepts plain ws:// on :19000 (the
 # existing direct-to-gateway path that all existing tests use) and
 # wss:// on :19443 (the new TLS-fronted path that mirrors what
 # production will serve). Both forward to the same `ocpp:9000`
@@ -131,7 +131,7 @@ static_resources:
                             timeout: 0s
                             idle_timeout: 0s
 
-    # Plain WS — kept so existing tests + the dev-laptop charger
+    # Plain WS — kept so existing tests + the local-dev charger
     # simulator still hit the gateway directly while the TLS path
     # is being introduced. Production removes this listener.
     - name: ws_plain_listener

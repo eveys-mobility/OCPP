@@ -12,8 +12,8 @@
 
 | Tool | Version | Compose | Helm |
 |---|---|---|---|
-| Docker Desktop / Docker Engine | 4.30+ | ✅ | — |
-| Docker Compose v2 | (bundled with Docker Desktop) | ✅ | — |
+| Docker Engine (or Docker Desktop) | 4.30+ | ✅ | — |
+| Docker Compose v2 | (bundled with Docker Engine + Desktop) | ✅ | — |
 | `make` | any recent | ✅ | ✅ (helper targets) |
 | `git` | 2.30+ | ✅ | ✅ |
 | Python 3.13 | 3.13.x | optional, only for the simulator | — |
@@ -112,7 +112,7 @@ make compose-down-volumes      # also wipes data — destructive
 
 ## 2. Kubernetes install with Helm
 
-For staging, production, or anything beyond a laptop.
+For staging, production, or anything beyond a local Compose stack.
 
 ### 2.1 What's in the chart
 
