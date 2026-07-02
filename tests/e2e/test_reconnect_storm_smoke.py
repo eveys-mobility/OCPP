@@ -19,6 +19,7 @@ import pytest
 from tools.load.scenarios.reconnect_storm import ReconnectStormConfig, run
 
 from tests.e2e.test_local_smoke import _TEST_WS_PORT, running_service
+from tests.e2e.test_simulator_smoke import _seed_fleet_cp_ids
 
 # Re-export the upstream fixture so pytest discovers it for our module.
 __all__ = ["running_service"]
@@ -30,6 +31,11 @@ async def test_reconnect_storm_recovers_within_window(
 ) -> None:
     """Compressed shape: 10 chargers, 3s settle, 15s recovery window.
     The full spec shape (2k / 60s) is for staging."""
+    # Pre-authorize the storm fleet — the reconnect scenario dials
+    # thousands of upgrades and would be CALLERROR'd on every non-Boot
+    # frame otherwise. Same seed-by-prefix helper `test_simulator_smoke`
+    # uses.
+    await _seed_fleet_cp_ids("STORM_E4_7_SMOKE", 10)
     result = await run(
         ReconnectStormConfig(
             count=10,

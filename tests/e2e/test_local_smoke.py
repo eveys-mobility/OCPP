@@ -188,6 +188,16 @@ async def running_service() -> AsyncIterator[None]:
     event_producer = KafkaEventProducer.from_settings(settings)
     await event_producer.start()
 
+    # Under the new auth model an unknown cp_id lands on the Redis
+    # pending queue and every non-Boot CALL is CALLERROR'd until an
+    # operator authorizes. E2E tests were written against the old
+    # grandfather-on-first-Boot model, so pre-authorize every cp_id
+    # constant declared in this test module by scanning the source
+    # once at fixture setup and inserting the union into charge_points.
+    # A new test that follows the `cp_id = "..."` convention is
+    # auto-covered; anything else can seed via _seed_authorized_cp.
+    await _seed_authorized_cp_ids_from_module_source(db_engine)
+
     # The pending-auth store + IP rate limiter are required kwargs on
     # `serve_forever` now, but this smoke stack only exercises already-
     # authorized chargers, so a store rooted in the same Redis and a
@@ -237,6 +247,40 @@ async def running_service() -> AsyncIterator[None]:
                 os.environ.pop(key, None)
             else:
                 os.environ[key] = original
+
+
+async def _seed_authorized_cp_ids_from_module_source(
+    db_engine: sa.ext.asyncio.AsyncEngine,
+) -> None:
+    """Pre-authorize every cp_id constant declared in this test module.
+
+    Reads its own source with a regex — a new test that follows the
+    `cp_id = "..."` idiom is covered automatically. Also seeds the
+    handful of inline cp_ids used only in RPCs (`_gateway_pb2.*
+    Request(cp_id="...")`). Idempotent: `ON CONFLICT DO NOTHING`."""
+    import re
+    from pathlib import Path
+
+    src = Path(__file__).read_text()
+    # Capture both `cp_id = "..."` local variables AND
+    # `cp_id="..."` keyword args on inline RPC calls. Duplicates
+    # collapse via the set.
+    cp_ids = {
+        m.group(1)
+        for m in re.finditer(r'cp_id\s*=\s*"([A-Za-z0-9_]+)"', src)
+        if m.group(1) not in {"NEVER_SEEN", "NEVER_SEEN_BY_E2_6"}  # negative tests
+    }
+    if not cp_ids:
+        return
+    async with db_engine.begin() as conn:
+        # Batched INSERT ... VALUES (), (), ... ON CONFLICT DO NOTHING.
+        # Avoids a round-trip per row (15+ cp_ids at last count).
+        values = ", ".join(f"('{cp}')" for cp in sorted(cp_ids))
+        await conn.execute(
+            sa.text(
+                f"INSERT INTO charge_points (cp_id) VALUES {values} ON CONFLICT (cp_id) DO NOTHING"
+            )
+        )
 
 
 class _SimChargePoint(Cp):

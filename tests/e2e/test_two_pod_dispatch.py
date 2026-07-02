@@ -726,6 +726,17 @@ async def test_remote_start_routes_across_two_pods_with_real_ws(redis_client: Re
     pod_a_event_producer = KafkaEventProducer.from_settings(pod_a_settings)
     await pod_a_event_producer.start()
 
+    # Pre-authorize the cp_id this test drives. Under the new auth
+    # model an unknown cp_id lands on the Redis pending queue; the
+    # two-pod dispatch check needs an already-authorized charger.
+    async with pod_a_db.begin() as _conn:
+        await _conn.execute(
+            sa.text(
+                "INSERT INTO charge_points (cp_id) VALUES ('CP_TWOPOD_REAL') "
+                "ON CONFLICT (cp_id) DO NOTHING"
+            )
+        )
+
     pod_a_bus = CommandBus(
         redis_client,
         pod_id=pod_a_settings.pod_id,

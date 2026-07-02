@@ -46,6 +46,24 @@ _FAST_PROFILE = BehaviourProfile(
 )
 
 
+async def _seed_fleet_cp_ids(prefix: str, count: int) -> None:
+    """Pre-authorize every cp_id `Fleet` will generate. Matches the
+    format string in `tools/sim/fleet.py:89` — `f"{prefix}_{i:06d}"`.
+    Idempotent."""
+    engine = create_async_engine(_TEST_DB_URL)
+    try:
+        values = ", ".join(f"('{prefix}_{i:06d}')" for i in range(count))
+        async with engine.begin() as conn:
+            await conn.execute(
+                sa.text(
+                    f"INSERT INTO charge_points (cp_id) VALUES {values} "
+                    "ON CONFLICT (cp_id) DO NOTHING"
+                )
+            )
+    finally:
+        await engine.dispose()
+
+
 @pytest.mark.asyncio
 async def test_simulator_drives_transactions_through_real_gateway(
     running_service: None,
@@ -59,6 +77,7 @@ async def test_simulator_drives_transactions_through_real_gateway(
         cp_id_prefix="SIM_E4_5_SMOKE",
         show_progress=False,
     )
+    await _seed_fleet_cp_ids(config.cp_id_prefix, config.count)
     fleet = Fleet(config)
     counters: Counters = await fleet.run()
 
@@ -110,6 +129,7 @@ async def test_simulator_idle_profile_connects_without_starting_transactions(
         cp_id_prefix="SIM_E4_5_IDLE",
         show_progress=False,
     )
+    await _seed_fleet_cp_ids(config.cp_id_prefix, config.count)
     # Use REALISTIC's 1/hour rate so we expect zero transactions in 3s.
     counters = await Fleet(config).run()
     assert counters.boots >= 1
