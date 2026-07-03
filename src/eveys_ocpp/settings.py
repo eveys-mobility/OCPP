@@ -1035,21 +1035,24 @@ class Settings(BaseSettings):
         },
     )
     ocpp_cfg_plug_and_charge_mode: int = Field(
-        default=1,
+        default=0,
         ge=0,
         le=2,
         description=(
             "OCPP `PlugandChargeMode` — vendor-common tri-state for "
             "how a PnC-capable charger picks between EIM (external "
             "identification like RFID) and PnC. 0=EIM only, 1=EIM "
-            "preferred / PnC fallback, 2=PnC preferred. Default 1 "
-            "keeps the RFID/app auth flow primary; PnC only kicks in "
-            "if the driver's vehicle presents a contract cert."
+            "preferred / PnC fallback, 2=PnC preferred. Default 0 "
+            "hard-disables PnC at the charger — pairs with the "
+            "`ISO15118PnCEnabled=false` default so a DC rig can't "
+            "silently negotiate PnC against a CSMS that isn't wired "
+            "for it. Bump to 1 or 2 only after the backend has a "
+            "contract-cert validation path."
         ),
         json_schema_extra={
             "category": "ocpp_defaults",
             "impact": (
-                "Set to 0 to hard-disable PnC at the charger. Set to 2 "
+                "Set to 1 for EIM-preferred with PnC fallback; set to 2 "
                 "only when PnC is production-ready end-to-end. Ignored "
                 "by chargers that don't advertise ISO 15118."
             ),

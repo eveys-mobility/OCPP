@@ -516,7 +516,7 @@ async def test_meter_value_sample_interval_pushed_after_accepted_boot(
     # ISO 15118 PnC keys are pushed as strings on the wire; bools are
     # lowercased per the OCA/ISO 15118 convention that chargers accept.
     assert pushed["ISO15118PnCEnabled"] == "false"
-    assert pushed["PlugandChargeMode"] == "1"
+    assert pushed["PlugandChargeMode"] == "0"
     assert pushed["ContractValidationOffline"] == "true"
 
 
