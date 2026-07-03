@@ -883,9 +883,9 @@ class Settings(BaseSettings):
         },
     )
 
-    # ---- Post-boot ChangeConfiguration matrix ---------------------------
+    # ---- OCPP boot configs ---------------------------------------------
     # Pushed to every charger after `BootNotification.Accepted`. Operators
-    # tune these from the Console's "OCPP config" page; the values flow
+    # tune these from the Console's "OCPP boot configs" page; the values flow
     # through the same runtime-overrides path as `meter_value_sample_
     # interval_seconds`, so a change applies on the *next* boot without
     # restarting the gateway. Best-effort delivery — a charger that
@@ -1002,6 +1002,76 @@ class Settings(BaseSettings):
                 "Lower → faster detection of half-open TCP at the cost of "
                 "more WS frames. 30 s is below most cloud LB idle limits "
                 "(60-120 s)."
+            ),
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+    # ISO 15118 Plug-and-Charge keys. Vendor-specific in OCPP 1.6 (the
+    # spec doesn't standardise PnC configuration keys), but three names
+    # have converged across major DC vendors and are what the ISO
+    # 15118-3 profile expects to see. Pushed as `ChangeConfiguration`
+    # after boot so a DC rig doesn't silently negotiate PnC against a
+    # gateway that isn't wired for it — the safe default is "PnC off,
+    # trust offline contracts if the charger falls through anyway."
+    ocpp_cfg_iso15118_pnc_enabled: bool = Field(
+        default=False,
+        description=(
+            "OCPP `ISO15118PnCEnabled` — whether the charger runs the "
+            "ISO 15118 Plug-and-Charge auth flow. Off by default: the "
+            "gateway doesn't yet forward contract certificates to the "
+            "backend, so enabling this without a CSMS-side PnC path "
+            "would leave the charger negotiating against nothing."
+        ),
+        json_schema_extra={
+            "category": "ocpp_defaults",
+            "impact": (
+                "Turn on ONLY when the backend has an ISO 15118 contract "
+                "cert validation path. Otherwise the charger will accept "
+                "a PnC session and the CSMS won't know how to bill it."
+            ),
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+    ocpp_cfg_plug_and_charge_mode: int = Field(
+        default=1,
+        ge=0,
+        le=2,
+        description=(
+            "OCPP `PlugandChargeMode` — vendor-common tri-state for "
+            "how a PnC-capable charger picks between EIM (external "
+            "identification like RFID) and PnC. 0=EIM only, 1=EIM "
+            "preferred / PnC fallback, 2=PnC preferred. Default 1 "
+            "keeps the RFID/app auth flow primary; PnC only kicks in "
+            "if the driver's vehicle presents a contract cert."
+        ),
+        json_schema_extra={
+            "category": "ocpp_defaults",
+            "impact": (
+                "Set to 0 to hard-disable PnC at the charger. Set to 2 "
+                "only when PnC is production-ready end-to-end. Ignored "
+                "by chargers that don't advertise ISO 15118."
+            ),
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+    ocpp_cfg_contract_validation_offline: bool = Field(
+        default=True,
+        description=(
+            "OCPP `ContractValidationOffline` — whether the charger "
+            "trusts a locally-cached ISO 15118 contract certificate "
+            "when it can't reach the CSMS for online validation. On "
+            "by default: matches the ISO 15118-3 recommendation and "
+            "keeps DC sessions starting during transient outages."
+        ),
+        json_schema_extra={
+            "category": "ocpp_defaults",
+            "impact": (
+                "Turn off if operator policy requires online-only "
+                "contract checks (accepts the risk that PnC sessions "
+                "fail during backend outages)."
             ),
             "secret": False,
             "stability": "tunable",

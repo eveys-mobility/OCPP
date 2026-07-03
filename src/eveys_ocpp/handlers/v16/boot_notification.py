@@ -387,6 +387,12 @@ def _post_boot_keys(cp: EveysChargePoint) -> list[tuple[str, str]]:
     def _i(field: str, default: int) -> str:
         return str(get_override(field, default))
 
+    # OCPP configuration values are always strings on the wire; bools
+    # are lowercased per the ISO 15118 / OCA convention chargers
+    # actually accept.
+    def _b(field: str, default: bool) -> str:
+        return "true" if bool(get_override(field, default)) else "false"
+
     return [
         (
             "MeterValueSampleInterval",
@@ -425,6 +431,21 @@ def _post_boot_keys(cp: EveysChargePoint) -> list[tuple[str, str]]:
             _i(
                 "ocpp_cfg_websocket_ping_interval_seconds",
                 settings.ocpp_cfg_websocket_ping_interval_seconds,
+            ),
+        ),
+        (
+            "ISO15118PnCEnabled",
+            _b("ocpp_cfg_iso15118_pnc_enabled", settings.ocpp_cfg_iso15118_pnc_enabled),
+        ),
+        (
+            "PlugandChargeMode",
+            _i("ocpp_cfg_plug_and_charge_mode", settings.ocpp_cfg_plug_and_charge_mode),
+        ),
+        (
+            "ContractValidationOffline",
+            _b(
+                "ocpp_cfg_contract_validation_offline",
+                settings.ocpp_cfg_contract_validation_offline,
             ),
         ),
     ]

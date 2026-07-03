@@ -505,14 +505,19 @@ async def test_meter_value_sample_interval_pushed_after_accepted_boot(
     assert type(first_request).__name__ == "ChangeConfiguration"
     assert first_request.key == "MeterValueSampleInterval"
     assert first_request.value == "15"
-    pushed_keys = {c.args[0].key for c in fake_cp.call.await_args_list}
-    assert "HeartbeatInterval" in pushed_keys
+    pushed = {c.args[0].key: c.args[0].value for c in fake_cp.call.await_args_list}
+    assert "HeartbeatInterval" in pushed
     # Measurand-list keys are NOT pushed by the post-boot burst —
     # they're charger-type-specific and BootNotification doesn't carry
     # a reliable AC/DC signal. Operators send them per-CP via the
     # ChangeConfiguration command endpoint.
-    assert "MeterValuesSampledData" not in pushed_keys
-    assert "StopTxnAlignedData" not in pushed_keys
+    assert "MeterValuesSampledData" not in pushed
+    assert "StopTxnAlignedData" not in pushed
+    # ISO 15118 PnC keys are pushed as strings on the wire; bools are
+    # lowercased per the OCA/ISO 15118 convention that chargers accept.
+    assert pushed["ISO15118PnCEnabled"] == "false"
+    assert pushed["PlugandChargeMode"] == "1"
+    assert pushed["ContractValidationOffline"] == "true"
 
 
 @pytest.mark.asyncio

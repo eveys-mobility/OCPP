@@ -271,7 +271,7 @@ _ALLOWLIST: dict[str, _AllowlistEntry] = {
         coerce=_coerce_bool,
         description="tx.stopped webhook delivery toggle." + _WEBHOOK_ENABLE_ASYMMETRY,
     ),
-    # ---- Post-boot ChangeConfiguration push (OCPP config page) ----
+    # ---- OCPP boot configs ----
     # Each key here is read fresh by `handlers.v16.boot_notification.
     # _post_boot_keys` on every boot, so an operator edit takes effect
     # on the next boot without restarting the gateway. AC/DC measurand
@@ -306,6 +306,28 @@ _ALLOWLIST: dict[str, _AllowlistEntry] = {
         name="ocpp_cfg_websocket_ping_interval_seconds",
         coerce=_coerce_int_in_range(5, 3600, "ocpp_cfg_websocket_ping_interval_seconds"),
         description="WebSocketPingInterval (seconds) pushed after boot.",
+    ),
+    "ocpp_cfg_iso15118_pnc_enabled": _AllowlistEntry(
+        name="ocpp_cfg_iso15118_pnc_enabled",
+        coerce=_coerce_bool,
+        description=(
+            "ISO15118PnCEnabled pushed after boot (ISO 15118 Plug-and-Charge master switch)."
+        ),
+    ),
+    "ocpp_cfg_plug_and_charge_mode": _AllowlistEntry(
+        name="ocpp_cfg_plug_and_charge_mode",
+        coerce=_coerce_int_in_range(0, 2, "ocpp_cfg_plug_and_charge_mode"),
+        description=(
+            "PlugandChargeMode pushed after boot: 0=EIM only, 1=EIM preferred, 2=PnC preferred."
+        ),
+    ),
+    "ocpp_cfg_contract_validation_offline": _AllowlistEntry(
+        name="ocpp_cfg_contract_validation_offline",
+        coerce=_coerce_bool,
+        description=(
+            "ContractValidationOffline pushed after boot "
+            "(trust cached ISO 15118 contract during backend outage)."
+        ),
     ),
 }
 
@@ -447,4 +469,7 @@ AllowlistName = Literal[
     "ocpp_cfg_transaction_message_attempts",
     "ocpp_cfg_transaction_message_retry_interval_seconds",
     "ocpp_cfg_websocket_ping_interval_seconds",
+    "ocpp_cfg_iso15118_pnc_enabled",
+    "ocpp_cfg_plug_and_charge_mode",
+    "ocpp_cfg_contract_validation_offline",
 ]
