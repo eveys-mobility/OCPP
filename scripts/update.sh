@@ -83,7 +83,11 @@ if [[ "${DO_PULL}" -eq 1 ]]; then
   if [[ -d "${REPO_ROOT}/.git" ]]; then
     info "git pull --ff-only in ${REPO_ROOT}"
     if ! (cd "${REPO_ROOT}" && git pull --ff-only); then
-      warn "git pull failed — continuing with the working tree as-is"
+      # Aborting before touching Docker keeps the running stack on the
+      # previous image + schema — a half-updated tree must never ship.
+      # `--no-pull` is the escape when the operator has already pulled
+      # by hand and just wants the rebuild leg.
+      fail "git pull failed — aborting update. Fix the pull first (resolve the merge conflict, commit or stash local changes, check the remote / network) and re-run \`make update\`; pass \`NO_PULL=1\` (or \`--no-pull\`) to skip the pull entirely."
     fi
   fi
 fi
