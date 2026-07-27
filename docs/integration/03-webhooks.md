@@ -41,7 +41,7 @@ EVEYS_OCPP_WEBHOOK_ENABLE_TX_STARTED=1
 ## Delivery semantics
 
 - **At-least-once.** A delivery may be retried; the backend MUST be idempotent on `X-Eveys-Event-Id`.
-- **Retries (in-loop)**: 5 attempts with exponential backoff: 1 s, 5 s, 30 s, 2 min, 10 min. After 5 failures the envelope is enqueued into the durable backlog (see below) rather than dropped.
+- **Retries (in-loop)**: 5 attempts with exponential backoff: 1 s, 5 s, 15 s, 30 s, 60 s. After 5 failures the envelope is enqueued into the durable backlog (see below) rather than dropped.
 - **Durable backlog (tail)**: any envelope the dispatcher couldn't deliver in-loop is persisted into the `webhook_delivery_backlog` Postgres table. A background drainer keeps retrying on a coarser cadence (5 min, 15 min, 30 min, 1 h, 2 h, 4 h, 6 h, then held at 6 h) until either the row delivers or ages past the retention window (`EVEYS_OCPP_WEBHOOK_BACKLOG_RETENTION_HOURS`, default 7 days). Retention aging is the only path to `dead=true`; the `eveys_ocpp_webhook_backlog_deadletter_total` counter fires — alert on any non-zero increment.
 - **Per-charger ordering not guaranteed.** Two events from the same charger may arrive out of order. The backend should use `occurred_at` for ordering, not arrival time. Same caveat as Kafka — `cp_id` is the partition key on Kafka, but webhooks are unordered.
 - **HTTP status interpretation**:

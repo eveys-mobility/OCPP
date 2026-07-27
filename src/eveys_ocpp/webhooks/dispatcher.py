@@ -46,7 +46,7 @@ log = get_logger(__name__)
 # Backoff schedule per docs/integration/03-webhooks.md § Delivery
 # semantics. Indexed by attempt number (0 = first attempt; we sleep
 # this many seconds BEFORE the (n+1)th attempt).
-_BACKOFF_SECONDS: tuple[float, ...] = (1.0, 5.0, 30.0, 120.0, 600.0)
+_BACKOFF_SECONDS: tuple[float, ...] = (1.0, 5.0, 15.0, 30.0, 60.0)
 
 
 class WebhookDispatcher:
