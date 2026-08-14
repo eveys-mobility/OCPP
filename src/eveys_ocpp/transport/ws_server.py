@@ -533,6 +533,17 @@ async def serve_forever(
             )
         return None
 
+    # Explicit server-side keepalive. The `websockets` defaults are
+    # ping_interval=20, ping_timeout=20, close_timeout=10; on a
+    # high-latency cellular link the pong for the t=20 s ping lands
+    # after the t=40 s deadline and the library closes the socket with
+    # "keepalive ping timeout". Production saw five chargers stuck in a
+    # 40.01 s / 60.01 s connect-drop-reconnect loop at ~185 reconnects
+    # an hour. `0` in either ping setting means "off" -> None, the
+    # escape hatch for firmware that never answers ping frames at all.
+    ping_interval = settings.ws_keepalive_ping_interval_seconds or None
+    ping_timeout = settings.ws_keepalive_ping_timeout_seconds or None
+
     async with serve(
         handler,
         host=settings.ws_host,
@@ -540,12 +551,21 @@ async def serve_forever(
         subprotocols=[OCPP_SUBPROTOCOL],
         ssl=ssl_ctx,
         process_request=_process_request,
+        ping_interval=ping_interval,
+        ping_timeout=ping_timeout,
+        close_timeout=settings.ws_keepalive_close_timeout_seconds,
     ) as server:
+        # The keepalive values are logged so the effective config is
+        # greppable at boot — the fastest way to confirm a deploy
+        # actually shipped the intended values.
         log.info(
             "ws.listening",
             host=settings.ws_host,
             port=settings.ws_port,
             mtls=ssl_ctx is not None,
             basic_auth_required=settings.ws_basic_auth_required,
+            ping_interval=ping_interval,
+            ping_timeout=ping_timeout,
+            close_timeout=settings.ws_keepalive_close_timeout_seconds,
         )
         await server.serve_forever()

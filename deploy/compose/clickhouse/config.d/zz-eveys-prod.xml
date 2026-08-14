@@ -1,0 +1,38 @@
+<clickhouse>
+    <!-- Prod logging + merge policy.  eveys-mobility/OCPP incident 2026-08-14.
+
+         The stock image ships <level>trace</level> for BOTH the file logger and
+         system.text_log, and puts no TTL on any system log table.  Left alone for
+         42 days that grew system.text_log to 517M rows / 26.4 GiB - system logs
+         were 30.7 of the 44 GiB used on /, against ~700 MiB of actual business
+         data.  Merging parts that big blew the container's 3.6 GiB limit, so the
+         merges were OOM-killed and retried forever: 1103 MergeTreeBackgroundExecutor
+         errors in 5 minutes, all 4 cores pinned, zero forward progress.
+         Everything below exists to keep that from recurring. -->
+    <logger>
+        <level>warning</level>
+    </logger>
+
+    <!-- Pure server-internal debug output; nothing here queries it.  It was the
+         single biggest offender, so it is disabled outright rather than bounded. -->
+    <text_log remove="1"/>
+
+    <!-- Per-processor profiling, ~1 GiB and never read.  Same treatment. -->
+    <processors_profile_log remove="1"/>
+
+    <!-- The rest stay - they are genuinely useful for diagnosing ingestion - but
+         bounded so they can never again outgrow the data they describe. -->
+    <query_log><ttl>event_date + INTERVAL 3 DAY DELETE</ttl></query_log>
+    <query_metric_log><ttl>event_date + INTERVAL 3 DAY DELETE</ttl></query_metric_log>
+    <metric_log><ttl>event_date + INTERVAL 3 DAY DELETE</ttl></metric_log>
+    <asynchronous_metric_log><ttl>event_date + INTERVAL 3 DAY DELETE</ttl></asynchronous_metric_log>
+    <part_log><ttl>event_date + INTERVAL 3 DAY DELETE</ttl></part_log>
+    <trace_log><ttl>event_date + INTERVAL 3 DAY DELETE</ttl></trace_log>
+    <error_log><ttl>event_date + INTERVAL 3 DAY DELETE</ttl></error_log>
+
+    <!-- 4 vCPU box shared with postgres, kafka, redis, the OCPP gateway and two
+         node apps.  The default of 16 lets background merges alone oversubscribe
+         every core and starve the gateway, which is what surfaced as user-visible
+         latency.  8 still drains the merge queue comfortably at this data volume. -->
+    <background_pool_size>8</background_pool_size>
+</clickhouse>

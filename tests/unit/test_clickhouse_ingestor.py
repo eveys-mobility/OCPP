@@ -496,6 +496,23 @@ async def test_flush_batch_no_op_on_empty_input() -> None:
 
 
 # ---- ingest_loop: poll → process → flush → commit -----------------------
+#
+# WRITING FAKES FOR THIS LOOP
+#
+# `ingest_loop` accumulates rows across polls; its inner batch loop
+# exits on exactly three things: `batch_size` rows collected,
+# `ingestor._shutdown` set, or the monotonic deadline passing. A fake
+# `getmany` that returns `{}` forever without setting `_shutdown` will
+# therefore spin against the *real* clock for
+# `clickhouse_ingestor_batch_max_seconds` per outer iteration and then
+# loop forever. Every fake must do one of:
+#
+#   (a) set `ingestor._shutdown` after N polls,
+#   (b) raise,
+#   (c) return enough rows to reach `batch_size` — set
+#       `clickhouse_ingestor_batch_size=1` when a test wants
+#       one-flush-per-poll semantics, or
+#   (d) drive a fake clock by assigning `ingestor._now`.
 
 
 @pytest.mark.asyncio
@@ -699,7 +716,15 @@ async def test_ingest_loop_raises_fatal_after_n_consecutive_flush_failures(
     (wrong CH host, missing schema) loops silently forever — see #24."""
     from eveys_ocpp.clickhouse.ingestor import IngestorFatalError, _Row
 
-    settings = Settings(clickhouse_ingestor_max_flush_failures=3)
+    # `batch_size=1` makes the accumulation loop close after a single
+    # record, so one poll == one flush and the counter advances per
+    # poll. At the default 500 the loop would keep polling to fill a
+    # batch before each failed flush — same outcome, but it would take
+    # 500x the polls to get there and obscure what's being tested.
+    settings = Settings(
+        clickhouse_ingestor_max_flush_failures=3,
+        clickhouse_ingestor_batch_size=1,
+    )
     ingestor = ClickHouseIngestor(settings)
 
     env = events_pb2.EventEnvelope(
@@ -746,7 +771,15 @@ async def test_ingest_loop_resets_failure_counter_on_successful_flush(
 
     # Limit set to 3 — fail twice (resetting once), then keep going.
     # If reset didn't happen, two more failures would tip us over.
-    settings = Settings(clickhouse_ingestor_max_flush_failures=3)
+    #
+    # `batch_size=1` is what keeps this one-flush-per-poll. The loop
+    # accumulates rows across polls, so at the default 500 all five
+    # records would coalesce into a *single* flush and the flaky
+    # fail/succeed/fail sequence below would never run.
+    settings = Settings(
+        clickhouse_ingestor_max_flush_failures=3,
+        clickhouse_ingestor_batch_size=1,
+    )
     ingestor = ClickHouseIngestor(settings)
 
     env = events_pb2.EventEnvelope(
@@ -794,3 +827,242 @@ async def test_ingest_loop_resets_failure_counter_on_successful_flush(
     # Sanity: we exercised the path we claimed to.
     assert flush_calls["n"] == 5
     assert ingestor._consecutive_flush_failures == 2
+
+
+# ---- ingest_loop: accumulate-across-polls batching -----------------------
+#
+# The regression these cover: `getmany(timeout_ms=…)` bounds only the
+# wait for the FIRST record — it is not a linger. The old loop issued
+# one `getmany` per batch, so under a steady trickle every poll returned
+# a single message and we wrote one row per INSERT. In ClickHouse one
+# INSERT is one part, so ~1.5 events/sec produced thousands of
+# single-row parts an hour for the merge scheduler to clean up.
+
+
+def _boot_record(event_id: str) -> SimpleNamespace:
+    """A minimal `cp.boot` Kafka record that decodes to one `_Row`."""
+    env = events_pb2.EventEnvelope(
+        event_id=event_id,
+        occurred_at="2026-05-04T00:00:00.000+00:00",
+        cp_id="CP_TEST",
+        cp_boot=events_pb2.CpBoot(vendor="ACME"),
+    )
+    return SimpleNamespace(value=env.SerializeToString(), topic="cp.boot", offset=0)
+
+
+@pytest.mark.asyncio
+async def test_ingest_loop_accumulates_rows_across_polls_into_one_flush() -> None:
+    """Three trickled records must produce ONE INSERT, not three.
+
+    This is the whole point of the change. Before it, each of these
+    polls flushed independently and ClickHouse got three parts.
+    """
+    from eveys_ocpp.clickhouse.ingestor import _Row
+
+    settings = Settings(clickhouse_ingestor_batch_size=3)
+    ingestor = ClickHouseIngestor(settings)
+    # Pin the clock so the deadline can never fire — the batch must
+    # close because it filled up, not because time passed.
+    ingestor._now = lambda: 0.0  # type: ignore[method-assign]
+
+    poll_count = {"n": 0}
+
+    async def fake_getmany(timeout_ms: int, max_records: int) -> dict[object, list[object]]:
+        poll_count["n"] += 1
+        if poll_count["n"] > 3:
+            ingestor._shutdown.set()
+            return {}
+        return {"part-0": [_boot_record(f"evt-{poll_count['n']}")]}
+
+    fake_consumer = AsyncMock()
+    fake_consumer.getmany = fake_getmany
+    fake_consumer.commit = AsyncMock()
+    ingestor._consumer = fake_consumer
+
+    flushes: list[list[_Row]] = []
+
+    async def capture_flush(rows: list[_Row]) -> None:
+        flushes.append(list(rows))
+
+    ingestor._flush_batch = capture_flush  # type: ignore[method-assign]
+
+    await ingestor.ingest_loop()
+
+    assert len(flushes) == 1, "3 trickled records must coalesce into 1 INSERT"
+    assert len(flushes[0]) == 3
+    assert fake_consumer.commit.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_ingest_loop_flushes_partial_batch_when_deadline_expires() -> None:
+    """A trickle can't be held hostage waiting for a full batch.
+
+    With `batch_size=500` and only 2 records available, the
+    `batch_max_seconds` deadline is what closes the window.
+    """
+    from eveys_ocpp.clickhouse.ingestor import _Row
+
+    settings = Settings(
+        clickhouse_ingestor_batch_size=500,
+        clickhouse_ingestor_batch_max_seconds=5.0,
+    )
+    ingestor = ClickHouseIngestor(settings)
+
+    # Fake clock: each poll burns 3s, so the 5s deadline expires after
+    # the second one. No real sleeping.
+    clock = {"t": 0.0}
+    ingestor._now = lambda: clock["t"]  # type: ignore[method-assign]
+
+    poll_count = {"n": 0}
+
+    async def fake_getmany(timeout_ms: int, max_records: int) -> dict[object, list[object]]:
+        poll_count["n"] += 1
+        if poll_count["n"] > 2:
+            ingestor._shutdown.set()
+            return {}
+        clock["t"] += 3.0
+        return {"part-0": [_boot_record(f"evt-{poll_count['n']}")]}
+
+    fake_consumer = AsyncMock()
+    fake_consumer.getmany = fake_getmany
+    fake_consumer.commit = AsyncMock()
+    ingestor._consumer = fake_consumer
+
+    flushes: list[list[_Row]] = []
+
+    async def capture_flush(rows: list[_Row]) -> None:
+        flushes.append(list(rows))
+
+    ingestor._flush_batch = capture_flush  # type: ignore[method-assign]
+
+    await ingestor.ingest_loop()
+
+    assert len(flushes) == 1
+    assert len(flushes[0]) == 2, "deadline must close the window on a partial batch"
+
+
+@pytest.mark.asyncio
+async def test_ingest_loop_shrinks_poll_timeout_toward_the_deadline() -> None:
+    """Each poll may only wait for what's left of the batch window.
+
+    Without this the window would stretch by `batch_max_seconds` on
+    every poll and a slow trickle would never flush.
+    """
+    settings = Settings(
+        clickhouse_ingestor_batch_size=500,
+        clickhouse_ingestor_batch_max_seconds=5.0,
+    )
+    ingestor = ClickHouseIngestor(settings)
+
+    clock = {"t": 0.0}
+    ingestor._now = lambda: clock["t"]  # type: ignore[method-assign]
+
+    timeouts: list[int] = []
+    poll_count = {"n": 0}
+
+    async def fake_getmany(timeout_ms: int, max_records: int) -> dict[object, list[object]]:
+        timeouts.append(timeout_ms)
+        poll_count["n"] += 1
+        if poll_count["n"] > 2:
+            ingestor._shutdown.set()
+            return {}
+        clock["t"] += 3.0
+        return {"part-0": [_boot_record(f"evt-{poll_count['n']}")]}
+
+    fake_consumer = AsyncMock()
+    fake_consumer.getmany = fake_getmany
+    fake_consumer.commit = AsyncMock()
+    ingestor._consumer = fake_consumer
+
+    async def noop_flush(rows: object) -> None:
+        return None
+
+    ingestor._flush_batch = noop_flush  # type: ignore[method-assign]
+
+    await ingestor.ingest_loop()
+
+    # Deadline is t=5. First poll at t=0 may wait the full 5s; the
+    # second, at t=3, may only wait the remaining 2s.
+    assert timeouts[0] == 5000
+    assert timeouts[1] == 2000
+    assert all(t >= 1 for t in timeouts), "timeout_ms=0 would hot-spin"
+
+
+@pytest.mark.asyncio
+async def test_ingest_loop_flushes_partial_batch_before_shutdown() -> None:
+    """SIGTERM mid-window must not strand already-collected rows.
+
+    Shutdown breaks the accumulation loop rather than discarding it, so
+    the partial batch is flushed AND committed on the way out.
+    """
+    from eveys_ocpp.clickhouse.ingestor import _Row
+
+    settings = Settings(clickhouse_ingestor_batch_size=500)
+    ingestor = ClickHouseIngestor(settings)
+    ingestor._now = lambda: 0.0  # type: ignore[method-assign]
+
+    poll_count = {"n": 0}
+    call_order: list[str] = []
+
+    async def fake_getmany(timeout_ms: int, max_records: int) -> dict[object, list[object]]:
+        poll_count["n"] += 1
+        if poll_count["n"] > 2:
+            ingestor._shutdown.set()
+            return {}
+        return {"part-0": [_boot_record(f"evt-{poll_count['n']}")]}
+
+    async def tracking_commit() -> None:
+        call_order.append("commit")
+
+    fake_consumer = AsyncMock()
+    fake_consumer.getmany = fake_getmany
+    fake_consumer.commit = tracking_commit
+    ingestor._consumer = fake_consumer
+
+    flushes: list[list[_Row]] = []
+
+    async def capture_flush(rows: list[_Row]) -> None:
+        call_order.append("flush")
+        flushes.append(list(rows))
+
+    ingestor._flush_batch = capture_flush  # type: ignore[method-assign]
+
+    await ingestor.ingest_loop()
+
+    assert len(flushes) == 1
+    assert len(flushes[0]) == 2
+    assert call_order == ["flush", "commit"]
+
+
+@pytest.mark.asyncio
+async def test_ingest_loop_caps_max_records_at_remaining_capacity() -> None:
+    """`max_records` must shrink as the batch fills, or a burst overshoots."""
+    settings = Settings(clickhouse_ingestor_batch_size=5)
+    ingestor = ClickHouseIngestor(settings)
+    ingestor._now = lambda: 0.0  # type: ignore[method-assign]
+
+    max_records_seen: list[int] = []
+    poll_count = {"n": 0}
+
+    async def fake_getmany(timeout_ms: int, max_records: int) -> dict[object, list[object]]:
+        max_records_seen.append(max_records)
+        poll_count["n"] += 1
+        if poll_count["n"] == 1:
+            return {"part-0": [_boot_record(f"evt-{i}") for i in range(3)]}
+        ingestor._shutdown.set()
+        return {}
+
+    fake_consumer = AsyncMock()
+    fake_consumer.getmany = fake_getmany
+    fake_consumer.commit = AsyncMock()
+    ingestor._consumer = fake_consumer
+
+    async def noop_flush(rows: object) -> None:
+        return None
+
+    ingestor._flush_batch = noop_flush  # type: ignore[method-assign]
+
+    await ingestor.ingest_loop()
+
+    assert max_records_seen[0] == 5
+    assert max_records_seen[1] == 2, "3 of 5 collected leaves room for 2"

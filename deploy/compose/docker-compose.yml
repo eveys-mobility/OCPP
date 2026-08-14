@@ -91,11 +91,14 @@ services:
     # restarts but are wiped by `make compose-down-volumes`. Restoring them
     # from a fresh start is fine for local development.
     healthcheck:
-      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 || exit 1"]
+      # `kafka-broker-api-versions.sh` spawns a JVM per probe, which times
+      # out on a loaded 4-vCPU host and flaps the container unhealthy.
+      # `kafka-topics.sh --list` is the cheaper liveness signal.
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1 || exit 1"]
       interval: 10s
-      timeout: 5s
+      timeout: 20s
       retries: 12
-      start_period: 30s
+      start_period: 60s
 
   clickhouse:
     # Use the Ubuntu-based image, not :24-alpine — the alpine variant hits
@@ -130,6 +133,15 @@ services:
           memory: 4G
     volumes:
       - clickhouse_data:/var/lib/clickhouse
+      # Mounted as individual FILES, not as the directories. Bind-mounting
+      # `config.d/` or `users.d/` wholesale would shadow what the image
+      # already puts there — `config.d/docker_related_config.xml` (listen
+      # host, console logging) and the `users.d/default-user.xml` the
+      # entrypoint generates from CLICKHOUSE_USER/CLICKHOUSE_PASSWORD —
+      # and the server would come up unreachable. The `zz-` prefix keeps
+      # them last in lexical merge order so they win.
+      - ./clickhouse/config.d/zz-eveys-prod.xml:/etc/clickhouse-server/config.d/zz-eveys-prod.xml:ro
+      - ./clickhouse/users.d/zz-eveys-async-insert.xml:/etc/clickhouse-server/users.d/zz-eveys-async-insert.xml:ro
     healthcheck:
       # BusyBox wget in the alpine image doesn't accept GNU-style flags;
       # use the bare `-q -O -` form which works in both BusyBox and GNU wget.
@@ -235,6 +247,14 @@ services:
     environment:
       EVEYS_OCPP_DB_URL: postgresql+asyncpg://eveys:eveys@postgres:5432/eveys_ocpp
       EVEYS_OCPP_REDIS_URL: redis://redis:6379/0
+      # Server-side WebSocket keepalive. NOT the OCPP `WebSocketPingInterval`
+      # key pushed to the charger — that one is
+      # EVEYS_OCPP_OCPP_CFG_WEBSOCKET_PING_INTERVAL_SECONDS. The library
+      # defaults (20s/20s) disconnect chargers on high-latency cellular
+      # every 40-60s; override here without a rebuild if a fleet needs
+      # more slack, or set the interval to 0 to disable server pings.
+      EVEYS_OCPP_WS_KEEPALIVE_PING_INTERVAL_SECONDS: ${EVEYS_OCPP_WS_KEEPALIVE_PING_INTERVAL_SECONDS:-30}
+      EVEYS_OCPP_WS_KEEPALIVE_PING_TIMEOUT_SECONDS: ${EVEYS_OCPP_WS_KEEPALIVE_PING_TIMEOUT_SECONDS:-90}
       # Use the INTERNAL listener — see the `kafka` service for why both
       # exist. `localhost:9092` (the default in `Settings`) only works
       # for processes running on the host, not for sibling containers.

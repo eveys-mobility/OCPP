@@ -64,6 +64,95 @@ class Settings(BaseSettings):
         },
     )
 
+    # ---- WS server keepalive (server-side RFC 6455 ping/pong) -----------
+    #
+    # NOT to be confused with `ocpp_cfg_websocket_ping_interval_seconds`
+    # (category `ocpp_defaults`, further down this file). That one is the
+    # OCPP configuration key `WebSocketPingInterval` we PUSH TO the
+    # charger after boot — it governs how often the *charger* pings *us*.
+    # The three fields below are handed to
+    # `websockets.asyncio.server.serve()` in `transport/ws_server.py` and
+    # govern how often *we* ping the *charger* and how long we wait for
+    # its pong before killing the socket.
+    #
+    # The library defaults (20 s interval / 20 s timeout) are far too
+    # aggressive for chargers on high-latency cellular links: the pong
+    # for the t=20 s ping arrived after the t=40 s deadline, so healthy
+    # sessions were closed with "keepalive ping timeout" at exactly
+    # 40.01 s / 60.01 s. In production that put five chargers into a
+    # permanent reconnect loop (~185 reconnects/hour, each dragging a
+    # 9-key post-boot ChangeConfiguration push behind it) and left them
+    # offline roughly 40 % of the time.
+    ws_keepalive_ping_interval_seconds: int = Field(
+        default=30,
+        ge=0,
+        le=3600,
+        description=(
+            "How often the *gateway* sends a WebSocket ping frame to each "
+            "connected charger (`websockets` `ping_interval`). `0` disables "
+            "server-initiated keepalive entirely, leaving liveness detection "
+            "to TCP and to the charger's own pings. Distinct from "
+            "`ocpp_cfg_websocket_ping_interval_seconds`, which is the OCPP "
+            "`WebSocketPingInterval` key pushed TO the charger."
+        ),
+        json_schema_extra={
+            "category": "ws_server",
+            "impact": (
+                "Read once when the listener is created; restart the gateway "
+                "to apply. The library default (20 s) paired with a 20 s pong "
+                "deadline killed chargers on high-latency cellular at exactly "
+                "40 s. 30 s keeps NAT / load-balancer idle timers warm without "
+                "flooding constrained links."
+            ),
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+    ws_keepalive_ping_timeout_seconds: int = Field(
+        default=90,
+        ge=0,
+        le=3600,
+        description=(
+            "How long the gateway waits for a charger's pong before closing "
+            "the connection with `keepalive ping timeout` (`websockets` "
+            "`ping_timeout`). `0` disables the deadline: pings are still "
+            "sent, but a missing pong never closes the socket."
+        ),
+        json_schema_extra={
+            "category": "ws_server",
+            "impact": (
+                "Worst-case dead-peer detection is roughly `ping_interval + "
+                "ping_timeout`. The library default (20 s) is below the round "
+                "trip a congested cellular charger needs, so healthy sessions "
+                "were being closed. 90 s tolerates ~3 lost pings; lower it "
+                "only for fleets on stable wired links."
+            ),
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+    ws_keepalive_close_timeout_seconds: int = Field(
+        default=10,
+        ge=1,
+        le=300,
+        description=(
+            "How long the gateway waits for the WebSocket closing handshake "
+            "to complete before dropping the TCP connection (`websockets` "
+            "`close_timeout`)."
+        ),
+        json_schema_extra={
+            "category": "ws_server",
+            "impact": (
+                "Only affects how long a dying connection lingers in "
+                "`ws_connections_active`. Raising it holds sockets and the "
+                "per-connection task longer on a lossy link; lowering it "
+                "reclaims them faster at the cost of a less graceful close."
+            ),
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+
     # ---- gRPC server ----------------------------------------------------
     grpc_host: str = Field(
         default="0.0.0.0",
@@ -994,7 +1083,9 @@ class Settings(BaseSettings):
         description=(
             "OCPP `WebSocketPingInterval` — how often the charger sends a "
             "WebSocket ping frame to keep the connection warm through "
-            "NAT / load-balancer idle timeouts."
+            "NAT / load-balancer idle timeouts. This is pushed TO the "
+            "charger after boot; it does not affect the gateway's own "
+            "keepalive, which is `ws_keepalive_ping_interval_seconds`."
         ),
         json_schema_extra={
             "category": "ocpp_defaults",

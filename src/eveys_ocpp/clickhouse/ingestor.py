@@ -398,76 +398,117 @@ class ClickHouseIngestor:
             )
             return None
 
+    def _now(self) -> float:
+        """Monotonic clock backing the batch deadline.
+
+        A method rather than a direct `loop.time()` call so tests can
+        drive the linger window without sleeping on the wall clock.
+        """
+        return asyncio.get_running_loop().time()
+
     async def ingest_loop(self) -> None:
-        """Main loop: poll, batch, INSERT, commit. Runs until
-        ``stop()`` is called or the consumer raises a non-recoverable
-        error."""
+        """Main loop: accumulate, INSERT, commit. Runs until ``stop()``
+        is called or the consumer raises a non-recoverable error.
+
+        Rows are accumulated ACROSS polls until `batch_size` rows or the
+        `batch_max_seconds` deadline, whichever comes first.
+
+        A single `getmany` does not implement that policy. Its
+        `timeout_ms` bounds only the wait for the *first* record — it is
+        not a linger, so the call returns as soon as anything is
+        buffered. Under a steady trickle every poll came back with one
+        message and we wrote one row per INSERT; in ClickHouse one
+        INSERT is one part, so a ~1.5 events/sec stream produced
+        thousands of single-row parts an hour and left the merge
+        scheduler doing all the work.
+
+        Invariants preserved from the original loop: flush precedes
+        commit; a failed flush skips the commit so the next poll
+        re-delivers (at-least-once); `max_flush_failures` consecutive
+        failures raise `IngestorFatalError`; the counter resets on any
+        successful flush.
+        """
         assert self._consumer is not None  # narrowed by start()
 
         batch_size = self._settings.clickhouse_ingestor_batch_size
         batch_seconds = self._settings.clickhouse_ingestor_batch_max_seconds
 
         while not self._shutdown.is_set():
-            # `getmany` returns up to `max_records` messages or waits
-            # `timeout_ms` for at least one. Both bounds together
-            # implement the "500 rows OR 5 s" batch policy.
-            try:
-                records = await self._consumer.getmany(
-                    timeout_ms=int(batch_seconds * 1000),
-                    max_records=batch_size,
-                )
-            except Exception as exc:
-                log.exception("clickhouse.ingestor.poll_failed", error=str(exc))
-                await asyncio.sleep(1.0)
-                continue
-
             rows: list[_Row] = []
-            for _topic_partition, partition_records in records.items():
-                for record in partition_records:
-                    row = await self._process_record(record)
-                    if row is not None:
-                        rows.append(row)
+            deadline = self._now() + batch_seconds
+            poll_failed = False
 
-            if not rows:
-                continue  # poll timed out with nothing — go back to waiting
+            # ---- accumulate until full, out of time, or shutting down
+            while not self._shutdown.is_set() and len(rows) < batch_size:
+                remaining = deadline - self._now()
+                if remaining <= 0:
+                    break
+                try:
+                    records = await self._consumer.getmany(
+                        # Never block past the batch deadline. `max(1, …)`
+                        # because `timeout_ms=0` is a non-blocking poll,
+                        # which would hot-spin the last millisecond away.
+                        timeout_ms=max(1, int(remaining * 1000)),
+                        max_records=batch_size - len(rows),
+                    )
+                except Exception as exc:
+                    log.exception("clickhouse.ingestor.poll_failed", error=str(exc))
+                    poll_failed = True
+                    break
 
-            try:
-                await self._flush_batch(rows)
-            except Exception as exc:
-                # ClickHouse INSERT failed. Don't commit offsets — the
-                # next poll re-delivers. Backoff briefly to avoid a hot
-                # loop against a misbehaving broker/CH.
-                self._consecutive_flush_failures += 1
-                limit = self._settings.clickhouse_ingestor_max_flush_failures
-                log.exception(
-                    "clickhouse.ingestor.flush_failed",
-                    error=str(exc),
-                    consecutive_failures=self._consecutive_flush_failures,
-                    max_failures=limit,
-                )
-                if self._consecutive_flush_failures >= limit:
-                    # We've been failing in a row for `limit` polls.
-                    # Most likely the schema is missing / wrong, or
-                    # we're pointed at the wrong CH instance — neither
-                    # heals on its own. Bail so the supervisor restarts
-                    # and the misconfiguration surfaces.
-                    raise IngestorFatalError(
-                        f"flush failed {self._consecutive_flush_failures} "
-                        f"times in a row (limit {limit}); aborting"
-                    ) from exc
+                for _topic_partition, partition_records in records.items():
+                    for record in partition_records:
+                        row = await self._process_record(record)
+                        if row is not None:
+                            rows.append(row)
+
+            # ---- flush, then (only then) commit ---------------------
+            #
+            # Shutdown breaks the inner loop rather than discarding
+            # what it collected, so a partial batch is still flushed
+            # and committed on the way out.
+            if rows:
+                try:
+                    await self._flush_batch(rows)
+                except Exception as exc:
+                    # ClickHouse INSERT failed. Don't commit offsets —
+                    # the next poll re-delivers. Backoff briefly to
+                    # avoid a hot loop against a misbehaving broker/CH.
+                    self._consecutive_flush_failures += 1
+                    limit = self._settings.clickhouse_ingestor_max_flush_failures
+                    log.exception(
+                        "clickhouse.ingestor.flush_failed",
+                        error=str(exc),
+                        consecutive_failures=self._consecutive_flush_failures,
+                        max_failures=limit,
+                    )
+                    if self._consecutive_flush_failures >= limit:
+                        # We've been failing in a row for `limit`
+                        # batches. Most likely the schema is missing /
+                        # wrong, or we're pointed at the wrong CH
+                        # instance — neither heals on its own. Bail so
+                        # the supervisor restarts and the
+                        # misconfiguration surfaces.
+                        raise IngestorFatalError(
+                            f"flush failed {self._consecutive_flush_failures} "
+                            f"times in a row (limit {limit}); aborting"
+                        ) from exc
+                    await asyncio.sleep(1.0)
+                    continue
+
+                # The batch landed — flush failures don't count once we
+                # see green. The counter only catches sustained failure,
+                # not the occasional transient hiccup.
+                self._consecutive_flush_failures = 0
+
+                # Commit only after the batch landed successfully.
+                try:
+                    await self._consumer.commit()
+                except Exception as exc:
+                    log.exception("clickhouse.ingestor.commit_failed", error=str(exc))
+
+            if poll_failed:
                 await asyncio.sleep(1.0)
-                continue
-
-            # The batch landed — flush failures don't count once we
-            # see green. The counter only catches sustained failure,
-            # not the occasional transient hiccup.
-            self._consecutive_flush_failures = 0
-
-            # Commit only after the batch landed successfully.
-            try:
-                await self._consumer.commit()
-            except Exception as exc:
-                log.exception("clickhouse.ingestor.commit_failed", error=str(exc))
 
 
 async def _run() -> None:

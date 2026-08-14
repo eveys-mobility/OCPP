@@ -673,6 +673,23 @@ Almost always a subprotocol mismatch. The gateway requires the WS subprotocol he
 
 In the logs, look for `ws.connected` immediately followed by `ws.disconnected` with `close_code=1002`.
 
+### Charger reconnects every 40–60 seconds
+
+The tell is a session length that is *suspiciously exact*. Pair each `ws.connected` with the following `ws.disconnected` for the same `cp_id`: if the durations cluster at almost precisely 40 s or 60 s (and not, say, 43 s or 71 s), the gateway is closing the connection itself, not the charger or the network.
+
+Look for `keepalive ping timeout` and `connection handler failed` in the gateway logs, roughly one per disconnect.
+
+The gateway pings each charger every `EVEYS_OCPP_WS_KEEPALIVE_PING_INTERVAL_SECONDS` (default 30) and closes the socket if no pong arrives within `EVEYS_OCPP_WS_KEEPALIVE_PING_TIMEOUT_SECONDS` (default 90). Chargers on congested cellular links can miss a tight deadline even though the connection is perfectly healthy — with the `websockets` library defaults of 20 s / 20 s, the pong for the t=20 s ping lands after the t=40 s deadline and the session dies on a 40 s / 60 s cadence.
+
+Fixes, in order:
+
+1. Raise `EVEYS_OCPP_WS_KEEPALIVE_PING_TIMEOUT_SECONDS` (e.g. to 180) for fleets on especially poor links.
+2. If the disconnects merely move to a later fixed interval, the firmware likely does not answer RFC 6455 ping frames *at all*. Set `EVEYS_OCPP_WS_KEEPALIVE_PING_INTERVAL_SECONDS=0` to disable server-initiated keepalive entirely; liveness then rests on TCP plus the charger's own pings and the OCPP heartbeat.
+
+These two are **server-side**. The separate `EVEYS_OCPP_OCPP_CFG_WEBSOCKET_PING_INTERVAL_SECONDS` is the OCPP `WebSocketPingInterval` key the gateway pushes *to* the charger, and changing it will not stop a server-side keepalive timeout.
+
+Note that each reconnect replays the whole post-boot `ChangeConfiguration` push, so a flapping charger also shows a high `cp_boot` rate and inflated event volume downstream — the churn can look like an ingestion problem when the cause is the socket.
+
 ### Authorize always returns Invalid
 
 You're hitting the default fallback policy. Either:
