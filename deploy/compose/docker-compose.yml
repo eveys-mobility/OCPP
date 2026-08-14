@@ -254,7 +254,7 @@ services:
       # every 40-60s; override here without a rebuild if a fleet needs
       # more slack, or set the interval to 0 to disable server pings.
       EVEYS_OCPP_WS_KEEPALIVE_PING_INTERVAL_SECONDS: ${EVEYS_OCPP_WS_KEEPALIVE_PING_INTERVAL_SECONDS:-30}
-      EVEYS_OCPP_WS_KEEPALIVE_PING_TIMEOUT_SECONDS: ${EVEYS_OCPP_WS_KEEPALIVE_PING_TIMEOUT_SECONDS:-90}
+      EVEYS_OCPP_WS_KEEPALIVE_PING_TIMEOUT_SECONDS: ${EVEYS_OCPP_WS_KEEPALIVE_PING_TIMEOUT_SECONDS:-30}
       # Use the INTERNAL listener — see the `kafka` service for why both
       # exist. `localhost:9092` (the default in `Settings`) only works
       # for processes running on the host, not for sibling containers.

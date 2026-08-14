@@ -100,7 +100,7 @@ gateway:
     # `websockets` defaults of 20/20 drop chargers on high-latency
     # cellular links every 40-60s. `0` disables server-side pings.
     wsKeepalivePingIntervalSeconds: 30
-    wsKeepalivePingTimeoutSeconds: 90
+    wsKeepalivePingTimeoutSeconds: 30
 
   secrets:
     # Reference to an existing Secret with these keys:
