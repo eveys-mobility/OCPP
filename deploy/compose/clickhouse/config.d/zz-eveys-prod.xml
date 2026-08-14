@@ -30,9 +30,22 @@
     <trace_log><ttl>event_date + INTERVAL 3 DAY DELETE</ttl></trace_log>
     <error_log><ttl>event_date + INTERVAL 3 DAY DELETE</ttl></error_log>
 
-    <!-- 4 vCPU box shared with postgres, kafka, redis, the OCPP gateway and two
-         node apps.  The default of 16 lets background merges alone oversubscribe
-         every core and starve the gateway, which is what surfaced as user-visible
-         latency.  8 still drains the merge queue comfortably at this data volume. -->
-    <background_pool_size>8</background_pool_size>
+    <!-- NOTE: do NOT add <background_pool_size> here without also lowering the
+         MergeTree mutation-pool thresholds.  An earlier revision of this file set
+         it to 8 to keep merges from oversubscribing a 4 vCPU box, and ClickHouse
+         refused to start:
+
+           Code: 36. DB::Exception: The value of
+           'number_of_free_entries_in_pool_to_execute_mutation' setting (20) is
+           greater than the value of 'background_pool_size' *
+           'background_merges_mutations_concurrency_ratio' (16) ... mutations
+           cannot work with these settings. (BAD_ARGUMENTS)
+
+         8 * 2 = 16 < 20, so the sanity check fails and the server exits 36.
+         The default (16 * 2 = 32) clears it.
+
+         Leaving the pool at its default is also the right call on the merits:
+         merges here cost ~46 CPU-seconds per DAY.  The 2026-08-14 incident was
+         never merge concurrency - it was merging enormous system.text_log parts,
+         which the removals and TTLs above address at the source. -->
 </clickhouse>
