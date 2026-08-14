@@ -109,7 +109,7 @@ class Settings(BaseSettings):
         },
     )
     ws_keepalive_ping_timeout_seconds: int = Field(
-        default=90,
+        default=30,
         ge=0,
         le=3600,
         description=(
@@ -121,11 +121,14 @@ class Settings(BaseSettings):
         json_schema_extra={
             "category": "ws_server",
             "impact": (
-                "Worst-case dead-peer detection is roughly `ping_interval + "
-                "ping_timeout`. The library default (20 s) is below the round "
-                "trip a congested cellular charger needs, so healthy sessions "
-                "were being closed. 90 s tolerates ~3 lost pings; lower it "
-                "only for fleets on stable wired links."
+                "In practice this is how fast a socket the charger has already "
+                "abandoned gets reaped: worst-case detection is roughly "
+                "`ping_interval + ping_timeout`. Chargers that drop TCP without "
+                "a close frame reconnect on a fresh socket immediately (see the "
+                "`connections.replaced` log line), so a long timeout mostly "
+                "means more orphaned sockets held at once, not more resilience. "
+                "Raise it only if healthy chargers on slow links are being "
+                "closed mid-session."
             ),
             "secret": False,
             "stability": "tunable",
@@ -1166,6 +1169,57 @@ class Settings(BaseSettings):
                 "Turn off if operator policy requires online-only "
                 "contract checks (accepts the risk that PnC sessions "
                 "fail during backend outages)."
+            ),
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+
+    # ---- Post-boot ChangeConfiguration push: kill switch + trim ---------
+    #
+    # The push replays on EVERY reconnect. For a charger that is already
+    # reconnecting frequently, that means a burst of sequential CALLs
+    # every couple of minutes, which is a suspect whenever a specific
+    # vendor flaps and the rest of the fleet does not. These two knobs
+    # exist so that can be tested — and mitigated — without a deploy:
+    # both are runtime-overridable and take effect on the next boot.
+    ocpp_cfg_post_boot_push_enabled: bool = Field(
+        default=True,
+        description=(
+            "Master switch for the post-boot `ChangeConfiguration` push. "
+            "When False the gateway accepts the BootNotification and pushes "
+            "nothing, leaving the charger on its own stored configuration."
+        ),
+        json_schema_extra={
+            "category": "ocpp_defaults",
+            "impact": (
+                "Turning this off stops the gateway from converging chargers "
+                "onto the configured defaults — existing chargers keep "
+                "whatever they were last set to, and new ones arrive with "
+                "vendor defaults. The diagnostic use is to prove whether the "
+                "push itself is what a flapping charger cannot survive: "
+                "disable, watch the boot rate for that vendor, re-enable."
+            ),
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+    ocpp_cfg_post_boot_push_skip_keys: str = Field(
+        default="",
+        description=(
+            "Comma-separated OCPP configuration keys to omit from the "
+            "post-boot push, e.g. "
+            "`ISO15118PnCEnabled,PlugandChargeMode,ContractValidationOffline`. "
+            "Matched case-insensitively against the OCPP key name; unknown "
+            "names are ignored. Empty (the default) pushes every key."
+        ),
+        json_schema_extra={
+            "category": "ocpp_defaults",
+            "impact": (
+                "Finer-grained than the master switch: drops individual keys "
+                "while the rest still converge. Use it for keys a given "
+                "firmware answers `NotSupported` — they cost a round trip on "
+                "every reconnect and change nothing."
             ),
             "secret": False,
             "stability": "tunable",

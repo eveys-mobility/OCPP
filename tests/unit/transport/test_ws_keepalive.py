@@ -112,7 +112,7 @@ async def test_serve_forever_defaults_are_not_the_library_defaults(
     kwargs = await _capture_serve_kwargs(monkeypatch, Settings())
 
     assert kwargs["ping_interval"] == 30
-    assert kwargs["ping_timeout"] == 90
+    assert kwargs["ping_timeout"] == 30
     assert (kwargs["ping_interval"], kwargs["ping_timeout"]) != (20, 20)
 
 
