@@ -255,6 +255,11 @@ services:
       # more slack, or set the interval to 0 to disable server pings.
       EVEYS_OCPP_WS_KEEPALIVE_PING_INTERVAL_SECONDS: ${EVEYS_OCPP_WS_KEEPALIVE_PING_INTERVAL_SECONDS:-30}
       EVEYS_OCPP_WS_KEEPALIVE_PING_TIMEOUT_SECONDS: ${EVEYS_OCPP_WS_KEEPALIVE_PING_TIMEOUT_SECONDS:-30}
+      # Post-boot ChangeConfiguration push. Declared here (not just left to
+      # `.env`) because `--env-file` only feeds compose interpolation -- a
+      # variable that isn't named in this block never reaches the container.
+      EVEYS_OCPP_OCPP_CFG_POST_BOOT_PUSH_ENABLED: ${EVEYS_OCPP_OCPP_CFG_POST_BOOT_PUSH_ENABLED:-true}
+      EVEYS_OCPP_OCPP_CFG_POST_BOOT_PUSH_SKIP_KEYS: ${EVEYS_OCPP_OCPP_CFG_POST_BOOT_PUSH_SKIP_KEYS:-}
       # Use the INTERNAL listener — see the `kafka` service for why both
       # exist. `localhost:9092` (the default in `Settings`) only works
       # for processes running on the host, not for sibling containers.
