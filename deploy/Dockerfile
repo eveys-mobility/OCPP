@@ -8,7 +8,7 @@
 # - runtime stage: distroless Python 3.13. Image target < 200 MB (E0-5).
 
 # ---- codegen ----------------------------------------------------------------
-FROM python:3.13.14-slim AS codegen
+FROM python:3.13.15-slim AS codegen
 
 COPY --from=ghcr.io/astral-sh/uv:0.5 /uv /usr/local/bin/uv
 
@@ -38,7 +38,7 @@ RUN mkdir -p out/eveys_ocpp/_generated \
 # ---- builder ----------------------------------------------------------------
 # Installs runtime-only deps into /opt/venv. Generated code copied from
 # `codegen` so we never need grpcio-tools at runtime.
-FROM python:3.13.14-slim AS builder
+FROM python:3.13.15-slim AS builder
 
 COPY --from=ghcr.io/astral-sh/uv:0.5 /uv /usr/local/bin/uv
 
