@@ -2,4 +2,4 @@ sphinx>=9.1.0,<10
 myst-parser>=5.1.0
 furo>=2025.12.19
 sphinx-copybutton>=0.5.2
-linkify-it-py>=2.1.0
+linkify-it-py>=2.1.1
