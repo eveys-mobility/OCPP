@@ -1,0 +1,28 @@
+<clickhouse>
+    <profiles>
+        <default>
+            <!-- Server-side backstop for the ingestor's batching.  Even with the
+                 client-side fix in eveys_ocpp/clickhouse/ingestor.py, any producer
+                 that sends row-at-a-time INSERTs would otherwise create one part
+                 per row - 5800 parts/hour for 5400 rows on cp_ocpp_frames, which
+                 cost ~1 core/hour in merges alone during the 2026-08-14 incident.
+                 With async_insert the server coalesces concurrent small INSERTs
+                 into one part before writing. -->
+            <async_insert>1</async_insert>
+
+            <!-- Keep at-least-once intact: the INSERT only returns once the buffer
+                 has been flushed to a part, so the ingestor's "commit Kafka offsets
+                 only after a successful INSERT" contract still holds.  Setting this
+                 to 0 would ack before the data is durable and could silently drop
+                 events on a crash. -->
+            <wait_for_async_insert>1</wait_for_async_insert>
+
+            <!-- Fixed 1s buffer window.  The adaptive timeout defaults to 50-200ms,
+                 which is too short to coalesce a ~1.5 events/sec trickle into
+                 meaningful parts. -->
+            <async_insert_use_adaptive_busy_timeout>0</async_insert_use_adaptive_busy_timeout>
+            <async_insert_busy_timeout_ms>1000</async_insert_busy_timeout_ms>
+            <async_insert_max_data_size>10485760</async_insert_max_data_size>
+        </default>
+    </profiles>
+</clickhouse>

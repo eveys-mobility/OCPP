@@ -130,6 +130,8 @@ services:
           memory: 4G
     volumes:
       - clickhouse_data:/var/lib/clickhouse
+      - ./clickhouse/config.d/zz-eveys-prod.xml:/etc/clickhouse-server/config.d/zz-eveys-prod.xml:ro
+      - ./clickhouse/users.d/zz-eveys-async-insert.xml:/etc/clickhouse-server/users.d/zz-eveys-async-insert.xml:ro
     healthcheck:
       # BusyBox wget in the alpine image doesn't accept GNU-style flags;
       # use the bare `-q -O -` form which works in both BusyBox and GNU wget.
