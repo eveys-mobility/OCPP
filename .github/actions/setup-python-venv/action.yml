@@ -14,6 +14,7 @@ runs:
   using: composite
   steps:
     - name: Set up Python
+      id: setup-python
       uses: actions/setup-python@v5
       with:
         python-version: "3.13"
@@ -31,7 +32,14 @@ runs:
       uses: actions/cache@v4
       with:
         path: .venv
-        key: venv-${{ runner.os }}-py313-${{ hashFiles('pyproject.toml') }}
+        # Keyed on the resolved interpreter version, not just "py313": the
+        # cached .venv/bin/python is a symlink into the runner's ephemeral
+        # hostedtoolcache path, which moves whenever the exact 3.13.x patch
+        # changes. Without this, a patch bump leaves a dangling symlink that
+        # actions/cache still reports as a hit, so every job fails instantly
+        # with ".venv/bin/python: No such file or directory" (see incident
+        # 2026-09-16 — a July-built cache silently broke every job on main).
+        key: venv-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('pyproject.toml') }}
 
     - name: Install uv
       shell: bash
