@@ -85,3 +85,8 @@ jobs:
           name: compose-smoke-logs-${{ github.run_id }}
           path: .compose-smoke-logs/
           retention-days: 7
+          # .compose-smoke-logs/ is dot-prefixed (see .gitignore); v7's
+          # default include-hidden-files: false treats the whole tree as
+          # hidden and silently uploads nothing, independent of whether
+          # the fixture actually wrote logs into it.
+          include-hidden-files: true
