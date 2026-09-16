@@ -235,6 +235,30 @@ def _container_logs(name: str, tail: int = 200) -> str:
     return (proc.stdout or "") + ("\n" + proc.stderr if proc.stderr else "")
 
 
+_LOG_DIR = _REPO_ROOT / ".compose-smoke-logs"
+
+
+def _dump_container_logs_to_disk() -> None:
+    """Write every expected container's logs to `.compose-smoke-logs/`
+    before teardown.
+
+    The Makefile's own capture loop, and the CI workflow's "Capture
+    container logs" step, both run *after* this fixture's teardown has
+    already `docker compose down --remove-orphans`'d the stack — so
+    `docker logs` in either of those always hits an already-removed
+    container and the failure artifact is silently empty. A *test*
+    failure (an assertion inside a test body, as opposed to one of the
+    phase checks above) never touches those inline `_container_logs()`
+    calls either, since it just falls through `yield` into this
+    unconditional teardown. Persisting here, before `down`, is the only
+    point in this fixture's lifecycle where the containers are both
+    guaranteed to still exist and guaranteed to run exactly once per
+    session, regardless of which test (if any) failed."""
+    _LOG_DIR.mkdir(exist_ok=True)
+    for name in _EXPECTED_CONTAINERS:
+        (_LOG_DIR / f"{name}.log").write_text(_container_logs(name, tail=2000))
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _compose_stack() -> Iterator[None]:
     """Bring the full stack up once per pytest session.
@@ -399,6 +423,11 @@ def _compose_stack() -> Iterator[None]:
         )
 
     yield
+
+    # Persist logs while the containers still exist — see
+    # `_dump_container_logs_to_disk`'s docstring for why this has to
+    # happen here and not in the Makefile/workflow after pytest exits.
+    _dump_container_logs_to_disk()
 
     # Always tear down — leaving a stack up between sessions makes the
     # next "fresh" run mysteriously broken when a config change lands.
