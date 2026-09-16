@@ -385,15 +385,12 @@ e2e: _require-nonprod install
 compose-smoke: _require-nonprod install
 	@echo ">> Tier-3 compose smoke (ADR-0024)..."
 	@echo ">> running compose-smoke tests against the production-shaped stack..."
-	@echo "   (the suite's session fixture owns docker compose up/down + schema apply)"
-	@COMPOSE_SMOKE=1 $(VENV)/bin/pytest tests/compose_smoke -v --no-cov; \
-	rc=$$?; \
-	echo ">> capturing container logs as artifacts (best-effort)..."; \
-	mkdir -p .compose-smoke-logs && \
-	for c in eveys-ocpp eveys-ocpp-clickhouse-ingestor eveys-ocpp-postgres eveys-ocpp-redis eveys-ocpp-kafka eveys-ocpp-clickhouse; do \
-	    docker logs $$c > .compose-smoke-logs/$$c.log 2>&1 || true; \
-	done; \
-	exit $$rc
+	@echo "   (the suite's session fixture owns docker compose up/down + schema apply,"
+	@echo "    and dumps .compose-smoke-logs/ itself before tearing the stack down —"
+	@echo "    by the time this target regains control the containers are already"
+	@echo "    gone, so capturing 'docker logs' here would only overwrite those with"
+	@echo "    'No such container' noise. See tests/compose_smoke/conftest.py.)"
+	@COMPOSE_SMOKE=1 $(VENV)/bin/pytest tests/compose_smoke -v --no-cov
 
 # ---- E3-10 mock backend -----------------------------------------------------
 # Boots the dev-only mock implementing docs/integration/01-backend-rest-contract.md.

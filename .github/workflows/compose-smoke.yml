@@ -66,17 +66,13 @@ jobs:
         run: docker compose -f deploy/compose/docker-compose.yml build
 
       - name: Run compose smoke
-        # The Make target captures container logs into .compose-smoke-logs/
-        # even on failure — those are surfaced as a job artifact below.
+        # The pytest session fixture (tests/compose_smoke/conftest.py)
+        # dumps every container's logs into .compose-smoke-logs/ itself,
+        # right before it tears the stack down — by the time this step
+        # exits the containers are already gone, so a `docker logs`
+        # capture here would just overwrite those files with "No such
+        # container" and silently destroy the real failure diagnostics.
         run: make compose-smoke
-
-      - name: Capture container logs (always)
-        if: always()
-        run: |
-          mkdir -p .compose-smoke-logs
-          for c in eveys-ocpp eveys-ocpp-clickhouse-ingestor eveys-ocpp-postgres eveys-ocpp-redis eveys-ocpp-kafka eveys-ocpp-clickhouse; do
-            docker logs "$c" > ".compose-smoke-logs/$c.log" 2>&1 || true
-          done
 
       - name: Upload logs
         if: always()
