@@ -11,7 +11,8 @@ JSON Schemas: `ocpp.v16.schemas.StopTransaction` and `StopTransactionResponse`.
 
 Behavior:
 1. Mark the transaction stopped in Postgres, matching the owning station
-   and physical ID. PG first-apply/dedup is authoritative.
+   and physical ID, retaining immutable outbox bytes in the same commit.
+   PG first-apply/dedup is authoritative; an independent publisher retries.
 2. Record an optional Redis hint only after the Stop commit. A cached
    marker cannot bypass PG: it may predate a failed write in older code.
 3. **Backend round-trip (E3-6).** If a `backend_client` is wired AND
@@ -27,8 +28,8 @@ an existing server-rejection timestamp is preserved.
 
 Backend failure policy for an already reported physical Stop:
 - `BackendUnavailableError` → keep the local DB row (audit-of-record),
-  reply `Accepted`. Post-commit publish/backend failure is not yet a
-  durable outbox; recovery is not guaranteed by this handler.
+  reply `Accepted`. The outbox remains available for event delivery;
+  the synchronous close request does not substitute for a durable receipt.
 - `BackendBusinessError` (e.g. billing-fraud `Blocked`) → keep the
   row, reply with whatever the backend dictated (typically `Blocked`).
   Forwards the operational decision to the charger.
@@ -59,7 +60,7 @@ from eveys_ocpp.metrics import record_handler_error, time_handler
 from eveys_ocpp.metrics import registry as metrics_registry
 from eveys_ocpp.observability import bind_contextvars, get_logger
 from eveys_ocpp.persistence.db import session_scope
-from eveys_ocpp.persistence.repositories import stop_transaction
+from eveys_ocpp.persistence.repositories import insert_transaction_event, stop_transaction
 from eveys_ocpp.platform import BackendBusinessError, BackendUnavailableError
 
 if TYPE_CHECKING:
@@ -179,7 +180,7 @@ async def _stop_inner(
     idem_key = f"{cp.id}:{transaction_id}:{meter_stop}"
 
     async with session_scope(cp.session_factory) as session:
-        meter_start_wh = await stop_transaction(
+        stopped = await stop_transaction(
             session,
             cp_id=cp.id,
             transaction_id=transaction_id,
@@ -189,8 +190,30 @@ async def _stop_inner(
             reason=reason,
             idempotency_key=idem_key,
         )
+        if stopped is not None:
+            payload = events_pb2.TxStopped(
+                transaction_id=transaction_id,
+                connector_id=stopped.connector_id,
+                id_tag=id_tag or "",
+                meter_stop_wh=meter_stop,
+                consumed_wh=meter_stop - stopped.meter_start_wh,
+                stop_reason=reason or "",
+                charger_reported_at=timestamp,
+                stopped_received_at=received_at.isoformat(),
+            )
+            envelope_bytes = _build_envelope(cp_id=cp.id, payload=payload, occurred_at=received_at)
+            envelope = events_pb2.EventEnvelope.FromString(envelope_bytes)
+            await insert_transaction_event(
+                session,
+                event_id=uuid.UUID(envelope.event_id),
+                transaction_pk=stopped.transaction_pk,
+                topic=cp.settings.kafka_topic_tx_stopped,
+                cp_id=cp.id,
+                body=envelope_bytes,
+                created_at=received_at,
+            )
 
-    if meter_start_wh is None:
+    if stopped is None:
         # Already applied, unknown, or owned by another station. None of
         # these outcomes permits a new event or backend close request.
         log.info("stop_transaction.not_applied")
@@ -211,35 +234,9 @@ async def _stop_inner(
     metrics_registry.STOP_TRANSACTIONS_TOTAL.labels(reason=reason or "unknown").inc()
     log.info("stop_transaction.applied", reason=reason, meter_stop=meter_stop)
 
-    # Best-effort post-commit event: PG replay dedup cannot recover a
-    # failed publish or a crash in this gap. The current backend closes
-    # financial state through this event; /sessions/close is a no-op
-    # acknowledgement, so it is not a durable fallback. Only real applies
-    # publish. A durable ledger/outbox is still required for recovery.
-    if cp.event_producer is not None:
-        payload = events_pb2.TxStopped(
-            transaction_id=transaction_id,
-            id_tag=id_tag or "",
-            meter_stop_wh=meter_stop,
-            consumed_wh=meter_stop - meter_start_wh,
-            stop_reason=reason or "",
-            charger_reported_at=timestamp,
-        )
-        envelope_bytes = _build_envelope(
-            cp_id=cp.id, payload=payload, occurred_at=datetime.now(UTC)
-        )
-        try:
-            await cp.event_producer.publish(
-                topic=cp.settings.kafka_topic_tx_stopped,
-                key=cp.id,
-                value=envelope_bytes,
-            )
-        except Exception as exc:
-            log.warning(
-                "stop_transaction.publish_failed",
-                transaction_id=transaction_id,
-                error=str(exc),
-            )
+    # The same PG commit retained immutable event bytes. The independent
+    # publisher retries until a real broker ACK, including after restarts.
+    # A replay cannot rewrite the original event or create another UUID.
 
     # Backend round-trip (E3-6). The DB row is now durably marked
     # stopped; whatever the backend says, we keep that state. On

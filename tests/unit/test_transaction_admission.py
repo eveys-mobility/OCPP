@@ -368,7 +368,8 @@ async def test_later_actual_stop_remains_an_audit_event_for_rejected_id(
     )
     await database.commit()
 
-    assert applied == 4500000
+    assert applied is not None
+    assert applied.meter_start_wh == 4500000
     after = await repositories.get_transaction_by_id(
         database, transaction_id=response.transaction_id
     )

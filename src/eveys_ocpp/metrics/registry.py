@@ -497,6 +497,30 @@ CLICKHOUSE_INGESTOR_ERRORS_TOTAL: Counter = Counter(
 # envelope into `webhook_delivery_backlog` after its in-loop retries
 # exhaust; `WebhookBacklogDrainer` polls that table and either drains
 # the row on 2xx or reschedules it. See `webhooks/backlog_drainer.py`.
+TRANSACTION_OUTBOX_PENDING: Gauge = Gauge(
+    "eveys_ocpp_transaction_outbox_pending",
+    "Physical Stop events awaiting a committed broker publication mark; -1 when unobserved.",
+)
+TRANSACTION_OUTBOX_OLDEST_AGE_SECONDS: Gauge = Gauge(
+    "eveys_ocpp_transaction_outbox_oldest_age_seconds",
+    "Age of oldest pending physical Stop event at last PG observation; -1 when unobserved.",
+)
+TRANSACTION_OUTBOX_SAMPLE_TIMESTAMP_SECONDS: Gauge = Gauge(
+    "eveys_ocpp_transaction_outbox_sample_timestamp_seconds",
+    "UTC epoch of last successful PG outbox observation; 0 when unobserved.",
+)
+TRANSACTION_OUTBOX_PUBLISHED_TOTAL: Counter = Counter(
+    "eveys_ocpp_transaction_outbox_published_total",
+    "Physical Stop broker ACKs whose publication mark committed to PG.",
+)
+TRANSACTION_OUTBOX_ERRORS_TOTAL: Counter = Counter(
+    "eveys_ocpp_transaction_outbox_errors_total",
+    "Outbox failures by bounded stage: publish, observe, cycle.",
+    labelnames=("stage",),
+)
+TRANSACTION_OUTBOX_PENDING.set(-1)
+TRANSACTION_OUTBOX_OLDEST_AGE_SECONDS.set(-1)
+
 WEBHOOK_BACKLOG_SIZE: Gauge = Gauge(
     "eveys_ocpp_webhook_backlog_size",
     "Rows in `webhook_delivery_backlog` where NOT dead. Sampled once "
@@ -700,6 +724,11 @@ __all__ = [
     "STOP_TRANSACTIONS_RECEIVED_TOTAL",
     "STOP_TRANSACTIONS_TOTAL",
     "STOP_TRANSACTION_REPLAYS_TOTAL",
+    "TRANSACTION_OUTBOX_ERRORS_TOTAL",
+    "TRANSACTION_OUTBOX_OLDEST_AGE_SECONDS",
+    "TRANSACTION_OUTBOX_PENDING",
+    "TRANSACTION_OUTBOX_PUBLISHED_TOTAL",
+    "TRANSACTION_OUTBOX_SAMPLE_TIMESTAMP_SECONDS",
     "WEBHOOK_ATTEMPTS_TOTAL",
     "WEBHOOK_BACKLOG_DEADLETTER_TOTAL",
     "WEBHOOK_BACKLOG_DRAIN_TOTAL",

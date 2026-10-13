@@ -14,13 +14,14 @@ two WebSocket chokepoints in `connection.py`:
     CALLRESULT/CALLERROR are included; send success does not prove receipt.
 
 Best-effort: every publish is wrapped in try/except. Kafka failures
-log + increment a Prometheus counter and return. Publishing is awaited;
-broker latency can delay the WS path, but an ordinary publish exception
-does not fail the OCPP handler.
+log + increment a Prometheus counter and return. Publishing is awaited
+within a short hard deadline; timeout can leave an audit gap or an
+ambiguous delivery, while external cancellation still propagates.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 from datetime import UTC, datetime
@@ -70,6 +71,7 @@ async def publish_inbound(
         message_id=message_id or "",
         action=action_name,
         message_type=message_type_id,
+        timeout_seconds=settings.ocpp_frame_publish_timeout_seconds,
     )
 
 
@@ -107,6 +109,7 @@ async def publish_outbound(
         message_id=message_id,
         action=action,
         message_type=message_type,
+        timeout_seconds=settings.ocpp_frame_publish_timeout_seconds,
     )
 
 
@@ -120,6 +123,7 @@ async def _publish(
     message_id: str,
     action: str,
     message_type: int,
+    timeout_seconds: float,
 ) -> None:
     envelope = events_pb2.EventEnvelope(
         event_id=str(uuid.uuid4()),
@@ -136,11 +140,8 @@ async def _publish(
         ),
     )
     try:
-        await producer.publish(
-            topic=topic,
-            key=cp_id,
-            value=envelope.SerializeToString(),
-        )
+        async with asyncio.timeout(timeout_seconds):
+            await producer.publish(topic=topic, key=cp_id, value=envelope.SerializeToString())
     except Exception as exc:
         # Best-effort: log + count, never propagate. A broker outage
         # MUST NOT take the OCPP WS path down with it.
@@ -149,6 +150,6 @@ async def _publish(
             cp_id=cp_id,
             direction=direction,
             action=action,
-            error=str(exc),
+            error_class=type(exc).__name__,
         )
         metrics_registry.OCPP_FRAMES_PUBLISH_FAILURES_TOTAL.labels(direction=direction).inc()

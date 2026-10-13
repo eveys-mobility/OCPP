@@ -9,11 +9,19 @@ import pytest
 from ocpp.v16.enums import AuthorizationStatus
 
 from eveys_ocpp.handlers.v16 import stop_transaction
+from eveys_ocpp.persistence.repositories import StoppedTransaction
+
+
+@pytest.fixture(autouse=True)
+def outbox_insert(monkeypatch):
+    insert = AsyncMock()
+    monkeypatch.setattr(stop_transaction, "insert_transaction_event", insert)
+    return insert
 
 
 @pytest.mark.asyncio
 async def test_applies_stop(fake_cp: Any, monkeypatch: pytest.MonkeyPatch) -> None:
-    stop = AsyncMock(return_value=0)
+    stop = AsyncMock(return_value=StoppedTransaction(999, 1, 0))
     monkeypatch.setattr(stop_transaction, "stop_transaction", stop)
 
     result = await stop_transaction.handle(
@@ -55,7 +63,9 @@ async def test_replay_is_noop(fake_cp: Any, monkeypatch: pytest.MonkeyPatch) -> 
 
 @pytest.mark.asyncio
 async def test_reject_invalid_id_tag(fake_cp: Any, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(stop_transaction, "stop_transaction", AsyncMock(return_value=0))
+    monkeypatch.setattr(
+        stop_transaction, "stop_transaction", AsyncMock(return_value=StoppedTransaction(999, 1, 0))
+    )
 
     result = await stop_transaction.handle(
         fake_cp,
@@ -99,7 +109,7 @@ async def test_cache_marker_cannot_skip_authoritative_db_dedup(
 
 @pytest.mark.asyncio
 async def test_first_sighting_runs_handler(fake_cp: Any, monkeypatch: pytest.MonkeyPatch) -> None:
-    stop = AsyncMock(return_value=0)
+    stop = AsyncMock(return_value=StoppedTransaction(999, 1, 0))
     monkeypatch.setattr(stop_transaction, "stop_transaction", stop)
 
     fake_idem = AsyncMock()
@@ -123,7 +133,7 @@ async def test_post_commit_cache_outage_does_not_fail_the_stop(
     fake_cp: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The committed Stop remains successful when its cache hint fails."""
-    stop = AsyncMock(return_value=0)
+    stop = AsyncMock(return_value=StoppedTransaction(999, 1, 0))
     monkeypatch.setattr(stop_transaction, "stop_transaction", stop)
 
     fake_idem = AsyncMock()
@@ -147,7 +157,7 @@ async def test_no_idempotency_cache_falls_through(
     fake_cp: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """idempotency=None → DB-layer dedup is the only line of defense."""
-    stop = AsyncMock(return_value=0)
+    stop = AsyncMock(return_value=StoppedTransaction(999, 1, 0))
     monkeypatch.setattr(stop_transaction, "stop_transaction", stop)
     fake_cp.idempotency = None
 
@@ -184,7 +194,9 @@ async def test_calls_backend_close_session_with_kwargs_and_idempotency_key(
 ) -> None:
     """First-time stop with backend wired: full kwargs flow through and
     the Idempotency-Key matches the contract."""
-    monkeypatch.setattr(stop_transaction, "stop_transaction", AsyncMock(return_value=0))
+    monkeypatch.setattr(
+        stop_transaction, "stop_transaction", AsyncMock(return_value=StoppedTransaction(999, 1, 0))
+    )
     fake_cp.backend_client = AsyncMock()
     fake_cp.backend_client.close_session = AsyncMock(return_value=_close_result())
 
@@ -219,7 +231,7 @@ async def test_business_error_forwards_blocked_to_charger(
     a trace of the rejected stop."""
     from eveys_ocpp.platform import BackendBusinessError
 
-    stop = AsyncMock(return_value=0)
+    stop = AsyncMock(return_value=StoppedTransaction(999, 1, 0))
     monkeypatch.setattr(stop_transaction, "stop_transaction", stop)
     fake_cp.backend_client = AsyncMock()
     fake_cp.backend_client.close_session = AsyncMock(
@@ -247,7 +259,9 @@ async def test_unavailable_keeps_state_and_accepts(
     finalises cleanly, the reconciler heals later."""
     from eveys_ocpp.platform import BackendUnavailableError
 
-    monkeypatch.setattr(stop_transaction, "stop_transaction", AsyncMock(return_value=0))
+    monkeypatch.setattr(
+        stop_transaction, "stop_transaction", AsyncMock(return_value=StoppedTransaction(999, 1, 0))
+    )
     fake_cp.backend_client = AsyncMock()
     fake_cp.backend_client.close_session = AsyncMock(
         side_effect=BackendUnavailableError("network", error_code="NETWORK"),
@@ -320,7 +334,9 @@ async def test_omitted_id_tag_passes_empty_string(
     """OCPP allows omitting id_tag (e.g. EVDisconnected stop reason).
     The contract requires a string — pass empty so the backend can
     settle by transaction_id alone."""
-    monkeypatch.setattr(stop_transaction, "stop_transaction", AsyncMock(return_value=0))
+    monkeypatch.setattr(
+        stop_transaction, "stop_transaction", AsyncMock(return_value=StoppedTransaction(999, 1, 0))
+    )
     fake_cp.backend_client = AsyncMock()
     fake_cp.backend_client.close_session = AsyncMock(return_value=_close_result())
 
@@ -344,7 +360,9 @@ async def test_forwards_backend_status_through_status_map(
 ) -> None:
     """Backend explicit `Blocked` (e.g. billing-fraud detected at close
     time) flows through to the OCPP response."""
-    monkeypatch.setattr(stop_transaction, "stop_transaction", AsyncMock(return_value=0))
+    monkeypatch.setattr(
+        stop_transaction, "stop_transaction", AsyncMock(return_value=StoppedTransaction(999, 1, 0))
+    )
     fake_cp.backend_client = AsyncMock()
     fake_cp.backend_client.close_session = AsyncMock(return_value=_close_result(status="Blocked"))
 
@@ -408,7 +426,9 @@ async def test_persisted_counter_bumps_only_on_successful_apply(
     received_before = registry.STOP_TRANSACTIONS_RECEIVED_TOTAL._value.get()
     persisted_before = registry.STOP_TRANSACTIONS_TOTAL.labels(reason="Other")._value.get()
 
-    monkeypatch.setattr(stop_transaction, "stop_transaction", AsyncMock(return_value=0))
+    monkeypatch.setattr(
+        stop_transaction, "stop_transaction", AsyncMock(return_value=StoppedTransaction(999, 1, 0))
+    )
     await stop_transaction.handle(
         fake_cp,
         transaction_id=1,
@@ -443,15 +463,17 @@ async def test_persisted_counter_bumps_only_on_successful_apply(
 
 
 @pytest.mark.asyncio
-async def test_publishes_tx_stopped_envelope_on_apply(
-    fake_cp: Any, monkeypatch: pytest.MonkeyPatch
+async def test_retains_tx_stopped_envelope_on_apply(
+    fake_cp: Any, monkeypatch: pytest.MonkeyPatch, outbox_insert
 ) -> None:
-    """Successful StopTransaction publishes one TxStopped envelope to
-    `tx.stopped`, with `consumed_wh` pre-computed from the
-    `meter_start_wh` returned by the repo."""
+    """Successful Stop retains one authoritative envelope in its PG scope."""
     from eveys_ocpp._generated.events.v1 import events_pb2
 
-    monkeypatch.setattr(stop_transaction, "stop_transaction", AsyncMock(return_value=4_500_000))
+    monkeypatch.setattr(
+        stop_transaction,
+        "stop_transaction",
+        AsyncMock(return_value=StoppedTransaction(999, 1, 4_500_000)),
+    )
     fake_producer = AsyncMock()
     fake_cp.event_producer = fake_producer
 
@@ -464,13 +486,14 @@ async def test_publishes_tx_stopped_envelope_on_apply(
         id_tag="VALID_RFID",
     )
 
-    fake_producer.publish.assert_awaited_once()
-    kwargs = fake_producer.publish.await_args.kwargs
+    fake_producer.publish.assert_not_awaited()
+    outbox_insert.assert_awaited_once()
+    kwargs = outbox_insert.await_args.kwargs
     assert kwargs["topic"] == fake_cp.settings.kafka_topic_tx_stopped
-    assert kwargs["key"] == "TEST_CP_001"
+    assert kwargs["cp_id"] == "TEST_CP_001"
 
     envelope = events_pb2.EventEnvelope()
-    envelope.ParseFromString(kwargs["value"])
+    envelope.ParseFromString(kwargs["body"])
     assert envelope.cp_id == "TEST_CP_001"
     assert envelope.WhichOneof("payload") == "tx_stopped"
     p = envelope.tx_stopped
@@ -483,8 +506,8 @@ async def test_publishes_tx_stopped_envelope_on_apply(
 
 
 @pytest.mark.asyncio
-async def test_does_not_publish_tx_stopped_on_replay(
-    fake_cp: Any, monkeypatch: pytest.MonkeyPatch
+async def test_does_not_create_another_outbox_event_on_replay(
+    fake_cp: Any, monkeypatch: pytest.MonkeyPatch, outbox_insert
 ) -> None:
     """Replay (DB-layer dedup) returns before the publish — re-emitting
     would double-deliver to backends that subscribe."""
@@ -501,16 +524,19 @@ async def test_does_not_publish_tx_stopped_on_replay(
     )
 
     fake_producer.publish.assert_not_awaited()
+    outbox_insert.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_publish_failure_does_not_crash_handler(
-    fake_cp: Any, monkeypatch: pytest.MonkeyPatch
+async def test_handler_does_not_depend_on_a_broker_roundtrip(
+    fake_cp: Any, monkeypatch: pytest.MonkeyPatch, outbox_insert
 ) -> None:
-    """Best-effort publish: a broker drop must not break the OCPP
-    response — the synchronous `/sessions/close` is the primary path,
-    the webhook is the belt-and-braces."""
-    monkeypatch.setattr(stop_transaction, "stop_transaction", AsyncMock(return_value=4_500_000))
+    """The immutable PG outbox is retained before replying to the charger."""
+    monkeypatch.setattr(
+        stop_transaction,
+        "stop_transaction",
+        AsyncMock(return_value=StoppedTransaction(999, 1, 4_500_000)),
+    )
     fake_producer = AsyncMock()
     fake_producer.publish = AsyncMock(side_effect=RuntimeError("kafka down"))
     fake_cp.event_producer = fake_producer
@@ -524,7 +550,8 @@ async def test_publish_failure_does_not_crash_handler(
         id_tag="VALID_RFID_001",
     )
 
-    # Charger still gets a clean reply; broker failure logged but not raised.
+    fake_producer.publish.assert_not_awaited()
+    outbox_insert.assert_awaited_once()
     assert result.id_tag_info.status == AuthorizationStatus.accepted
 
 

@@ -556,6 +556,57 @@ class Settings(BaseSettings):
         },
     )
 
+    transaction_outbox_poll_seconds: float = Field(
+        default=1.0,
+        gt=0,
+        le=60,
+        description="Pause between bounded physical Stop outbox publication cycles.",
+        json_schema_extra={
+            "category": "kafka_producer",
+            "impact": "Changes retry cadence after restart; pending envelopes remain retained.",
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+    transaction_outbox_batch_size: int = Field(
+        default=100,
+        ge=1,
+        le=1000,
+        description="Maximum rows attempted in one physical Stop outbox cycle.",
+        json_schema_extra={
+            "category": "kafka_producer",
+            "impact": (
+                "Bounds per-cycle PG locks and broker work; pending events are not discarded."
+            ),
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+    transaction_outbox_publish_timeout_seconds: float = Field(
+        default=5.0,
+        gt=0,
+        le=60,
+        description="Hard deadline for a single outbox broker ACK; failures remain pending.",
+        json_schema_extra={
+            "category": "kafka_producer",
+            "impact": "Bounds locked-row publish latency; ambiguous ACKs may replay the same UUID.",
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+    transaction_outbox_cycle_timeout_seconds: float = Field(
+        default=30.0,
+        gt=0,
+        le=300,
+        description="Hard deadline for one outbox cycle, including PG operations.",
+        json_schema_extra={
+            "category": "kafka_producer",
+            "impact": "Bounds one publication slice and PG observation; cancelled marks roll back.",
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+
     # ---- Kafka topics (frozen v1 contract; ADR-0018) --------------------
     # The four topic names are part of the frozen v1 contract with downstream
     # consumers (proto/events/v1/events.proto). Renaming is an externally
@@ -759,10 +810,10 @@ class Settings(BaseSettings):
             "Every OCPP frame on the WS, both directions, keyed by "
             "`cp_id`. Inbound (CP → gateway) frames are published just "
             "after `unpack()` succeeds; outbound (gateway → CP) frames "
-            "are published just before they hit the WebSocket. The raw "
+            "are published after a successful socket send. The raw "
             "JSON the wire actually carried is included verbatim. "
             "Best-effort: publish failures are logged and counted but "
-            "never block the WS path. Volume is high — the Console's "
+            "are bounded by a short deadline on the WS path. Volume is high — the Console's "
             "NDJSON event log is the intended consumer, not the "
             "ClickHouse Kafka-engine table."
         ),
@@ -785,6 +836,20 @@ class Settings(BaseSettings):
         json_schema_extra={
             "category": "kafka_topics",
             "impact": "Disables the audit log; downstream gaps until re-enabled.",
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+    ocpp_frame_publish_timeout_seconds: float = Field(
+        default=0.25,
+        gt=0,
+        le=5,
+        description="Hard best-effort raw frame publish deadline; timeout records an audit gap.",
+        json_schema_extra={
+            "category": "kafka_topics",
+            "impact": (
+                "Caps WS-path audit latency after restart; timeout may leave a frame audit gap."
+            ),
             "secret": False,
             "stability": "tunable",
         },
@@ -1383,15 +1448,17 @@ class Settings(BaseSettings):
     backend_base_url: str = Field(
         default="",
         description=(
-            "Base URL the gateway calls into. **Empty disables the backend "
-            "client entirely** — handlers fall back to their offline "
-            "policies (Authorize → Accepted, etc.)."
+            "Base URL the gateway calls into. Empty leaves the backend "
+            "unconfigured: fresh authorization and every new physical Start "
+            "are refused. Existing physical Meter/Stop flows still require "
+            "their persisted owner/binding checks; no new grant is inferred."
         ),
         json_schema_extra={
             "category": "backend_integration",
             "impact": (
-                "Empty in dev. Production must set this; an empty value "
-                "silently degrades to offline mode."
+                "Production admission requires a configured backend URL, "
+                "valid service token and verified TLS. An empty URL leaves "
+                "new sessions fail-closed; local/mock Accepted fallback is obsolete."
             ),
             "secret": False,
             "stability": "structural",
@@ -2020,16 +2087,17 @@ class Settings(BaseSettings):
         ge=1.0,
         le=120.0,
         description=(
-            "HTTP timeout for a single webhook delivery attempt. "
-            "Backend must respond within this window or the gateway "
-            "treats the attempt as a transient failure and retries."
+            "Upper bound for a single webhook HTTP attempt, additionally "
+            "limited by the remaining 55 s total HTTP/backoff budget. "
+            "Exhaustion proceeds to a bounded 5 s durable backlog commit; "
+            "only HTTP 2xx or committed backlog permits Kafka ACK."
         ),
         json_schema_extra={
             "category": "webhooks",
             "impact": (
-                "Lower = faster failure detection; higher = tolerates "
-                "slower backends. 10 s matches the backend's documented "
-                "response budget per `docs/integration/03-webhooks.md`."
+                "Lower = faster failure detection. Higher values never "
+                "extend the total synchronous delivery budget beyond "
+                "60 s (55 s HTTP/backoff plus 5 s SQL commit)."
             ),
             "secret": False,
             "stability": "tunable",
@@ -2041,16 +2109,18 @@ class Settings(BaseSettings):
         ge=1,
         le=20,
         description=(
-            "Total delivery attempts before the gateway gives up and "
-            "logs `webhook.delivery_failed`. Includes the first attempt."
+            "Maximum HTTP attempts, including the first. The 55 s total "
+            "HTTP/backoff budget may end retries sooner, followed by a "
+            "bounded 5 s durable backlog commit. Failure without that "
+            "commit retains the Kafka record without ACK."
         ),
         json_schema_extra={
             "category": "webhooks",
             "impact": (
-                "Retries follow exponential backoff: 1 s, 5 s, 30 s, "
-                "2 min, 10 min for the default of 5. Lowering reduces "
-                "the longest in-flight tail; raising tolerates longer "
-                "backend outages."
+                "Backoff follows 1, 5, 15, 30, 60 s, capped at 60 s for "
+                "later attempts. A sleep that would exhaust the remaining "
+                "55 s budget is skipped in favour of durable SQL enqueue. "
+                "Raising this value never extends the wall-clock budget."
             ),
             "secret": False,
             "stability": "tunable",
@@ -2059,8 +2129,8 @@ class Settings(BaseSettings):
 
     # ---- Webhook backlog (E3-9 tail) ------------------------------------
     #
-    # When the dispatcher's in-loop retries exhaust (~12.6 min at the
-    # default schedule), the envelope is inserted into the
+    # When the dispatcher's attempt count or 55 s HTTP/backoff budget
+    # exhausts, the envelope gets a bounded 5 s commit attempt in the
     # `webhook_delivery_backlog` Postgres table. A separate long-lived
     # task (`WebhookBacklogDrainer`) polls that table, re-attempts on a
     # coarser cadence, and either delivers or ages the row into
@@ -2073,16 +2143,16 @@ class Settings(BaseSettings):
             "(the default), envelopes the dispatcher fails to deliver "
             "in-loop are persisted to `webhook_delivery_backlog` and a "
             "background drainer keeps retrying them on a coarser cadence. "
-            "When False, the dispatcher's old drop-on-exhaust behaviour "
-            'returns — the `webhook_deliveries_total{outcome="failed"}` '
-            "counter still fires but the envelope is gone."
+            "When False, failed HTTP delivery remains pending in Kafka "
+            "without offset ACK; disabling backlog never permits a drop."
         ),
         json_schema_extra={
             "category": "webhooks",
             "impact": (
-                "Disabling brings back the pre-tail behaviour. Only useful "
-                "as a rollback lever if the drainer misbehaves; leave True "
-                "in production."
+                "Disabling removes the durable SQL fallback. Backend "
+                "outages then retain the unresolved Kafka batch and block "
+                "further polling until delivery succeeds; leave True in "
+                "production."
             ),
             "secret": False,
             "stability": "tunable",

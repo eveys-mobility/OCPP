@@ -34,6 +34,7 @@ from eveys_ocpp.platform import AuthorizeCache, BackendHTTPClient
 from eveys_ocpp.registry import Registry
 from eveys_ocpp.settings import Settings, get_settings
 from eveys_ocpp.shutdown import DrainController
+from eveys_ocpp.transaction_event_outbox import TransactionEventOutboxPublisher
 from eveys_ocpp.transport._ip_rate_limiter import IpRateLimiter
 from eveys_ocpp.transport._rate_limiter import RateLimiter
 from eveys_ocpp.transport.grpc_server import OcppGatewayService
@@ -242,6 +243,9 @@ async def _serve_all(
         log.info("webhook_dispatcher.disabled")
 
     await event_producer.start()
+    transaction_outbox = TransactionEventOutboxPublisher(
+        settings, session_factory=session_factory, producer=event_producer
+    )
     await bus.start()
 
     # Phase 4 / E4-1: Prometheus scrape endpoint.
@@ -269,6 +273,7 @@ async def _serve_all(
     try:
         try:
             async with asyncio.TaskGroup() as tg:
+                tg.create_task(transaction_outbox.serve_forever(), name="transaction_event_outbox")
                 tg.create_task(
                     serve_ws_forever(
                         session_factory=session_factory,
@@ -344,6 +349,7 @@ async def _serve_all(
         try:
             async with _maybe_timeout(teardown_budget):
                 await bus.stop()
+                await transaction_outbox.stop()
                 await event_producer.stop()
                 if webhook_dispatcher is not None:
                     await webhook_dispatcher.stop()

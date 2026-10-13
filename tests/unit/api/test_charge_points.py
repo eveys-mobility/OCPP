@@ -396,6 +396,8 @@ async def test_detail_includes_per_connector_status(
             "status": "Faulted",
             "error_code": "GroundFailure",
             "last_changed_at": "2026-05-05T14:30:00+00:00",
+            "status_freshness": "current",
+            "stale_reason": None,
         }
     ]
 

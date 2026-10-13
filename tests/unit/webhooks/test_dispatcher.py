@@ -39,7 +39,7 @@ def _settings(**overrides: Any) -> Settings:
 def _envelope(payload_kind: str, **fields: Any) -> events_pb2.EventEnvelope:
     """Build a minimal `EventEnvelope` for tests."""
     env = events_pb2.EventEnvelope()
-    env.event_id = fields.pop("event_id", "evt-test")
+    env.event_id = fields.pop("event_id", "00000000-0000-0000-0000-000000000103")
     env.occurred_at = fields.pop("occurred_at", "2026-05-07T12:00:00+00:00")
     env.cp_id = fields.pop("cp_id", "CP_TEST")
     if payload_kind == "cp_boot":
@@ -409,7 +409,10 @@ async def test_post_retries_on_4xx() -> None:
     d._http = MagicMock()
     d._http.post = AsyncMock(return_value=_resp(401))
 
-    with patch("eveys_ocpp.webhooks.dispatcher.asyncio.sleep", AsyncMock()):
+    with (
+        patch("eveys_ocpp.webhooks.dispatcher.asyncio.sleep", AsyncMock()),
+        pytest.raises(RuntimeError),
+    ):
         await d._post_with_retry(
             url="https://x/test",
             body_bytes=b"{}",
@@ -446,7 +449,10 @@ async def test_post_gives_up_after_max_attempts() -> None:
     d._http = MagicMock()
     d._http.post = AsyncMock(return_value=_resp(503))
 
-    with patch("eveys_ocpp.webhooks.dispatcher.asyncio.sleep", AsyncMock()):
+    with (
+        patch("eveys_ocpp.webhooks.dispatcher.asyncio.sleep", AsyncMock()),
+        pytest.raises(RuntimeError),
+    ):
         await d._post_with_retry(
             url="https://x/test",
             body_bytes=b"{}",
@@ -639,7 +645,8 @@ async def test_dispatcher_body_round_trips_through_verify_signature() -> None:
     d._http.post = AsyncMock(return_value=_resp(200))
 
     body_on_wire, sig_header = await _drive_one_delivery(
-        d, _envelope("cp_boot", event_id="evt-roundtrip-1", cp_id="CP_ROUNDTRIP")
+        d,
+        _envelope("cp_boot", event_id="00000000-0000-0000-0000-000000000104", cp_id="CP_ROUNDTRIP"),
     )
 
     # The receiver's verify must accept these exact bytes + header
@@ -671,10 +678,22 @@ async def test_dispatcher_signature_changes_when_body_changes() -> None:
     d._http.post = AsyncMock(return_value=_resp(200))
 
     body_a, sig_a = await _drive_one_delivery(
-        d, _envelope("cp_boot", event_id="evt-A", cp_id="CP_A", vendor="VendorA")
+        d,
+        _envelope(
+            "cp_boot",
+            event_id="00000000-0000-0000-0000-000000000105",
+            cp_id="CP_A",
+            vendor="VendorA",
+        ),
     )
     body_b, sig_b = await _drive_one_delivery(
-        d, _envelope("cp_boot", event_id="evt-B", cp_id="CP_B", vendor="VendorB")
+        d,
+        _envelope(
+            "cp_boot",
+            event_id="00000000-0000-0000-0000-000000000106",
+            cp_id="CP_B",
+            vendor="VendorB",
+        ),
     )
 
     assert body_a != body_b
@@ -748,9 +767,8 @@ async def test_post_enqueues_backlog_after_exhausted_retries() -> None:
 
 
 @pytest.mark.asyncio
-async def test_post_skips_backlog_when_disabled() -> None:
-    """`webhook_backlog_enabled=False` restores the old drop-on-exhaust
-    behaviour — no insert attempt even with a factory wired."""
+async def test_post_retains_delivery_when_backlog_disabled() -> None:
+    """Disabled backlog cannot authorize committing a failed HTTP delivery."""
     _session, factory = _make_session_factory()
     d = WebhookDispatcher(
         _settings(webhook_max_attempts=1, webhook_backlog_enabled=False),
@@ -762,6 +780,7 @@ async def test_post_skips_backlog_when_disabled() -> None:
     with (
         patch("eveys_ocpp.webhooks.dispatcher.asyncio.sleep", AsyncMock()),
         patch("eveys_ocpp.webhooks.dispatcher.insert_webhook_backlog", AsyncMock()) as mock_insert,
+        pytest.raises(RuntimeError),
     ):
         await d._post_with_retry(
             url="https://x/test",
@@ -775,10 +794,10 @@ async def test_post_skips_backlog_when_disabled() -> None:
 
 
 @pytest.mark.asyncio
-async def test_post_skips_backlog_when_no_session_factory() -> None:
+async def test_post_retains_delivery_when_backlog_missing() -> None:
     """Dispatcher constructed without a session_factory (legacy
     callers, tests that don't touch Postgres): flag is on but there's
-    no place to write to. Should log + skip, never crash."""
+    no place to write to. The record remains pending instead of being dropped."""
     d = WebhookDispatcher(_settings(webhook_max_attempts=1, webhook_backlog_enabled=True))
     d._http = MagicMock()
     d._http.post = AsyncMock(return_value=_resp(503))
@@ -786,6 +805,7 @@ async def test_post_skips_backlog_when_no_session_factory() -> None:
     with (
         patch("eveys_ocpp.webhooks.dispatcher.asyncio.sleep", AsyncMock()),
         patch("eveys_ocpp.webhooks.dispatcher.insert_webhook_backlog", AsyncMock()) as mock_insert,
+        pytest.raises(RuntimeError),
     ):
         await d._post_with_retry(
             url="https://x/test",
@@ -854,9 +874,8 @@ async def test_post_enqueues_backlog_after_4xx_exhausts() -> None:
 
 
 @pytest.mark.asyncio
-async def test_post_swallows_backlog_insert_errors() -> None:
-    """Postgres down during enqueue mustn't kill the delivery loop —
-    the envelope is already lost but the dispatcher keeps consuming."""
+async def test_post_retains_delivery_when_backlog_insert_fails() -> None:
+    """A failed backlog write propagates to the retained consumer batch."""
     _session, factory = _make_session_factory()
     d = WebhookDispatcher(
         _settings(webhook_max_attempts=1, webhook_backlog_enabled=True),
@@ -871,8 +890,8 @@ async def test_post_swallows_backlog_insert_errors() -> None:
             "eveys_ocpp.webhooks.dispatcher.insert_webhook_backlog",
             AsyncMock(side_effect=RuntimeError("db down")),
         ) as mock_insert,
+        pytest.raises(RuntimeError),
     ):
-        # Should not raise even though the insert did.
         await d._post_with_retry(
             url="https://x/test",
             body_bytes=b"{}",

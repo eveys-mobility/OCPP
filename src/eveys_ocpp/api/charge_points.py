@@ -58,6 +58,32 @@ def _isoformat(value: datetime | None) -> str | None:
     return value.isoformat() if value is not None else None
 
 
+def _server_utc(value: datetime | None) -> datetime | None:
+    """Archive DateTime64 columns declare UTC, including naive decoder values."""
+    if not isinstance(value, datetime):
+        return None
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+
+
+def _connector_freshness(
+    observed_at: datetime | None, boot_at: datetime | None
+) -> tuple[str, str | None]:
+    """Compare trusted server observations within the latest boot epoch.
+
+    CH occurred_at is UTC DateTime64(3); a naive decoder result denotes UTC.
+    Compare both at that precision to avoid fabricating a preboot conflict
+    from PG microseconds. No age TTL or physical EV identity claim is made.
+    """
+    observed_at, boot_at = _server_utc(observed_at), _server_utc(boot_at)
+    if observed_at is None or boot_at is None:
+        return "unknown", "unverified_timestamp"
+    observed_at = observed_at.replace(microsecond=observed_at.microsecond // 1000 * 1000)
+    boot_at = boot_at.replace(microsecond=boot_at.microsecond // 1000 * 1000)
+    if observed_at < boot_at:
+        return "stale", "before_boot"
+    return "current", None
+
+
 async def _enrich_with_presence(request: Request, cp_dict: dict[str, Any]) -> dict[str, Any]:
     """Attach `online` + `pod_id` from the Redis registry.
 
@@ -137,15 +163,20 @@ async def _enrich_with_connectors(
         cp["connectors_error"] = error
         cp["connectors_last_successful_at"] = observed_at
         rows = latest_by_cp.get(cp["cp_id"], [])
-        cp["connectors"] = [
-            {
-                "connector_id": r["connector_id"],
-                "status": r["status"],
-                "error_code": r["error_code"] or None,
-                "last_changed_at": _isoformat(r["last_changed_at"]),
-            }
-            for r in rows
-        ]
+        cp["connectors"] = []
+        for r in rows:
+            changed_at = r.get("last_changed_at")
+            freshness, stale_reason = _connector_freshness(changed_at, cp.get("last_boot_at"))
+            cp["connectors"].append(
+                {
+                    "connector_id": r["connector_id"],
+                    "status": r["status"],
+                    "error_code": r["error_code"] or None,
+                    "last_changed_at": _isoformat(_server_utc(changed_at)),
+                    "status_freshness": freshness,
+                    "stale_reason": stale_reason,
+                }
+            )
     return cp_dicts
 
 

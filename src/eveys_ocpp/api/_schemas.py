@@ -141,6 +141,29 @@ class ConnectorStatus(BaseModel):
     status: str = Field(description="OCPP 1.6 §3.1.1 enum: Available, Preparing, Charging, …")
     error_code: str | None = None
     timestamp: str | None = Field(default=None, description="ISO 8601 of the StatusNotification.")
+    last_changed_at: str | None = Field(
+        default=None,
+        description=(
+            "Server EventEnvelope occurred_at of the latest archived status; "
+            "not charger clock or successful query time."
+        ),
+    )
+    status_freshness: Literal["current", "stale", "unknown"] | None = Field(
+        default=None,
+        description=(
+            "Latest boot-epoch consistency of this raw report; "
+            "current does not attest EV identity or physical state."
+        ),
+    )
+    stale_reason: Literal["before_boot", "stopped_after_status", "unverified_timestamp"] | None = (
+        Field(
+            default=None,
+            description=(
+                "Why raw status is stale/unknown; "
+                "current gateway only proves before_boot or unknown timestamps."
+            ),
+        )
+    )
     info: str | None = None
     vendor_id: str | None = None
     vendor_error_code: str | None = None

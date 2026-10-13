@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from eveys_ocpp._generated.events.v1 import events_pb2
 from eveys_ocpp.handlers.v16 import stop_transaction
 from eveys_ocpp.idempotency import IdempotencyCache
-from eveys_ocpp.persistence.models import ChargePoint, Transaction
+from eveys_ocpp.persistence.models import ChargePoint, Transaction, TransactionEventOutbox
 from eveys_ocpp.settings import Settings
 
 
@@ -76,6 +76,7 @@ def database() -> Iterator[_Database]:
     engine = create_engine("sqlite://")
     ChargePoint.__table__.create(engine)
     Transaction.__table__.create(engine)
+    TransactionEventOutbox.__table__.create(engine)
     session = Session(engine)
     session.add_all([ChargePoint(id=1, cp_id="CP_OWNER"), ChargePoint(id=2, cp_id="CP_OTHER")])
     session.add(
@@ -140,7 +141,12 @@ async def test_owner_stop_records_receive_time_separately_from_reported_time(
     assert row.stopped_reported_at == datetime(2026, 10, 13, 7, 24, 26)
     assert row.stop_reason == "PowerLoss"
     assert row.meter_stop_wh == 1200
-    assert cp.event_producer.events[0].tx_stopped.charger_reported_at == "2026-10-13T07:24:26+00:00"
+    event = database.session.execute(select(TransactionEventOutbox)).scalar_one()
+    assert (
+        events_pb2.EventEnvelope.FromString(event.body).tx_stopped.charger_reported_at
+        == "2026-10-13T07:24:26+00:00"
+    )
+    assert cp.event_producer.events == []
 
 
 @pytest.mark.asyncio
@@ -178,7 +184,7 @@ async def test_failed_or_cancelled_commit_does_not_poison_same_message_retry(
     await _stop(cp)
 
     assert _row(database).meter_stop_wh == 1200
-    assert len(cp.event_producer.events) == 1
+    assert len(database.session.execute(select(TransactionEventOutbox)).scalars().all()) == 1
     assert len(cp.backend_client.requests) == 1
 
 
@@ -196,5 +202,5 @@ async def test_duplicate_stop_does_not_rewrite_first_meter_reason_or_receive_tim
     assert row.meter_stop_wh == 1200
     assert row.stop_reason == "PowerLoss"
     assert row.stopped_received_at == received_at
-    assert len(cp.event_producer.events) == 1
+    assert len(database.session.execute(select(TransactionEventOutbox)).scalars().all()) == 1
     assert len(cp.backend_client.requests) == 1

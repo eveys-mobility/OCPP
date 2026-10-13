@@ -10,6 +10,7 @@ drop, and the outbound payload-to-dict path.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from unittest.mock import AsyncMock
 
@@ -18,6 +19,48 @@ import pytest
 from eveys_ocpp._generated.events.v1 import events_pb2
 from eveys_ocpp.ocpp_frames import publish_inbound, publish_outbound
 from eveys_ocpp.settings import Settings
+
+
+@pytest.mark.asyncio
+async def test_stuck_raw_frame_publish_has_a_hard_deadline():
+    async def hang(**_):
+        await asyncio.Event().wait()
+
+    producer = AsyncMock()
+    producer.publish.side_effect = hang
+    await asyncio.wait_for(
+        publish_outbound(
+            producer=producer,
+            settings=_settings(ocpp_frame_publish_timeout_seconds=0.01),
+            cp_id="CP_TEST",
+            raw_msg='[3,"exact-wire-id",{}]',
+        ),
+        timeout=0.1,
+    )
+
+
+@pytest.mark.asyncio
+async def test_external_cancellation_of_raw_frame_publish_propagates():
+    entered = asyncio.Event()
+
+    async def hang(**_):
+        entered.set()
+        await asyncio.Event().wait()
+
+    producer = AsyncMock()
+    producer.publish.side_effect = hang
+    task = asyncio.create_task(
+        publish_outbound(
+            producer=producer,
+            settings=_settings(),
+            cp_id="CP_TEST",
+            raw_msg='[3,"exact-wire-id",{}]',
+        )
+    )
+    await entered.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
 
 
 def _settings(**overrides: object) -> Settings:

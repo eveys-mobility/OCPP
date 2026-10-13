@@ -7,12 +7,13 @@ keeps the handler/persistence boundary narrow.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import and_, delete, func, or_, select, update
+from sqlalchemy import and_, delete, func, insert, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -29,6 +30,7 @@ from .models import (
     Reservation,
     SecurityEvent,
     Transaction,
+    TransactionEventOutbox,
     WebhookDeliveryBacklog,
 )
 
@@ -512,6 +514,13 @@ async def reject_transaction_start(
     )
 
 
+@dataclass(frozen=True)
+class StoppedTransaction:
+    transaction_pk: int
+    connector_id: int
+    meter_start_wh: int
+
+
 async def stop_transaction(
     session: AsyncSession,
     *,
@@ -522,15 +531,14 @@ async def stop_transaction(
     stopped_received_at: datetime,
     reason: str | None,
     idempotency_key: str,
-) -> int | None:
-    """Mark a transaction stopped. Returns the row's `meter_start_wh`
-    (Wh) on a real first-time owner-scoped apply. ``None`` means no
+) -> StoppedTransaction | None:
+    """Mark a transaction stopped. Return its authoritative stored binding
+    and start meter on a real first-time owner-scoped apply. ``None`` means no
     apply: already stopped, unknown ID, or owned by another station.
 
-    The non-None vs None distinction is the existing applied-vs-replay
-    signal callers used to switch on. Returning the start reading on
-    success lets the StopTransaction handler emit a `tx.stopped`
-    webhook with `consumed_wh` pre-computed without a second SELECT.
+    The returned snapshot supplies the stored connector and transaction PK
+    for the immutable outbox event, without trusting inbound connector data
+    or running a second SELECT outside the owner-scoped write.
 
     Idempotency: keyed on `idempotency_key` (typically the OCPP
     message_id of the inbound StopTransaction). A replay with the same
@@ -559,14 +567,118 @@ async def stop_transaction(
             stop_reason=reason,
             idempotency_key=idempotency_key,
         )
-        .returning(Transaction.meter_start_wh)
+        .returning(Transaction.id, Transaction.connector_id, Transaction.meter_start_wh)
         .execution_options(synchronize_session=False)
     )
     row = result.first()
     if row is None:
         return None
-    meter_start_wh: int = row[0]
-    return meter_start_wh
+    return StoppedTransaction(transaction_pk=row[0], connector_id=row[1], meter_start_wh=row[2])
+
+
+async def insert_transaction_event(
+    session: AsyncSession,
+    *,
+    event_id: UUID,
+    transaction_pk: int,
+    topic: str,
+    cp_id: str,
+    body: bytes,
+    created_at: datetime,
+) -> None:
+    """Caller commits this immutable envelope with the physical Stop UPDATE."""
+    await session.execute(
+        insert(TransactionEventOutbox).values(
+            event_id=event_id,
+            transaction_pk=transaction_pk,
+            topic=topic,
+            cp_id=cp_id,
+            body=body,
+            created_at=created_at,
+            next_attempt_at=created_at,
+            attempts=0,
+        )
+    )
+
+
+@dataclass(frozen=True)
+class PendingTransactionEvent:
+    event_id: UUID
+    topic: str
+    cp_id: str
+    body: bytes
+    attempts: int
+
+
+async def lock_ready_transaction_event(
+    session: AsyncSession, *, now: datetime
+) -> PendingTransactionEvent | None:
+    result = await session.execute(
+        select(
+            TransactionEventOutbox.event_id,
+            TransactionEventOutbox.topic,
+            TransactionEventOutbox.cp_id,
+            TransactionEventOutbox.body,
+            TransactionEventOutbox.attempts,
+        )
+        .where(
+            TransactionEventOutbox.published_at.is_(None),
+            TransactionEventOutbox.next_attempt_at <= now,
+        )
+        .order_by(
+            TransactionEventOutbox.next_attempt_at,
+            TransactionEventOutbox.created_at,
+            TransactionEventOutbox.event_id,
+        )
+        .limit(1)
+        .with_for_update(skip_locked=True)
+    )
+    row = result.first()
+    return PendingTransactionEvent(*row) if row is not None else None
+
+
+async def mark_transaction_event_published(
+    session: AsyncSession, *, event_id: UUID, published_at: datetime
+) -> None:
+    await session.execute(
+        update(TransactionEventOutbox)
+        .where(
+            TransactionEventOutbox.event_id == event_id,
+            TransactionEventOutbox.published_at.is_(None),
+        )
+        .values(
+            published_at=published_at,
+            attempts=TransactionEventOutbox.attempts + 1,
+            last_error_class=None,
+        )
+    )
+
+
+async def defer_transaction_event(
+    session: AsyncSession, *, event_id: UUID, next_attempt_at: datetime, error_class: str
+) -> None:
+    await session.execute(
+        update(TransactionEventOutbox)
+        .where(
+            TransactionEventOutbox.event_id == event_id,
+            TransactionEventOutbox.published_at.is_(None),
+        )
+        .values(
+            next_attempt_at=next_attempt_at,
+            attempts=TransactionEventOutbox.attempts + 1,
+            last_error_class=error_class[:128],
+        )
+    )
+
+
+async def transaction_outbox_snapshot(session: AsyncSession) -> tuple[int, datetime | None]:
+    result = await session.execute(
+        select(func.count(), func.min(TransactionEventOutbox.created_at)).where(
+            TransactionEventOutbox.published_at.is_(None)
+        )
+    )
+    row = result.one()
+    return int(row[0]), row[1]
 
 
 # ---- LocalAuthList (E2-1B) -------------------------------------------------

@@ -781,10 +781,56 @@
             ],
             "title": "Info"
           },
+          "last_changed_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Server EventEnvelope occurred_at of the latest archived status; not charger clock or successful query time.",
+            "title": "Last Changed At"
+          },
+          "stale_reason": {
+            "anyOf": [
+              {
+                "enum": [
+                  "before_boot",
+                  "stopped_after_status",
+                  "unverified_timestamp"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Why raw status is stale/unknown; current gateway only proves before_boot or unknown timestamps.",
+            "title": "Stale Reason"
+          },
           "status": {
             "description": "OCPP 1.6 \u00a73.1.1 enum: Available, Preparing, Charging, \u2026",
             "title": "Status",
             "type": "string"
+          },
+          "status_freshness": {
+            "anyOf": [
+              {
+                "enum": [
+                  "current",
+                  "stale",
+                  "unknown"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Latest boot-epoch consistency of this raw report; current does not attest EV identity or physical state.",
+            "title": "Status Freshness"
           },
           "timestamp": {
             "anyOf": [
