@@ -20,6 +20,49 @@ async def test_health_reports_ok_when_postgres_responds(
     assert body["components"]["postgres"] == "ok"
     assert body["request_id"]
     assert "version" in body
+    assert body["components"]["clickhouse"] == "ok"
+    assert body["components"]["clickhouse_error_class"] is None
+
+
+@pytest.mark.asyncio
+async def test_health_degrades_on_clickhouse_failure_without_failing_readiness(
+    client: httpx.AsyncClient,
+    fake_ch_client: MagicMock,
+) -> None:
+    fake_ch_client.probe = AsyncMock(side_effect=RuntimeError("private connection details"))
+
+    response = await client.get("/api/v1/health")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "degraded"
+    assert body["components"]["clickhouse"] == "error"
+    assert body["components"]["clickhouse_error_class"] == "RuntimeError"
+    assert "private connection details" not in response.text
+    ready = await client.get("/api/v1/ready")
+    assert ready.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_health_bounds_the_clickhouse_probe(
+    client: httpx.AsyncClient,
+    fake_ch_client: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+
+    from eveys_ocpp.api import health as health_module
+
+    async def blocked_probe() -> None:
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(health_module, "CLICKHOUSE_PROBE_TIMEOUT_SECONDS", 0.01)
+    fake_ch_client.probe = blocked_probe
+    response = await asyncio.wait_for(client.get("/api/v1/health"), timeout=1)
+
+    assert response.status_code == 200
+    assert response.json()["components"]["clickhouse"] == "error"
+    assert response.json()["components"]["clickhouse_error_class"] == "TimeoutError"
 
 
 @pytest.mark.asyncio

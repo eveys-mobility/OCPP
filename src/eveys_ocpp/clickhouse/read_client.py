@@ -2,8 +2,9 @@
 
 The ingestor (`ingestor.py`) writes; this module reads. Single
 long-lived `Connection` per process opened at app boot; each query
-opens a transient cursor. Mirrors the host/port/db settings the writer
-already uses.
+opens a transient cursor. Queries are serialized through full result
+consumption; failures and cancellation discard the connection. Mirrors
+the host/port/db settings the writer already uses.
 
 Two query helpers — meter values and status history — both bounded by
 a `[from, to]` window on the trustworthy `occurred_at` column. The
@@ -13,6 +14,7 @@ route layer enforces the 7-day window cap and turns excess into
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
@@ -37,26 +39,72 @@ class ClickHouseReadClient:
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
         self._conn: Connection | None = None
+        self._query_lock = asyncio.Lock()
+        self._closed = False
 
     async def start(self) -> None:
-        conn = Connection(
-            host=self._settings.clickhouse_host,
-            port=self._settings.clickhouse_port,
-            database=self._settings.clickhouse_db,
-        )
-        await conn.connect()
-        self._conn = conn
+        async with self._query_lock:
+            self._closed = False
+            await self._connect()
         log.info(
             "clickhouse.read_client.started",
             clickhouse_host=self._settings.clickhouse_host,
             clickhouse_db=self._settings.clickhouse_db,
         )
 
+    async def _connect(self) -> None:
+        conn = Connection(
+            host=self._settings.clickhouse_host,
+            port=self._settings.clickhouse_port,
+            database=self._settings.clickhouse_db,
+        )
+        self._conn = conn
+        await conn.connect()
+
     async def aclose(self) -> None:
-        if self._conn is not None:
-            await self._conn.close()
-            self._conn = None
-            log.info("clickhouse.read_client.stopped")
+        async with self._query_lock:
+            self._closed = True
+            await self._discard_connection()
+        log.info("clickhouse.read_client.stopped")
+
+    async def _discard_connection(self) -> None:
+        # Detach before closing: a failed/cancelled native query may leave
+        # asynch's is_query_executing flag set. Never reuse that socket.
+        conn, self._conn = self._conn, None
+        if conn is not None:
+            try:
+                await asyncio.wait_for(conn.close(), timeout=1.0)
+            except Exception as exc:
+                log.warning("clickhouse.read_client.close_failed", error_class=type(exc).__name__)
+
+    async def _fetch(self, sql: str, params: dict[str, Any]) -> tuple[list[str], list[Any]]:
+        # Native connections cannot run two queries concurrently, even if
+        # they use distinct cursors. Hold the lock through full fetchall.
+        async with self._query_lock:
+            if self._closed:
+                raise RuntimeError("ClickHouse read client is closed")
+            for attempt in range(2):
+                try:
+                    if self._conn is None:
+                        await self._connect()
+                    assert self._conn is not None
+                    async with self._conn.cursor() as cursor:
+                        await cursor.execute(sql, params)
+                        cols = [d[0] for d in cursor.description]
+                        rows = await cursor.fetchall()
+                    return cols, rows
+                except asyncio.CancelledError:
+                    await self._discard_connection()
+                    raise
+                except Exception:
+                    await self._discard_connection()
+                    if attempt == 1:
+                        raise
+            raise AssertionError("unreachable")
+
+    async def probe(self) -> None:
+        """SELECT-only observation probe; callers bound its total duration."""
+        await self._fetch("SELECT 1", {})
 
     async def fetch_meter_values(
         self,
@@ -74,8 +122,6 @@ class ClickHouseReadClient:
         the contract surfaces every sample independently rather than
         forcing the client to walk parallel arrays.
         """
-        assert self._conn is not None  # narrowed by start()
-
         # ARRAY JOIN flattens the Nested column; the route caller pages
         # with `limit + 1` for next-page detection.
         #
@@ -117,10 +163,7 @@ class ClickHouseReadClient:
         sql += " ORDER BY occurred_at, event_id LIMIT {limit}"
         params["limit"] = limit
 
-        async with self._conn.cursor() as cursor:
-            await cursor.execute(sql, params)
-            cols = [d[0] for d in cursor.description]
-            rows = await cursor.fetchall()
+        cols, rows = await self._fetch(sql, params)
         return [dict(zip(cols, row, strict=True)) for row in rows]
 
     async def fetch_latest_connector_statuses(
@@ -145,8 +188,6 @@ class ClickHouseReadClient:
         group" cheap — one scan, no subqueries — and the cp_status
         partition key starts with cp_id so the IN-list prunes well.
         """
-        assert self._conn is not None  # narrowed by start()
-
         if not cp_ids:
             return {}
 
@@ -175,10 +216,7 @@ class ClickHouseReadClient:
         """
         params: dict[str, Any] = {f"cp_id_{i}": cp_id for i, cp_id in enumerate(cp_ids)}
 
-        async with self._conn.cursor() as cursor:
-            await cursor.execute(sql, params)
-            cols = [d[0] for d in cursor.description]
-            rows = await cursor.fetchall()
+        cols, rows = await self._fetch(sql, params)
 
         out: dict[str, list[dict[str, Any]]] = {}
         for row in rows:
@@ -210,8 +248,6 @@ class ClickHouseReadClient:
         Phases the charger never reported are absent from `phases`. SoC
         fields are `None` when no SoC sample exists for the transaction.
         """
-        assert self._conn is not None  # narrowed by start()
-
         # Both queries restrict to (cp_id, transaction_id) so the
         # MergeTree partition + order key (cp_id, occurred_at) prunes
         # the scan. The string-cast on `value` matches `cp_meter`'s
@@ -255,14 +291,8 @@ class ClickHouseReadClient:
         """
         params: dict[str, Any] = {"cp_id": cp_id, "transaction_id": transaction_id}
 
-        async with self._conn.cursor() as cursor:
-            await cursor.execute(soc_sql, params)
-            soc_cols = [d[0] for d in cursor.description]
-            soc_rows = await cursor.fetchall()
-
-            await cursor.execute(phases_sql, params)
-            phase_cols = [d[0] for d in cursor.description]
-            phase_rows = await cursor.fetchall()
+        soc_cols, soc_rows = await self._fetch(soc_sql, params)
+        phase_cols, phase_rows = await self._fetch(phases_sql, params)
 
         soc: dict[str, Any] = {"start_pct": None, "last_pct": None, "last_at": None}
         if soc_rows:
@@ -339,8 +369,6 @@ class ClickHouseReadClient:
         `total` is the unbounded count for offset-mode pagination.
         Both are computed in one round-trip via two cursor executes.
         """
-        assert self._conn is not None  # narrowed by start()
-
         where = "WHERE cp_id = {cp_id}"
         params: dict[str, Any] = {"cp_id": cp_id}
         if since is not None:
@@ -371,12 +399,8 @@ class ClickHouseReadClient:
         """
         select_params = {**params, "limit": limit, "offset": offset}
 
-        async with self._conn.cursor() as cursor:
-            await cursor.execute(select_sql, select_params)
-            cols = [d[0] for d in cursor.description]
-            rows = await cursor.fetchall()
-            await cursor.execute(count_sql, params)
-            count_rows = await cursor.fetchall()
+        cols, rows = await self._fetch(select_sql, select_params)
+        _, count_rows = await self._fetch(count_sql, params)
         total = int(count_rows[0][0]) if count_rows else 0
         return [dict(zip(cols, row, strict=True)) for row in rows], total
 
@@ -397,8 +421,6 @@ class ClickHouseReadClient:
         IMPORT_REGISTER`) — same convention as `fetch_transaction_
         telemetry`. Bounded scan via the cp_id partition key.
         """
-        assert self._conn is not None  # narrowed by start()
-
         sql = """
             SELECT
                 connector_id,
@@ -412,10 +434,7 @@ class ClickHouseReadClient:
         """
         params: dict[str, Any] = {"cp_id": cp_id}
 
-        async with self._conn.cursor() as cursor:
-            await cursor.execute(sql, params)
-            cols = [d[0] for d in cursor.description]
-            rows = await cursor.fetchall()
+        cols, rows = await self._fetch(sql, params)
 
         out: dict[int, dict[str, Any]] = {}
         for row in rows:
@@ -448,8 +467,6 @@ class ClickHouseReadClient:
         statuses` — one ClickHouse scan with `argMax` keyed on
         `came_online_at`, partition prune via the cp_id IN list.
         """
-        assert self._conn is not None  # narrowed by start()
-
         if not cp_ids:
             return {}
 
@@ -466,10 +483,7 @@ class ClickHouseReadClient:
         """
         params: dict[str, Any] = {f"cp_id_{i}": cp_id for i, cp_id in enumerate(cp_ids)}
 
-        async with self._conn.cursor() as cursor:
-            await cursor.execute(sql, params)
-            cols = [d[0] for d in cursor.description]
-            rows = await cursor.fetchall()
+        cols, rows = await self._fetch(sql, params)
 
         out: dict[str, dict[str, Any]] = {}
         for row in rows:
@@ -489,8 +503,6 @@ class ClickHouseReadClient:
     ) -> list[dict[str, Any]]:
         """Return StatusNotification transitions for one charger inside
         [from, to]. One row per transition (no ARRAY JOIN needed)."""
-        assert self._conn is not None  # narrowed by start()
-
         # Same `{name}` placeholder convention as `fetch_meter_values` /
         # `fetch_latest_connector_statuses` — `asynch` uses
         # `query.format(**escape_params(params))`, not DB-API
@@ -523,10 +535,7 @@ class ClickHouseReadClient:
         sql += " ORDER BY occurred_at, event_id LIMIT {limit}"
         params["limit"] = limit
 
-        async with self._conn.cursor() as cursor:
-            await cursor.execute(sql, params)
-            cols = [d[0] for d in cursor.description]
-            rows = await cursor.fetchall()
+        cols, rows = await self._fetch(sql, params)
         return [dict(zip(cols, row, strict=True)) for row in rows]
 
     async def fetch_fleet_status_history(
@@ -550,8 +559,6 @@ class ClickHouseReadClient:
         Common use: "all Faulted statuses this week" — pass
         ``statuses=["Faulted"]`` and a 7-day window.
         """
-        assert self._conn is not None  # narrowed by start()
-
         sql = """
             SELECT
                 event_id,
@@ -588,10 +595,7 @@ class ClickHouseReadClient:
         sql += " ORDER BY occurred_at, event_id LIMIT {limit}"
         params["limit"] = limit
 
-        async with self._conn.cursor() as cursor:
-            await cursor.execute(sql, params)
-            cols = [d[0] for d in cursor.description]
-            rows = await cursor.fetchall()
+        cols, rows = await self._fetch(sql, params)
         return [dict(zip(cols, row, strict=True)) for row in rows]
 
     async def fetch_frames_by_cp(
@@ -607,8 +611,6 @@ class ClickHouseReadClient:
         """Per-cp OCPP frame audit inside [from, to]. Both
         directions by default; pass ``direction`` to scope to
         ``inbound`` (CP→gateway) or ``outbound`` (gateway→CP)."""
-        assert self._conn is not None
-
         sql = """
             SELECT
                 event_id,
@@ -640,10 +642,7 @@ class ClickHouseReadClient:
         sql += " ORDER BY occurred_at, event_id LIMIT {limit}"
         params["limit"] = limit
 
-        async with self._conn.cursor() as cursor:
-            await cursor.execute(sql, params)
-            cols = [d[0] for d in cursor.description]
-            rows = await cursor.fetchall()
+        cols, rows = await self._fetch(sql, params)
         return [dict(zip(cols, row, strict=True)) for row in rows]
 
     async def fetch_frames_by_transaction(
@@ -657,8 +656,6 @@ class ClickHouseReadClient:
         so the lookup is cheap if the skip-index on transaction_id
         prunes most parts. Used by "show me the frame trace for tx
         12345" workflows."""
-        assert self._conn is not None
-
         sql = """
             SELECT
                 event_id,
@@ -681,10 +678,7 @@ class ClickHouseReadClient:
             "limit": limit,
         }
 
-        async with self._conn.cursor() as cursor:
-            await cursor.execute(sql, params)
-            cols = [d[0] for d in cursor.description]
-            rows = await cursor.fetchall()
+        cols, rows = await self._fetch(sql, params)
         return [dict(zip(cols, row, strict=True)) for row in rows]
 
     async def fetch_uptime_for_cp(
@@ -712,8 +706,6 @@ class ClickHouseReadClient:
         already prunes by cp_id; partition prune on ``came_online_at``
         scopes the byte read to the months overlapping the window.
         """
-        assert self._conn is not None
-
         # Interval clipping is computed inline so summing intervals[]
         # matches the returned total exactly. ClickHouse `greatest` /
         # `least` are nullable-safe over the window bounds (both
@@ -751,10 +743,7 @@ class ClickHouseReadClient:
             "to_ts": window_to,
         }
 
-        async with self._conn.cursor() as cursor:
-            await cursor.execute(sql, params)
-            cols = [d[0] for d in cursor.description]
-            raw = await cursor.fetchall()
+        cols, raw = await self._fetch(sql, params)
 
         intervals: list[dict[str, Any]] = []
         total = 0

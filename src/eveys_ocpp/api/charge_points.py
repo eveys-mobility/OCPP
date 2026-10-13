@@ -12,8 +12,8 @@ Per the contract `docs/integration/02-gateway-rest-api.md`:
 - `last_*` fields come from Postgres (charge_points table).
 - `connectors[]` carries the most recent StatusNotification per
   connector (sourced from ClickHouse `cp_status`). Empty when no
-  StatusNotifications have been recorded yet, or when the gateway
-  is running without a ClickHouse client wired (tests, dev workstations).
+  StatusNotifications have been recorded yet. `connectors_state` and
+  `connectors_error` distinguish this from an unavailable archive.
 - `last_status` is kept as a single-string convenience for callers
   that don't need per-connector resolution. For multi-connector
   chargers it is **last-write-wins** across connectors and should
@@ -24,7 +24,7 @@ Per the contract `docs/integration/02-gateway-rest-api.md`:
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, Query, Request
@@ -95,6 +95,10 @@ def _to_response(cp: dict[str, Any]) -> dict[str, Any]:
         "last_diagnostics_status": cp["last_diagnostics_status"],
         "last_firmware_status": cp["last_firmware_status"],
         "connectors": cp.get("connectors", []),
+        "connectors_state": cp.get("connectors_state", "unavailable"),
+        "connectors_source": "clickhouse",
+        "connectors_error": cp.get("connectors_error"),
+        "connectors_last_successful_at": cp.get("connectors_last_successful_at"),
         "last_offline_seconds": cp.get("last_offline_seconds"),
         "last_offline_ended_at": _isoformat(cp.get("last_offline_ended_at")),
     }
@@ -106,26 +110,32 @@ async def _enrich_with_connectors(
     """Attach per-connector status from ClickHouse to every dict.
 
     Batches all charger ids in one query so a list of N chargers stays
-    a single ClickHouse round-trip. Falls back to an empty list per
-    charger when the read client isn't wired (dev / unit tests) or the
-    query fails — the route still serves the metadata correctly.
+    a single ClickHouse round-trip. Source availability is explicit:
+    a successful empty result differs from an unavailable archive.
+    This route does not cache old connector snapshots.
     """
     if not cp_dicts:
         return cp_dicts
 
     client = getattr(request.app.state, "ch_client", None)
+    error: str | None = None
+    observed_at: str | None = None
+    latest_by_cp: dict[str, list[dict[str, Any]]] = {}
     if client is None:
-        for cp in cp_dicts:
-            cp.setdefault("connectors", [])
-        return cp_dicts
-
-    cp_ids = [cp["cp_id"] for cp in cp_dicts]
-    try:
-        latest_by_cp = await client.fetch_latest_connector_statuses(cp_ids=cp_ids)
-    except Exception:  # ClickHouse hiccup must not 500 the metadata path
-        latest_by_cp = {}
+        error = "not_configured"
+    else:
+        cp_ids = [cp["cp_id"] for cp in cp_dicts]
+        try:
+            latest_by_cp = await client.fetch_latest_connector_statuses(cp_ids=cp_ids)
+            observed_at = datetime.now(UTC).isoformat()
+        except Exception:  # ClickHouse hiccup must not 500 the metadata path
+            error = "query_failed"
 
     for cp in cp_dicts:
+        cp["connectors_state"] = "available" if error is None else "unavailable"
+        cp["connectors_source"] = "clickhouse"
+        cp["connectors_error"] = error
+        cp["connectors_last_successful_at"] = observed_at
         rows = latest_by_cp.get(cp["cp_id"], [])
         cp["connectors"] = [
             {

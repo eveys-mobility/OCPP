@@ -30,7 +30,7 @@ plausible, copy-pasteable, and never include real PII.
 
 from __future__ import annotations
 
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -73,12 +73,16 @@ class ErrorEnvelope(BaseModel):
 class HealthComponents(BaseModel):
     postgres: str = Field(description="`ok` or `unavailable`.")
     redis: str = Field(description="`ok` or `unavailable`.")
+    clickhouse: Literal["ok", "error", "unconfigured"] = Field(
+        description="Archive read probe; does not verify ingestion progress."
+    )
+    clickhouse_error_class: str | None = Field(default=None, description="Exception class only.")
 
 
 class HealthResponse(BaseModel):
     """`GET /api/v1/health`. Liveness + per-component probe."""
 
-    status: str = Field(description="`ok` when every component is `ok`; `degraded` otherwise.")
+    status: str = Field(description="`degraded` on a configured component failure; otherwise `ok`.")
     version: str = Field(description="Gateway package version string.")
     components: HealthComponents
     request_id: str
@@ -88,7 +92,12 @@ class HealthResponse(BaseModel):
             "example": {
                 "status": "ok",
                 "version": "0.1.0",
-                "components": {"postgres": "ok", "redis": "ok"},
+                "components": {
+                    "postgres": "ok",
+                    "redis": "ok",
+                    "clickhouse": "ok",
+                    "clickhouse_error_class": None,
+                },
                 "request_id": "9b3c5d18-1f7c-4b6a-8e0e-5b9a3c4f2e10",
             }
         }
@@ -172,6 +181,15 @@ class ChargePoint(BaseModel):
         description="Which gateway pod owns the WS. None when offline.",
     )
     connectors: list[ConnectorStatus] = Field(default_factory=list)
+    connectors_state: Literal["available", "unavailable"] = Field(
+        description="Archive availability; successful empty result is not a failure."
+    )
+    connectors_source: Literal["clickhouse"] = "clickhouse"
+    connectors_error: Literal["query_failed", "not_configured"] | None = None
+    connectors_last_successful_at: str | None = Field(
+        default=None,
+        description="UTC time this request read the archive successfully; null on unavailable.",
+    )
     last_offline_seconds: int | None = Field(
         default=None,
         description=(

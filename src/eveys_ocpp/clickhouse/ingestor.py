@@ -26,9 +26,10 @@ Operational notes:
   replicas would split the partition assignment automatically (Kafka
   consumer-group rebalance) but we run one for now (single-shard
   ClickHouse — see ADR-0020).
-- At-least-once: a crash between INSERT-success and offset-commit
-  re-inserts the next time. ``event_id`` in the envelope is the
-  downstream dedup key.
+- At-least-once: a crash or ambiguous INSERT acknowledgement before
+  offset-commit can re-insert rows. The current MergeTree schemas do
+  not enforce uniqueness of ``event_id``. In-memory acknowledgements
+  avoid retrying tables known to have succeeded in this process only.
 - Batch size and time threshold are env-tunable; the defaults
   (500 / 5 s) are documented in ADR-0020.
 
@@ -295,13 +296,7 @@ class ClickHouseIngestor:
         await consumer.start()
         self._consumer = consumer
 
-        conn = Connection(
-            host=self._settings.clickhouse_host,
-            port=self._settings.clickhouse_port,
-            database=self._settings.clickhouse_db,
-        )
-        await conn.connect()
-        self._conn = conn
+        await self._connect()
 
         log.info(
             "clickhouse.ingestor.started",
@@ -310,6 +305,23 @@ class ClickHouseIngestor:
             clickhouse_db=self._settings.clickhouse_db,
             topics=list(topics),
         )
+
+    async def _connect(self) -> None:
+        conn = Connection(
+            host=self._settings.clickhouse_host,
+            port=self._settings.clickhouse_port,
+            database=self._settings.clickhouse_db,
+        )
+        self._conn = conn
+        await conn.connect()
+
+    async def _discard_connection(self) -> None:
+        conn, self._conn = self._conn, None
+        if conn is not None:
+            try:
+                await asyncio.wait_for(conn.close(), timeout=1.0)
+            except Exception as exc:
+                log.warning("clickhouse.ingestor.close_failed", error_class=type(exc).__name__)
 
     async def stop(self) -> None:
         self._shutdown.set()
@@ -321,15 +333,20 @@ class ClickHouseIngestor:
             self._conn = None
         log.info("clickhouse.ingestor.stopped")
 
-    async def _flush_batch(self, rows: Iterable[_Row]) -> None:
+    async def _flush_batch(
+        self, rows: Iterable[_Row], *, completed_tables: set[str] | None = None
+    ) -> None:
         """INSERT a batch into ClickHouse, grouped by table.
 
         Uses one ``INSERT INTO <table> VALUES`` per table touched in
         the batch. ``executemany`` lets asynch send all rows in one
-        round-trip. Failure raises; the caller does NOT commit
-        offsets, so the next poll re-delivers the batch.
+        round-trip. Remember table acknowledgements while retrying the
+        same in-memory batch; a later table failure must not reinsert a
+        table already acknowledged. This cannot deduplicate a crash or
+        an INSERT whose server acknowledgement was lost.
         """
-        assert self._conn is not None  # narrowed by start()
+        if completed_tables is None:
+            completed_tables = set()
 
         # Group by table. Order within a table is preserved.
         by_table: dict[str, list[dict[str, Any]]] = {}
@@ -337,7 +354,7 @@ class ClickHouseIngestor:
             by_table.setdefault(r.table, []).append(r.columns)
 
         for table, batch in by_table.items():
-            if not batch:
+            if not batch or table in completed_tables:
                 continue
             # Column list order must be stable across the batch — pull
             # from the first row, every other row's keys must match.
@@ -350,8 +367,18 @@ class ClickHouseIngestor:
             # ``%(name)s`` placeholders here would make CH try to parse
             # them as SQL — see Code: 62 errors in early E2-14 testing.
             sql = f"INSERT INTO {table} ({', '.join(cols)}) VALUES"
-            async with self._conn.cursor() as cursor:
-                await cursor.executemany(sql, batch)
+            try:
+                if self._conn is None:
+                    await self._connect()
+                assert self._conn is not None
+                async with self._conn.cursor() as cursor:
+                    await cursor.executemany(sql, batch)
+            except BaseException:
+                # Failed/cancelled INSERTs can leave the native driver's
+                # query flag set. Retry the pending batch on a new socket.
+                await self._discard_connection()
+                raise
+            completed_tables.add(table)
             log.info(
                 "clickhouse.ingestor.batch_inserted",
                 table=table,
@@ -422,11 +449,9 @@ class ClickHouseIngestor:
         thousands of single-row parts an hour and left the merge
         scheduler doing all the work.
 
-        Invariants preserved from the original loop: flush precedes
-        commit; a failed flush skips the commit so the next poll
-        re-delivers (at-least-once); `max_flush_failures` consecutive
-        failures raise `IngestorFatalError`; the counter resets on any
-        successful flush.
+        A poll advances the consumer position, so failed batches must
+        stay in memory: never poll a later batch until this one is
+        written and its explicit per-partition next offsets committed.
         """
         assert self._consumer is not None  # narrowed by start()
 
@@ -435,6 +460,7 @@ class ClickHouseIngestor:
 
         while not self._shutdown.is_set():
             rows: list[_Row] = []
+            offsets: dict[Any, int] = {}
             deadline = self._now() + batch_seconds
             poll_failed = False
 
@@ -456,8 +482,15 @@ class ClickHouseIngestor:
                     poll_failed = True
                     break
 
-                for _topic_partition, partition_records in records.items():
+                for topic_partition, partition_records in records.items():
                     for record in partition_records:
+                        # Kafka commit offsets identify the NEXT record.
+                        # Include intentionally dropped malformed records
+                        # under the existing parse/drop policy, but never
+                        # consumer positions outside this batch.
+                        offsets[topic_partition] = max(
+                            offsets.get(topic_partition, 0), record.offset + 1
+                        )
                         row = await self._process_record(record)
                         if row is not None:
                             rows.append(row)
@@ -467,45 +500,55 @@ class ClickHouseIngestor:
             # Shutdown breaks the inner loop rather than discarding
             # what it collected, so a partial batch is still flushed
             # and committed on the way out.
-            if rows:
-                try:
-                    await self._flush_batch(rows)
-                except Exception as exc:
-                    # ClickHouse INSERT failed. Don't commit offsets —
-                    # the next poll re-delivers. Backoff briefly to
-                    # avoid a hot loop against a misbehaving broker/CH.
-                    self._consecutive_flush_failures += 1
-                    limit = self._settings.clickhouse_ingestor_max_flush_failures
-                    log.exception(
-                        "clickhouse.ingestor.flush_failed",
-                        error=str(exc),
-                        consecutive_failures=self._consecutive_flush_failures,
-                        max_failures=limit,
-                    )
-                    if self._consecutive_flush_failures >= limit:
-                        # We've been failing in a row for `limit`
-                        # batches. Most likely the schema is missing /
-                        # wrong, or we're pointed at the wrong CH
-                        # instance — neither heals on its own. Bail so
-                        # the supervisor restarts and the
-                        # misconfiguration surfaces.
-                        raise IngestorFatalError(
-                            f"flush failed {self._consecutive_flush_failures} "
-                            f"times in a row (limit {limit}); aborting"
-                        ) from exc
-                    await asyncio.sleep(1.0)
-                    continue
+            if offsets:
+                completed_tables: set[str] = set()
+                written = False
+                commit_failures = 0
+                limit = self._settings.clickhouse_ingestor_max_flush_failures
+                while True:
+                    if not written:
+                        try:
+                            if rows:
+                                await self._flush_batch(rows, completed_tables=completed_tables)
+                        except Exception as exc:
+                            self._consecutive_flush_failures += 1
+                            log.exception(
+                                "clickhouse.ingestor.flush_failed",
+                                error=str(exc),
+                                consecutive_failures=self._consecutive_flush_failures,
+                                max_failures=limit,
+                            )
+                            if self._consecutive_flush_failures >= limit:
+                                raise IngestorFatalError(
+                                    f"flush failed {self._consecutive_flush_failures} "
+                                    f"times in a row (limit {limit}); aborting"
+                                ) from exc
+                            if self._shutdown.is_set():
+                                return  # keep offsets uncommitted for restart
+                            await asyncio.sleep(1.0)
+                            continue
+                        written = True
+                        self._consecutive_flush_failures = 0
 
-                # The batch landed — flush failures don't count once we
-                # see green. The counter only catches sustained failure,
-                # not the occasional transient hiccup.
-                self._consecutive_flush_failures = 0
-
-                # Commit only after the batch landed successfully.
-                try:
-                    await self._consumer.commit()
-                except Exception as exc:
-                    log.exception("clickhouse.ingestor.commit_failed", error=str(exc))
+                    try:
+                        await self._consumer.commit(offsets)
+                    except Exception as exc:
+                        commit_failures += 1
+                        log.exception(
+                            "clickhouse.ingestor.commit_failed",
+                            error=str(exc),
+                            consecutive_failures=commit_failures,
+                        )
+                        if commit_failures >= limit:
+                            raise IngestorFatalError(
+                                f"commit failed {commit_failures} times in a row "
+                                f"(limit {limit}); aborting"
+                            ) from exc
+                        if self._shutdown.is_set():
+                            return
+                        await asyncio.sleep(1.0)
+                        continue  # retry commit without another INSERT or poll
+                    break
 
             if poll_failed:
                 await asyncio.sleep(1.0)

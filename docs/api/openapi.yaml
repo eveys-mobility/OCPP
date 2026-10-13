@@ -72,6 +72,33 @@ components:
             $ref: '#/components/schemas/ConnectorStatus'
           title: Connectors
           type: array
+        connectors_error:
+          anyOf:
+          - enum:
+            - query_failed
+            - not_configured
+            type: string
+          - type: 'null'
+          title: Connectors Error
+        connectors_last_successful_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: UTC time this request read the archive successfully; null on
+            unavailable.
+          title: Connectors Last Successful At
+        connectors_source:
+          const: clickhouse
+          default: clickhouse
+          title: Connectors Source
+          type: string
+        connectors_state:
+          description: Archive availability; successful empty result is not a failure.
+          enum:
+          - available
+          - unavailable
+          title: Connectors State
+          type: string
         cp_id:
           description: Stable identifier the charger sent in BootNotification.
           title: Cp Id
@@ -150,6 +177,7 @@ components:
       required:
       - cp_id
       - online
+      - connectors_state
       title: ChargePoint
       type: object
     ChargePointDetail:
@@ -193,6 +221,33 @@ components:
             $ref: '#/components/schemas/ConnectorStatus'
           title: Connectors
           type: array
+        connectors_error:
+          anyOf:
+          - enum:
+            - query_failed
+            - not_configured
+            type: string
+          - type: 'null'
+          title: Connectors Error
+        connectors_last_successful_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: UTC time this request read the archive successfully; null on
+            unavailable.
+          title: Connectors Last Successful At
+        connectors_source:
+          const: clickhouse
+          default: clickhouse
+          title: Connectors Source
+          type: string
+        connectors_state:
+          description: Archive availability; successful empty result is not a failure.
+          enum:
+          - available
+          - unavailable
+          title: Connectors State
+          type: string
         cp_id:
           description: Stable identifier the charger sent in BootNotification.
           title: Cp Id
@@ -278,6 +333,7 @@ components:
       required:
       - cp_id
       - online
+      - connectors_state
       - request_id
       title: ChargePointDetail
       type: object
@@ -570,6 +626,20 @@ components:
       type: object
     HealthComponents:
       properties:
+        clickhouse:
+          description: Archive read probe; does not verify ingestion progress.
+          enum:
+          - ok
+          - error
+          - unconfigured
+          title: Clickhouse
+          type: string
+        clickhouse_error_class:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Exception class only.
+          title: Clickhouse Error Class
         postgres:
           description: '`ok` or `unavailable`.'
           title: Postgres
@@ -581,12 +651,14 @@ components:
       required:
       - postgres
       - redis
+      - clickhouse
       title: HealthComponents
       type: object
     HealthResponse:
       description: '`GET /api/v1/health`. Liveness + per-component probe.'
       example:
         components:
+          clickhouse: ok
           postgres: ok
           redis: ok
         request_id: 9b3c5d18-1f7c-4b6a-8e0e-5b9a3c4f2e10
@@ -599,7 +671,7 @@ components:
           title: Request Id
           type: string
         status:
-          description: '`ok` when every component is `ok`; `degraded` otherwise.'
+          description: '`degraded` on a configured component failure; otherwise `ok`.'
           title: Status
           type: string
         version:

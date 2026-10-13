@@ -60,6 +60,7 @@ def _envelope(payload_kind: str, **fields: Any) -> events_pb2.EventEnvelope:
         t.transaction_id = fields.pop("transaction_id", 12345)
         t.id_tag = fields.pop("id_tag", "RFID_X")
         t.meter_start_wh = fields.pop("meter_start_wh", 1_000_000)
+        t.charger_reported_at = fields.pop("charger_reported_at", "2026-05-07T11:59:55+00:00")
     elif payload_kind == "cp_connected":
         c = env.cp_connected
         c.subprotocol = fields.pop("subprotocol", "ocpp1.6")
@@ -114,6 +115,18 @@ def test_build_body_tx_started_shape() -> None:
     assert body is not None
     assert body["data"]["event_type"] == "tx.started"
     assert body["data"]["transaction_id"] == 12345
+
+
+def test_build_body_tx_started_preserves_reported_and_received_times() -> None:
+    d = WebhookDispatcher(_settings())
+    reported_at = "2026-10-13T10:29:52+03:00"
+    received_at = "2026-10-13T07:29:57+00:00"
+    body = d._build_body(
+        _envelope("tx_started", charger_reported_at=reported_at, occurred_at=received_at)
+    )
+    assert body is not None
+    assert body["data"]["charger_reported_at"] == reported_at
+    assert body["data"]["occurred_at"] == received_at
 
 
 def test_build_body_tx_stopped_shape() -> None:

@@ -92,6 +92,7 @@ def fake_ch_client() -> MagicMock:
     Default: every method returns an empty result so a route that didn't
     get a per-test override still answers cleanly."""
     client = MagicMock()
+    client.probe = AsyncMock(return_value=None)
     client.fetch_meter_values = AsyncMock(return_value=[])
     client.fetch_status_history = AsyncMock(return_value=[])
     client.fetch_latest_connector_statuses = AsyncMock(return_value={})

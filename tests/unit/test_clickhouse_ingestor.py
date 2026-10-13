@@ -520,7 +520,7 @@ async def test_ingest_loop_commits_only_after_successful_flush(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The hot path: getmany returns one record, _process_record
-    yields a row, _flush_batch succeeds, consumer.commit() is awaited.
+    yields a row, _flush_batch succeeds, explicit offset commit is awaited.
     On the next iteration the shutdown event is set so the loop exits."""
     from eveys_ocpp.clickhouse.ingestor import _Row
 
@@ -557,11 +557,12 @@ async def test_ingest_loop_commits_only_after_successful_flush(
     flushed_rows: list[list[_Row]] = []
     call_order: list[str] = []
 
-    async def fake_flush(rows: list[_Row]) -> None:
+    async def fake_flush(rows: list[_Row], **_: Any) -> None:
         flushed_rows.append(list(rows))
         call_order.append("flush")
 
-    async def fake_commit() -> None:
+    async def fake_commit(offsets: dict[object, int]) -> None:
+        assert offsets == {"part-0": 1}
         call_order.append("commit")
 
     ingestor._flush_batch = fake_flush  # type: ignore[method-assign]
@@ -582,7 +583,7 @@ async def test_ingest_loop_skips_commit_when_flush_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """If _flush_batch raises, offsets are NOT committed and the
-    loop backs off, ready to retry on the next poll. Critical for
+    loop exits on shutdown with the failed batch uncommitted. Critical for
     at-least-once: a ClickHouse insert failure must not be masked by
     an early offset commit."""
     from eveys_ocpp.clickhouse.ingestor import _Row
@@ -610,13 +611,13 @@ async def test_ingest_loop_skips_commit_when_flush_fails(
     fake_consumer.getmany = fake_getmany
     commit_calls = {"n": 0}
 
-    async def fake_commit() -> None:
+    async def fake_commit(offsets: dict[object, int]) -> None:
         commit_calls["n"] += 1
 
     fake_consumer.commit = fake_commit  # type: ignore[method-assign]
     ingestor._consumer = fake_consumer
 
-    async def failing_flush(rows: list[_Row]) -> None:
+    async def failing_flush(rows: list[_Row], **_: Any) -> None:
         raise RuntimeError("ClickHouse exploded")
 
     ingestor._flush_batch = failing_flush  # type: ignore[method-assign]
@@ -691,7 +692,7 @@ async def test_ingest_loop_continues_when_poll_returns_no_records() -> None:
 
     flushed: list[object] = []
 
-    async def fake_flush(rows: object) -> None:
+    async def fake_flush(rows: object, **_: Any) -> None:
         flushed.append(rows)
 
     ingestor._flush_batch = fake_flush  # type: ignore[method-assign]
@@ -746,7 +747,7 @@ async def test_ingest_loop_raises_fatal_after_n_consecutive_flush_failures(
     fake_consumer.commit = AsyncMock()
     ingestor._consumer = fake_consumer
 
-    async def failing_flush(rows: list[_Row]) -> None:
+    async def failing_flush(rows: list[_Row], **_: Any) -> None:
         raise RuntimeError("ClickHouse exploded")
 
     ingestor._flush_batch = failing_flush  # type: ignore[method-assign]
@@ -772,7 +773,7 @@ async def test_ingest_loop_resets_failure_counter_on_successful_flush(
     # Limit set to 3 — fail twice (resetting once), then keep going.
     # If reset didn't happen, two more failures would tip us over.
     #
-    # `batch_size=1` is what keeps this one-flush-per-poll. The loop
+    # `batch_size=1` is what keeps this one-batch-per-poll. The loop
     # accumulates rows across polls, so at the default 500 all five
     # records would coalesce into a *single* flush and the flaky
     # fail/succeed/fail sequence below would never run.
@@ -806,10 +807,10 @@ async def test_ingest_loop_resets_failure_counter_on_successful_flush(
 
     flush_calls = {"n": 0}
 
-    async def flaky_flush(rows: list[_Row]) -> None:
+    async def flaky_flush(rows: list[_Row], **_: Any) -> None:
         flush_calls["n"] += 1
         # Fail on calls 1, 2 — succeed on 3 (resets counter to 0) —
-        # fail on 4, 5. Counter at end-of-loop = 2, well under 3.
+        # fail on 4, 5; both batches must retry before the next poll.
         if flush_calls["n"] in {1, 2, 4, 5}:
             raise RuntimeError("transient")
 
@@ -825,8 +826,8 @@ async def test_ingest_loop_resets_failure_counter_on_successful_flush(
     await ingestor.ingest_loop()
 
     # Sanity: we exercised the path we claimed to.
-    assert flush_calls["n"] == 5
-    assert ingestor._consecutive_flush_failures == 2
+    assert flush_calls["n"] == 9
+    assert ingestor._consecutive_flush_failures == 0
 
 
 # ---- ingest_loop: accumulate-across-polls batching -----------------------
@@ -881,7 +882,7 @@ async def test_ingest_loop_accumulates_rows_across_polls_into_one_flush() -> Non
 
     flushes: list[list[_Row]] = []
 
-    async def capture_flush(rows: list[_Row]) -> None:
+    async def capture_flush(rows: list[_Row], **_: Any) -> None:
         flushes.append(list(rows))
 
     ingestor._flush_batch = capture_flush  # type: ignore[method-assign]
@@ -930,7 +931,7 @@ async def test_ingest_loop_flushes_partial_batch_when_deadline_expires() -> None
 
     flushes: list[list[_Row]] = []
 
-    async def capture_flush(rows: list[_Row]) -> None:
+    async def capture_flush(rows: list[_Row], **_: Any) -> None:
         flushes.append(list(rows))
 
     ingestor._flush_batch = capture_flush  # type: ignore[method-assign]
@@ -974,7 +975,7 @@ async def test_ingest_loop_shrinks_poll_timeout_toward_the_deadline() -> None:
     fake_consumer.commit = AsyncMock()
     ingestor._consumer = fake_consumer
 
-    async def noop_flush(rows: object) -> None:
+    async def noop_flush(rows: object, **_: Any) -> None:
         return None
 
     ingestor._flush_batch = noop_flush  # type: ignore[method-assign]
@@ -1011,7 +1012,8 @@ async def test_ingest_loop_flushes_partial_batch_before_shutdown() -> None:
             return {}
         return {"part-0": [_boot_record(f"evt-{poll_count['n']}")]}
 
-    async def tracking_commit() -> None:
+    async def tracking_commit(offsets: dict[object, int]) -> None:
+        assert offsets == {"part-0": 1}
         call_order.append("commit")
 
     fake_consumer = AsyncMock()
@@ -1021,7 +1023,7 @@ async def test_ingest_loop_flushes_partial_batch_before_shutdown() -> None:
 
     flushes: list[list[_Row]] = []
 
-    async def capture_flush(rows: list[_Row]) -> None:
+    async def capture_flush(rows: list[_Row], **_: Any) -> None:
         call_order.append("flush")
         flushes.append(list(rows))
 
@@ -1057,7 +1059,7 @@ async def test_ingest_loop_caps_max_records_at_remaining_capacity() -> None:
     fake_consumer.commit = AsyncMock()
     ingestor._consumer = fake_consumer
 
-    async def noop_flush(rows: object) -> None:
+    async def noop_flush(rows: object, **_: Any) -> None:
         return None
 
     ingestor._flush_batch = noop_flush  # type: ignore[method-assign]

@@ -537,6 +537,7 @@ class WebhookDispatcher:
                 "event_id": envelope.event_id,
                 "event_type": "tx.started",
                 "occurred_at": envelope.occurred_at,
+                "charger_reported_at": p.charger_reported_at,
                 "cp_id": envelope.cp_id,
                 "connector_id": p.connector_id,
                 "transaction_id": p.transaction_id,
