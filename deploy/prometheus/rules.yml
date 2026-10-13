@@ -1,4 +1,40 @@
 groups:
+  - name: eveys_ocpp_archive
+    interval: 30s
+    rules:
+      # The sidecar is a different process. Gateway-local metrics and a
+      # healthy ClickHouse ping do not establish Kafka delivery progress.
+      - alert: EveysOcppArchiveIngestorUnavailable
+        expr: up{job="eveys-ocpp-clickhouse-ingestor"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: OCPP archive ingestor cannot be observed
+          description: Check the sidecar and scrape target; exporter failure does not identify the physical charging state.
+      - alert: EveysOcppArchivePollStalled
+        expr: |
+          (time() - eveys_ocpp_clickhouse_ingestor_last_poll_timestamp_seconds{job="eveys-ocpp-clickhouse-ingestor"} > 60)
+          and on(job, instance) (up{job="eveys-ocpp-clickhouse-ingestor"} == 1)
+          and on(job, instance) (eveys_ocpp_clickhouse_ingestor_running{job="eveys-ocpp-clickhouse-ingestor"} == 1)
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: OCPP archive ingestor polling has stalled
+          description: The exporter is reachable but the consumer has not completed a poll; inspect the sidecar without assuming archive freshness.
+      - alert: EveysOcppArchiveDeliveryStalled
+        expr: |
+          (eveys_ocpp_clickhouse_ingestor_consumer_lag_messages{job="eveys-ocpp-clickhouse-ingestor"} > 0)
+          and (eveys_ocpp_clickhouse_ingestor_consumer_lag_known{job="eveys-ocpp-clickhouse-ingestor"} == 1)
+          and on(job, instance) (time() - eveys_ocpp_clickhouse_ingestor_last_successful_commit_timestamp_seconds{job="eveys-ocpp-clickhouse-ingestor"} > 120)
+          and on(job, instance) (up{job="eveys-ocpp-clickhouse-ingestor"} == 1)
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: OCPP archive has pending delivery without commit progress
+          description: Inspect ClickHouse INSERT and offset commit failures before resuming or replaying consumption.
   - name: eveys_ocpp_slos
     interval: 30s
     rules:

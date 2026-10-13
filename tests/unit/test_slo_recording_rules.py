@@ -5,7 +5,7 @@ typo a metric name, drop a rule, or misalign with the dashboard's
 record references. This test parses `deploy/prometheus/rules.yml`
 and asserts:
 
-  - the file is valid YAML with the expected `groups[0].rules` shape
+  - the file is valid YAML with exactly one named SLO recording group
   - every rule we promise in `docs/14-slos.md` is present
   - every recorded series referenced by `06-slos.json` resolves to
     a `record:` line in the file (catches typos in either direction)
@@ -24,17 +24,23 @@ RULES_PATH = REPO_ROOT / "deploy" / "prometheus" / "rules.yml"
 DASHBOARD_PATH = REPO_ROOT / "deploy" / "grafana" / "dashboards" / "06-slos.json"
 
 
-def test_rules_file_parses_and_has_one_group() -> None:
+def test_rules_file_parses_and_has_one_slo_group() -> None:
     doc = yaml.safe_load(RULES_PATH.read_text())
     assert isinstance(doc, dict)
     groups = doc.get("groups")
-    assert isinstance(groups, list) and len(groups) == 1
-    assert groups[0]["name"] == "eveys_ocpp_slos"
+    assert isinstance(groups, list)
+    slo_groups = [group for group in groups if group["name"] == "eveys_ocpp_slos"]
+    assert len(slo_groups) == 1
+    assert isinstance(slo_groups[0]["rules"], list)
+
+
+def _slo_rules() -> list[dict]:
+    doc = yaml.safe_load(RULES_PATH.read_text())
+    return next(group["rules"] for group in doc["groups"] if group["name"] == "eveys_ocpp_slos")
 
 
 def _recorded_names() -> set[str]:
-    doc = yaml.safe_load(RULES_PATH.read_text())
-    return {r["record"] for r in doc["groups"][0]["rules"]}
+    return {r["record"] for r in _slo_rules()}
 
 
 def test_every_promised_slo_has_a_record_rule() -> None:
@@ -83,9 +89,7 @@ def test_records_use_known_eveys_ocpp_metrics() -> None:
     """Each rule's expression should reference at least one
     `eveys_ocpp_*` metric. Catches a refactor that accidentally
     leaves a rule dangling on a renamed source metric."""
-    doc = yaml.safe_load(RULES_PATH.read_text())
-    rules = doc["groups"][0]["rules"]
-    for rule in rules:
+    for rule in _slo_rules():
         expr = rule["expr"]
         assert "eveys_ocpp_" in expr, (
             f"rule {rule['record']!r} expression doesn't reference any "

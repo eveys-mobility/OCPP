@@ -24,7 +24,14 @@
          bounded so they can never again outgrow the data they describe. -->
     <query_log><ttl>event_date + INTERVAL 3 DAY DELETE</ttl></query_log>
     <query_metric_log><ttl>event_date + INTERVAL 3 DAY DELETE</ttl></query_metric_log>
-    <metric_log><ttl>event_date + INTERVAL 3 DAY DELETE</ttl></metric_log>
+    <metric_log>
+        <ttl>event_date + INTERVAL 3 DAY DELETE</ttl>
+        <!-- 1102-column metric_log Wide writers allocate a stream buffer per
+             column. Keep this internal log compact, with bounded merge blocks;
+             do not change the business tables or the global merge pool.
+             Existing tables need the separate reviewed settings SQL too. -->
+        <settings>min_bytes_for_wide_part=18446744073709551615, merge_max_block_size=1024</settings>
+    </metric_log>
     <asynchronous_metric_log><ttl>event_date + INTERVAL 3 DAY DELETE</ttl></asynchronous_metric_log>
     <part_log><ttl>event_date + INTERVAL 3 DAY DELETE</ttl></part_log>
     <trace_log><ttl>event_date + INTERVAL 3 DAY DELETE</ttl></trace_log>

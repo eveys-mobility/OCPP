@@ -16,6 +16,7 @@ services:
   postgres:
     image: postgres:16-alpine
     container_name: eveys-ocpp-postgres
+    restart: unless-stopped
     environment:
       POSTGRES_USER: eveys
       POSTGRES_PASSWORD: eveys           # local-dev only
@@ -38,6 +39,7 @@ services:
   redis:
     image: redis:7-alpine
     container_name: eveys-ocpp-redis
+    restart: unless-stopped
     ports:
       - "16379:6379"
     volumes:
@@ -48,11 +50,25 @@ services:
       timeout: 3s
       retries: 10
 
+  kafka-storage-init:
+    # The pinned broker runs as appuser1000. A new named-volume directory
+    # can be root-owned; prepare only that directory before the broker boots.
+    # Existing log files must retain1000:1000 during the approved data copy.
+    image: apache/kafka:3.7.0
+    user: "0:0"
+    entrypoint: ["chown", "1000:1000", "/tmp/kraft-combined-logs"]
+    restart: "no"
+    volumes:
+      - kafka_data:/tmp/kraft-combined-logs
+
   kafka:
     # Apache's first-party image (Bitnami's public images moved to bitnamilegacy/
     # after a 2025 licensing change; we use Apache's directly for longevity).
     image: apache/kafka:3.7.0
     container_name: eveys-ocpp-kafka
+    restart: unless-stopped
+    depends_on:
+      kafka-storage-init: { condition: service_completed_successfully }
     ports:
       - "9092:9092"
     environment:
@@ -87,9 +103,10 @@ services:
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
       KAFKA_LOG_DIRS: "/tmp/kraft-combined-logs"
       CLUSTER_ID: "MkU3OEVBNTcwNTJENDM2Qk"
-    # No persistent volume in dev: Kafka logs in /tmp survive container
-    # restarts but are wiped by `make compose-down-volumes`. Restoring them
-    # from a fresh start is fine for local development.
+    # Cover the actual KRaft log.dirs, including offsets and metadata. Existing
+    # deployments must copy their writable-layer logs before recreating Kafka.
+    volumes:
+      - kafka_data:/tmp/kraft-combined-logs
     healthcheck:
       # `kafka-broker-api-versions.sh` spawns a JVM per probe, which times
       # out on a loaded 4-vCPU host and flaps the container unhealthy.
@@ -104,8 +121,11 @@ services:
     # Use the Ubuntu-based image, not :24-alpine — the alpine variant hits
     # a `get_mempolicy: Operation not permitted` startup loop on Apple Silicon
     # (M1/M2/M3) under Docker Desktop.
-    image: clickhouse/clickhouse-server:24
+    # Exact release tested by the isolated memory-policy verifier; the official
+    # multi-platform index was verified on2026-10-13 (amd64 and arm64).
+    image: clickhouse/clickhouse-server:24.10.2.80@sha256:3381aed826313cb9395830b30a5dc487a5a62f7054f012a2130f55e68100d0ad
     container_name: eveys-ocpp-clickhouse
+    restart: unless-stopped
     ports:
       # HTTP remapped to 8124: the canonical 8123 is squatted by any
       # host-side `clickhouse server` already running on the workstation
@@ -227,6 +247,7 @@ services:
       dockerfile: deploy/Dockerfile
     image: eveys-ocpp:dev
     container_name: eveys-ocpp
+    restart: unless-stopped
     # Host port 19000 instead of 9000: standalone ClickHouse client and many
     # IDEs (PhpStorm, JetBrains TBE) squat on 9000. Inside the compose
     # network the service still listens on 9000.
@@ -310,12 +331,9 @@ services:
       postgres: { condition: service_healthy }
       redis: { condition: service_healthy }
       kafka: { condition: service_healthy }
-      clickhouse: { condition: service_healthy }
-      # Block boot until both migrators report exit 0. Prevents the
-      # "code ships but schema lags" failure mode that bit the
-      # ingestor in #234 — see the comment on the migrate-* services.
+      # Core transaction persistence must be migrated. Archive reads are lazy
+      # and report degraded state while CH is unavailable or not migrated.
       migrate-postgres: { condition: service_completed_successfully }
-      migrate-clickhouse: { condition: service_completed_successfully }
     # Envoy's first health-check fires the moment it starts and a
     # network-level failure on attempt #1 puts the upstream in a
     # state Envoy doesn't always reschedule from. Adding a
@@ -346,6 +364,7 @@ services:
   clickhouse-ingestor:
     image: eveys-ocpp:dev
     container_name: eveys-ocpp-clickhouse-ingestor
+    restart: unless-stopped
     # The ENTRYPOINT in `deploy/Dockerfile` is the interpreter
     # (`python3.13`); compose's `command:` is its argv. So just `-m
     # ...` here, NOT `python -m ...` — passing `python` as argv[0]
@@ -364,7 +383,7 @@ services:
     depends_on:
       kafka: { condition: service_healthy }
       clickhouse: { condition: service_healthy }
-      # Same migration gate as `ocpp`: don't start the ingestor until
+      # Don't start the archive writer until
       # the CH schema is at HEAD. The dead-ingestor case in #234 was
       # exactly "tables don't exist yet, 10 flush failures, exit 1."
       migrate-clickhouse: { condition: service_completed_successfully }
@@ -372,4 +391,5 @@ services:
 volumes:
   postgres_data:
   redis_data:
+  kafka_data:
   clickhouse_data:
