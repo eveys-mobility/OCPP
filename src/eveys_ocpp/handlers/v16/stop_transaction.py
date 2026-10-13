@@ -10,28 +10,25 @@ provided).
 JSON Schemas: `ocpp.v16.schemas.StopTransaction` and `StopTransactionResponse`.
 
 Behavior:
-1. **Replay gate (E2-11, AGENTS rule 3).** Consult the Redis-backed
-   idempotency cache keyed by ``(cp_id, message_id)``. Cache hit →
-   skip everything (DB, backend, response shape preserved).
-2. Mark the transaction stopped at the DB layer (also idempotent —
-   defense in depth via the ``idempotency_key`` natural key).
+1. Mark the transaction stopped in Postgres, matching the owning station
+   and physical ID. PG first-apply/dedup is authoritative.
+2. Record an optional Redis hint only after the Stop commit. A cached
+   marker cannot bypass PG: it may predate a failed write in older code.
 3. **Backend round-trip (E3-6).** If a `backend_client` is wired AND
    the DB write was a real first-time stop (`applied=True`), call
    `POST /api/eveys/sessions/close`. The backend's `id_tag_info.status`
-   flows through to the OCPP response. Replays (cache hit OR DB
-   `applied=False`) skip the backend — chargers retry aggressively and
-   we never want to double-bill.
+   flows through to the OCPP response. Non-applies skip the backend;
+   chargers may retry an already committed Stop.
 4. Reply with the resolved `IdTagInfo.status`.
 
-Why two layers of dedup:
-- Redis (E2-11) is fast and catches the common case (charger retries
-  within seconds). Saves the DB round-trip + backend call.
-- Postgres ``idempotency_key`` (legacy) survives Redis flushes and
-  cross-pod retries that arrive after the cache TTL expires.
+PG dedup survives Redis outages, pod changes, and failed/cancelled commits.
+The Stop records the charger-reported time and server receive time separately;
+an existing server-rejection timestamp is preserved.
 
 Backend failure policy for an already reported physical Stop:
 - `BackendUnavailableError` → keep the local DB row (audit-of-record),
-  reply `Accepted`. Reconciler heals when the backend recovers.
+  reply `Accepted`. Post-commit publish/backend failure is not yet a
+  durable outbox; recovery is not guaranteed by this handler.
 - `BackendBusinessError` (e.g. billing-fraud `Blocked`) → keep the
   row, reply with whatever the backend dictated (typically `Blocked`).
   Forwards the operational decision to the charger.
@@ -173,61 +170,52 @@ async def _stop_inner(
     id_tag: str | None,
     set_outcome: object,
 ) -> call_result.StopTransaction:
-    # Redis replay gate (E2-11). Cache hit → return the canonical
-    # response without DB work, AND skip the backend call (the first
-    # request already settled the session backend-side). Falls through
-    # to the DB path if Redis is misbehaving — the DB-layer dedup below
-    # still catches replays.
-    if cp.idempotency is not None and message_id:
-        try:
-            replay = await cp.idempotency.check_and_record(cp_id=cp.id, message_id=message_id)
-        except Exception as exc:
-            log.warning("stop_transaction.idempotency_failed", error=str(exc))
-            replay = False
-        if replay:
-            log.info("stop_transaction.replay_ignored_cache", message_id=message_id)
-            metrics_registry.STOP_TRANSACTION_REPLAYS_TOTAL.inc()
-            if callable(set_outcome):
-                set_outcome("replay")
-            return _response(_local_status(id_tag))
-
+    # Postgres owns durability/dedup. A Redis marker written before commit
+    # could suppress the only retry after a failed or cancelled DB write.
     reported_at = datetime.fromisoformat(timestamp)
+    received_at = datetime.now(UTC)
 
-    # DB-layer dedup. Survives a Redis flush or a TTL-expired retry.
-    # Key shape pre-dates E2-11; the Redis layer above catches the
-    # hot path so this rarely fires now.
+    # DB-layer dedup survives Redis failures and retries after rollback.
     idem_key = f"{cp.id}:{transaction_id}:{meter_stop}"
 
     async with session_scope(cp.session_factory) as session:
         meter_start_wh = await stop_transaction(
             session,
+            cp_id=cp.id,
             transaction_id=transaction_id,
             meter_stop_wh=meter_stop,
             stopped_reported_at=reported_at,
+            stopped_received_at=received_at,
             reason=reason,
             idempotency_key=idem_key,
         )
 
     if meter_start_wh is None:
-        # DB-layer dedup said "we've already stopped this transaction."
-        # Don't double-bill the backend.
-        log.info("stop_transaction.replay_ignored_db")
-        metrics_registry.STOP_TRANSACTION_REPLAYS_TOTAL.inc()
+        # Already applied, unknown, or owned by another station. None of
+        # these outcomes permits a new event or backend close request.
+        log.info("stop_transaction.not_applied")
         if callable(set_outcome):
-            set_outcome("replay")
+            set_outcome("not_applied")
         return _response(_local_status(id_tag))
+
+    # This cache is only a post-commit hint; it never substitutes for the
+    # owner-scoped PG write. Failed hints must not affect the charger ACK.
+    if cp.idempotency is not None and message_id:
+        try:
+            await cp.idempotency.check_and_record(cp_id=cp.id, message_id=message_id)
+        except Exception as exc:
+            log.warning("stop_transaction.idempotency_failed", error_class=type(exc).__name__)
 
     # Persisted — SLO 4 numerator. (Received counter at the top is
     # the denominator; the difference is what SLO 4 alerts on.)
     metrics_registry.STOP_TRANSACTIONS_TOTAL.labels(reason=reason or "unknown").inc()
     log.info("stop_transaction.applied", reason=reason, meter_stop=meter_stop)
 
-    # tx.stopped envelope — at-least-once belt-and-braces signal alongside
-    # the synchronous /sessions/close call below. Best-effort: a broker
-    # drop must not crash the OCPP handler; the synchronous backend call
-    # below is the primary path. Only emitted on real applies — replay
-    # branches above return before this point so the same envelope is
-    # never published twice.
+    # Best-effort post-commit event: PG replay dedup cannot recover a
+    # failed publish or a crash in this gap. The current backend closes
+    # financial state through this event; /sessions/close is a no-op
+    # acknowledgement, so it is not a durable fallback. Only real applies
+    # publish. A durable ledger/outbox is still required for recovery.
     if cp.event_producer is not None:
         payload = events_pb2.TxStopped(
             transaction_id=transaction_id,
@@ -256,7 +244,7 @@ async def _stop_inner(
     # Backend round-trip (E3-6). The DB row is now durably marked
     # stopped; whatever the backend says, we keep that state. On
     # `BackendUnavailableError` we reply Accepted so the charger
-    # finalises cleanly — the reconciler heals the backend later.
+    # finalises cleanly. This call alone does not guarantee reconciliation.
     # On `BackendBusinessError` we forward the backend's verdict to
     # the charger (Blocked / Invalid / etc.) so billing-fraud cases
     # surface immediately.

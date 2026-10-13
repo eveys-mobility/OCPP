@@ -358,9 +358,11 @@ async def test_later_actual_stop_remains_an_audit_event_for_rejected_id(
 
     applied = await repositories.stop_transaction(
         database,
+        cp_id="CP_ADMISSION",
         transaction_id=response.transaction_id,
         meter_stop_wh=4500010,
         stopped_reported_at=actual_stop,
+        stopped_received_at=actual_stop,
         reason="Local",
         idempotency_key="CP_ADMISSION:101:4500010",
     )

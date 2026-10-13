@@ -31,6 +31,15 @@ from eveys_ocpp.clickhouse.ingestor import (
 from eveys_ocpp.settings import Settings
 
 
+def _consumer_mock() -> AsyncMock:
+    """Kafka's cached assignment/highwater APIs are synchronous."""
+    consumer = AsyncMock()
+    consumer.assignment = MagicMock(return_value=set())
+    consumer.highwater = MagicMock(return_value=None)
+    consumer.last_poll_timestamp = MagicMock(return_value=None)
+    return consumer
+
+
 def _envelope(**payload_kwargs: Any) -> events_pb2.EventEnvelope:
     """Build an EventEnvelope with the standard metadata + a payload."""
     return events_pb2.EventEnvelope(
@@ -333,7 +342,7 @@ async def test_stop_cleans_up_consumer_and_connection_when_started() -> None:
     """When both the consumer and CH connection are set, stop()
     awaits both shutdown calls."""
     ingestor = ClickHouseIngestor(Settings())
-    fake_consumer = AsyncMock()
+    fake_consumer = _consumer_mock()
     fake_conn = AsyncMock()
     ingestor._consumer = fake_consumer
     ingestor._conn = fake_conn
@@ -372,6 +381,9 @@ async def test_start_constructs_kafka_consumer_with_at_least_once_kwargs(
         captured_kwargs["topics"] = topics
         captured_kwargs.update(kwargs)
         fake = AsyncMock()
+        fake.subscribe = MagicMock(
+            side_effect=lambda topics, **_: captured_kwargs.update(topics=topics)
+        )
         return fake
 
     fake_conn = AsyncMock()
@@ -548,7 +560,7 @@ async def test_ingest_loop_commits_only_after_successful_flush(
         ingestor._shutdown.set()
         return {}
 
-    fake_consumer = AsyncMock()
+    fake_consumer = _consumer_mock()
     fake_consumer.getmany = fake_getmany
     fake_consumer.commit = AsyncMock()
     ingestor._consumer = fake_consumer
@@ -607,7 +619,7 @@ async def test_ingest_loop_skips_commit_when_flush_fails(
         ingestor._shutdown.set()
         return {}
 
-    fake_consumer = AsyncMock()
+    fake_consumer = _consumer_mock()
     fake_consumer.getmany = fake_getmany
     commit_calls = {"n": 0}
 
@@ -652,7 +664,7 @@ async def test_ingest_loop_handles_poll_failure_with_backoff(
         ingestor._shutdown.set()
         return {}
 
-    fake_consumer = AsyncMock()
+    fake_consumer = _consumer_mock()
     fake_consumer.getmany = fake_getmany
     ingestor._consumer = fake_consumer
 
@@ -685,7 +697,7 @@ async def test_ingest_loop_continues_when_poll_returns_no_records() -> None:
             ingestor._shutdown.set()
         return {}
 
-    fake_consumer = AsyncMock()
+    fake_consumer = _consumer_mock()
     fake_consumer.getmany = fake_getmany
     fake_consumer.commit = AsyncMock()
     ingestor._consumer = fake_consumer
@@ -742,7 +754,7 @@ async def test_ingest_loop_raises_fatal_after_n_consecutive_flush_failures(
         # `continue` past the failure-counter increment.
         return {"part-0": [record]}
 
-    fake_consumer = AsyncMock()
+    fake_consumer = _consumer_mock()
     fake_consumer.getmany = fake_getmany
     fake_consumer.commit = AsyncMock()
     ingestor._consumer = fake_consumer
@@ -800,7 +812,7 @@ async def test_ingest_loop_resets_failure_counter_on_successful_flush(
             return {}
         return {"part-0": [record]}
 
-    fake_consumer = AsyncMock()
+    fake_consumer = _consumer_mock()
     fake_consumer.getmany = fake_getmany
     fake_consumer.commit = AsyncMock()
     ingestor._consumer = fake_consumer
@@ -875,7 +887,7 @@ async def test_ingest_loop_accumulates_rows_across_polls_into_one_flush() -> Non
             return {}
         return {"part-0": [_boot_record(f"evt-{poll_count['n']}")]}
 
-    fake_consumer = AsyncMock()
+    fake_consumer = _consumer_mock()
     fake_consumer.getmany = fake_getmany
     fake_consumer.commit = AsyncMock()
     ingestor._consumer = fake_consumer
@@ -924,7 +936,7 @@ async def test_ingest_loop_flushes_partial_batch_when_deadline_expires() -> None
         clock["t"] += 3.0
         return {"part-0": [_boot_record(f"evt-{poll_count['n']}")]}
 
-    fake_consumer = AsyncMock()
+    fake_consumer = _consumer_mock()
     fake_consumer.getmany = fake_getmany
     fake_consumer.commit = AsyncMock()
     ingestor._consumer = fake_consumer
@@ -970,7 +982,7 @@ async def test_ingest_loop_shrinks_poll_timeout_toward_the_deadline() -> None:
         clock["t"] += 3.0
         return {"part-0": [_boot_record(f"evt-{poll_count['n']}")]}
 
-    fake_consumer = AsyncMock()
+    fake_consumer = _consumer_mock()
     fake_consumer.getmany = fake_getmany
     fake_consumer.commit = AsyncMock()
     ingestor._consumer = fake_consumer
@@ -1016,7 +1028,7 @@ async def test_ingest_loop_flushes_partial_batch_before_shutdown() -> None:
         assert offsets == {"part-0": 1}
         call_order.append("commit")
 
-    fake_consumer = AsyncMock()
+    fake_consumer = _consumer_mock()
     fake_consumer.getmany = fake_getmany
     fake_consumer.commit = tracking_commit
     ingestor._consumer = fake_consumer
@@ -1054,7 +1066,7 @@ async def test_ingest_loop_caps_max_records_at_remaining_capacity() -> None:
         ingestor._shutdown.set()
         return {}
 
-    fake_consumer = AsyncMock()
+    fake_consumer = _consumer_mock()
     fake_consumer.getmany = fake_getmany
     fake_consumer.commit = AsyncMock()
     ingestor._consumer = fake_consumer

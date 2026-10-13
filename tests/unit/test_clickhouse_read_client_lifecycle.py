@@ -137,3 +137,54 @@ async def test_permanent_read_failure_retries_once_and_keeps_no_busy_connection(
 
     assert broken.closed and replacement.closed
     assert client._conn is None
+
+
+@pytest.mark.asyncio
+async def test_gateway_read_client_start_does_not_connect_to_an_unavailable_archive(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connections: list[_Connection] = []
+
+    def connection(**_: Any) -> _Connection:
+        connections.append(_Connection(failure=OSError("archive unavailable")))
+        raise OSError("archive unavailable")
+
+    monkeypatch.setattr("eveys_ocpp.clickhouse.read_client.Connection", connection)
+    client = _client(_Connection())
+    client._conn = None
+
+    try:
+        await client.start()
+    except OSError:
+        pytest.fail("gateway startup attempted an archive connection")
+
+    assert connections == []
+
+
+@pytest.mark.asyncio
+async def test_lazy_first_query_failure_can_recover_without_restarting_the_gateway(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class OfflineConnection(_Connection):
+        async def connect(self) -> None:
+            raise OSError("archive offline")
+
+    first, second, recovered = OfflineConnection(), OfflineConnection(), _Connection()
+    connections = iter([first, second, recovered])
+    monkeypatch.setattr(
+        "eveys_ocpp.clickhouse.read_client.Connection", lambda **_: next(connections)
+    )
+    client = _client(_Connection())
+    client._conn = None
+    try:
+        await client.start()
+    except OSError:
+        pytest.fail("gateway startup attempted an archive connection")
+
+    with pytest.raises(OSError, match="archive offline"):
+        await client.fetch_latest_connector_statuses(cp_ids=["CP_TEST"])
+    assert first.closed and second.closed
+
+    result = await client.fetch_latest_connector_statuses(cp_ids=["CP_TEST"])
+
+    assert result == {"CP_TEST": [{"connector_id": 1, "status": "Charging"}]}

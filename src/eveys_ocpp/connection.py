@@ -301,18 +301,21 @@ class EveysChargePoint(Cpv16):
         """
         action = type(payload).__name__
         metrics_registry.WS_MESSAGES_OUT_TOTAL.labels(action=action).inc()
-        # Audit publish before the library writes to the WS, so the
-        # recorded frame is what the charger is about to see.
-        await publish_outbound(
-            producer=self.event_producer,
-            settings=self.settings,
-            cp_id=self.id,
-            payload=payload,
-            unique_id=unique_id,
-        )
         return await super().call(
             payload,
             suppress=suppress,
             unique_id=unique_id,
             skip_schema_validation=skip_schema_validation,
+        )
+
+    async def _send(self, message: str) -> None:
+        # The library has generated the ID, converted names, stripped
+        # nulls, and serialized the actual frame here. A successful socket
+        # write is the audit boundary; it is not proof of a charger ACK.
+        await super()._send(message)
+        await publish_outbound(
+            producer=self.event_producer,
+            settings=self.settings,
+            cp_id=self.id,
+            raw_msg=message,
         )

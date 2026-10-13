@@ -42,15 +42,19 @@ import asyncio
 import json
 import signal
 import sys
+import time
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from aiokafka import AIOKafkaConsumer
+from aiokafka.abc import ConsumerRebalanceListener
 from asynch import Connection
 
 from eveys_ocpp._generated.events.v1 import events_pb2
+from eveys_ocpp.metrics import registry as metrics_registry
+from eveys_ocpp.metrics.server import MetricsServer
 from eveys_ocpp.observability import bind_contextvars, configure_logging, get_logger
 from eveys_ocpp.settings import Settings, get_settings
 
@@ -184,9 +188,9 @@ def _extract_transaction_id(raw_payload: str) -> int | None:
     The ``transactionId`` field shows up inside the payload object on
     a small set of message types (StartTransaction.conf,
     StopTransaction.req, MeterValues.req, RemoteStartTransaction.req
-    when the central system pins the id, …). It's the same key name
-    everywhere it appears, so a shallow dict lookup suffices — no
-    need to know which action we're parsing.
+    when the central system pins the id, …). Historical outbound
+    audits used ``transaction_id`` before exact wire capture; accept
+    that spelling too. Already persisted NULL indexes are not backfilled.
 
     Returns ``None`` for: unparseable JSON, unexpected frame shape, no
     ``transactionId`` key, or a value that isn't coercible to int.
@@ -206,6 +210,10 @@ def _extract_transaction_id(raw_payload: str) -> int | None:
     if not isinstance(body, dict):
         return None
     value = body.get("transactionId")
+    if value is None:
+        # Pre-fix outbound audits reconstructed dataclasses without the
+        # library's camelCase serialization. Preserve historical indexing.
+        value = body.get("transaction_id")
     if value is None:
         return None
     try:
@@ -249,6 +257,19 @@ class _Row:
     columns: dict[str, Any]
 
 
+class _ProgressListener(ConsumerRebalanceListener):
+    """Invalidate process-local observations; never alter pending delivery."""
+
+    def __init__(self, ingestor: ClickHouseIngestor) -> None:
+        self._ingestor = ingestor
+
+    async def on_partitions_revoked(self, revoked: Iterable[Any]) -> None:
+        self._ingestor._reset_progress(revoked)
+
+    async def on_partitions_assigned(self, assigned: Iterable[Any]) -> None:
+        self._ingestor._reset_progress(assigned)
+
+
 class ClickHouseIngestor:
     """Long-lived Kafka→ClickHouse pipeline.
 
@@ -270,8 +291,71 @@ class ClickHouseIngestor:
         # CrashLoopBackOff. Without this the process logs forever and
         # silently fails to deliver events — see issue #24.
         self._consecutive_flush_failures = 0
+        self._acknowledged_offsets: dict[Any, int] = {}
+        self._observed_partitions: set[Any] = set()
+        self._last_poll_timestamp = 0.0
+        self._assignment_epoch = 0
+
+    def _reset_progress(self, partitions: Iterable[Any]) -> None:
+        self._assignment_epoch += 1
+        for tp in partitions:
+            self._acknowledged_offsets.pop(tp, None)
+            labels = (tp.topic, str(tp.partition))
+            metrics_registry.CLICKHOUSE_INGESTOR_CONSUMER_LAG_MESSAGES.labels(*labels).set(-1)
+            metrics_registry.CLICKHOUSE_INGESTOR_CONSUMER_LAG_KNOWN.labels(*labels).set(0)
+            metrics_registry.CLICKHOUSE_INGESTOR_LAG_SAMPLE_TIMESTAMP_SECONDS.labels(*labels).set(0)
+
+    def _observe_progress(self) -> None:
+        """Read only cached assignment/highwater; never make a metadata RPC.
+
+        Initial/renewed assignments have unknown lag until this process
+        observes a commit ACK. Consumer position can advance before INSERT
+        and is deliberately never used as the delivered watermark.
+        """
+        if self._consumer is None:
+            return
+        gauges = (
+            metrics_registry.CLICKHOUSE_INGESTOR_CONSUMER_LAG_MESSAGES,
+            metrics_registry.CLICKHOUSE_INGESTOR_CONSUMER_LAG_KNOWN,
+            metrics_registry.CLICKHOUSE_INGESTOR_LAG_SAMPLE_TIMESTAMP_SECONDS,
+        )
+        try:
+            assigned = set(self._consumer.assignment())
+            for tp in self._observed_partitions - assigned:
+                for gauge in gauges:
+                    gauge.remove(tp.topic, str(tp.partition))
+            for tp in self._acknowledged_offsets.keys() - assigned:
+                self._acknowledged_offsets.pop(tp, None)
+            self._observed_partitions = assigned
+            for tp in assigned:
+                highwater = self._consumer.highwater(tp)
+                fetched_at_ms = self._consumer.last_poll_timestamp(tp)
+                acknowledged = self._acknowledged_offsets.get(tp)
+                known = (
+                    acknowledged is not None
+                    and highwater is not None
+                    and highwater >= acknowledged
+                    and fetched_at_ms is not None
+                    and fetched_at_ms > 0
+                )
+                labels = (tp.topic, str(tp.partition))
+                gauges[0].labels(*labels).set(highwater - acknowledged if known else -1)
+                gauges[1].labels(*labels).set(int(known))
+                # This timestamp accompanies the cached broker FetchResponse.
+                # A later local/empty getmany must not make old highwater fresh.
+                gauges[2].labels(*labels).set(fetched_at_ms / 1000 if known else 0)
+        except Exception as exc:
+            # Optional observation must not alter INSERT/commit ordering.
+            for tp in self._observed_partitions:
+                gauges[0].labels(tp.topic, str(tp.partition)).set(-1)
+                gauges[1].labels(tp.topic, str(tp.partition)).set(0)
+                gauges[2].labels(tp.topic, str(tp.partition)).set(0)
+            metrics_registry.CLICKHOUSE_INGESTOR_ERRORS_TOTAL.labels(stage="observe").inc()
+            log.warning("clickhouse.ingestor.progress_unknown", error_class=type(exc).__name__)
 
     async def start(self) -> None:
+        self._shutdown.clear()
+        self._acknowledged_offsets.clear()
         topics = (
             self._settings.kafka_topic_cp_meter,
             self._settings.kafka_topic_cp_status,
@@ -281,7 +365,6 @@ class ClickHouseIngestor:
             self._settings.kafka_topic_cp_ocpp_frames,
         )
         consumer = AIOKafkaConsumer(
-            *topics,
             bootstrap_servers=self._settings.kafka_brokers,
             group_id=self._settings.clickhouse_ingestor_group,
             client_id="eveys-ocpp-clickhouse-ingestor",
@@ -293,10 +376,23 @@ class ClickHouseIngestor:
             # and recreating the consumer group.
             auto_offset_reset="earliest",
         )
-        await consumer.start()
+        consumer.subscribe(topics, listener=_ProgressListener(self))
         self._consumer = consumer
-
-        await self._connect()
+        try:
+            await consumer.start()
+            await self._connect()
+        except BaseException:
+            # A failed/cancelled CH connection must not leave a Kafka
+            # consumer running while this process exits or is retried.
+            try:
+                await self.stop()
+            except BaseException as cleanup_error:
+                log.warning(
+                    "clickhouse.ingestor.start_cleanup_failed",
+                    error_class=type(cleanup_error).__name__,
+                )
+            raise
+        metrics_registry.CLICKHOUSE_INGESTOR_RUNNING.set(1)
 
         log.info(
             "clickhouse.ingestor.started",
@@ -325,12 +421,19 @@ class ClickHouseIngestor:
 
     async def stop(self) -> None:
         self._shutdown.set()
-        if self._consumer is not None:
-            await self._consumer.stop()
-            self._consumer = None
-        if self._conn is not None:
-            await self._conn.close()
-            self._conn = None
+        metrics_registry.CLICKHOUSE_INGESTOR_RUNNING.set(0)
+        consumer, self._consumer = self._consumer, None
+        try:
+            if consumer is not None:
+                try:
+                    await asyncio.wait_for(consumer.stop(), timeout=2.0)
+                except Exception as exc:
+                    log.warning(
+                        "clickhouse.ingestor.consumer_close_failed",
+                        error_class=type(exc).__name__,
+                    )
+        finally:
+            await self._discard_connection()
         log.info("clickhouse.ingestor.stopped")
 
     async def _flush_batch(
@@ -478,9 +581,16 @@ class ClickHouseIngestor:
                         max_records=batch_size - len(rows),
                     )
                 except Exception as exc:
+                    metrics_registry.CLICKHOUSE_INGESTOR_ERRORS_TOTAL.labels(stage="poll").inc()
                     log.exception("clickhouse.ingestor.poll_failed", error=str(exc))
                     poll_failed = True
                     break
+
+                self._last_poll_timestamp = time.time()
+                metrics_registry.CLICKHOUSE_INGESTOR_LAST_POLL_TIMESTAMP_SECONDS.set(
+                    self._last_poll_timestamp
+                )
+                self._observe_progress()
 
                 for topic_partition, partition_records in records.items():
                     for record in partition_records:
@@ -511,6 +621,9 @@ class ClickHouseIngestor:
                             if rows:
                                 await self._flush_batch(rows, completed_tables=completed_tables)
                         except Exception as exc:
+                            metrics_registry.CLICKHOUSE_INGESTOR_ERRORS_TOTAL.labels(
+                                stage="flush"
+                            ).inc()
                             self._consecutive_flush_failures += 1
                             log.exception(
                                 "clickhouse.ingestor.flush_failed",
@@ -531,8 +644,12 @@ class ClickHouseIngestor:
                         self._consecutive_flush_failures = 0
 
                     try:
+                        commit_epoch = self._assignment_epoch
                         await self._consumer.commit(offsets)
                     except Exception as exc:
+                        metrics_registry.CLICKHOUSE_INGESTOR_ERRORS_TOTAL.labels(
+                            stage="commit"
+                        ).inc()
                         commit_failures += 1
                         log.exception(
                             "clickhouse.ingestor.commit_failed",
@@ -548,6 +665,12 @@ class ClickHouseIngestor:
                             return
                         await asyncio.sleep(1.0)
                         continue  # retry commit without another INSERT or poll
+                    if commit_epoch == self._assignment_epoch:
+                        self._acknowledged_offsets.update(offsets)
+                    metrics_registry.CLICKHOUSE_INGESTOR_LAST_SUCCESSFUL_COMMIT_TIMESTAMP_SECONDS.set(
+                        time.time()
+                    )
+                    self._observe_progress()
                     break
 
             if poll_failed:
@@ -558,16 +681,29 @@ async def _run() -> None:
     settings = get_settings()
     configure_logging(level=settings.log_level, json=settings.log_json)
     ingestor = ClickHouseIngestor(settings)
-    await ingestor.start()
-
-    loop = asyncio.get_running_loop()
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, ingestor._shutdown.set)
-
+    metrics_server = (
+        MetricsServer(
+            host=settings.metrics_host,
+            port=settings.metrics_port,
+            include_python_collectors=settings.metrics_include_python_collectors,
+        )
+        if settings.metrics_enabled
+        else None
+    )
     try:
+        if metrics_server is not None:
+            await metrics_server.start()
+        await ingestor.start()
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, ingestor._shutdown.set)
         await ingestor.ingest_loop()
     finally:
-        await ingestor.stop()
+        try:
+            await ingestor.stop()
+        finally:
+            if metrics_server is not None:
+                await metrics_server.stop()
 
 
 def main() -> None:

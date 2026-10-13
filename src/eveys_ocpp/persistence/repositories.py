@@ -515,14 +515,17 @@ async def reject_transaction_start(
 async def stop_transaction(
     session: AsyncSession,
     *,
+    cp_id: str,
     transaction_id: int,
     meter_stop_wh: int,
     stopped_reported_at: datetime,
+    stopped_received_at: datetime,
     reason: str | None,
     idempotency_key: str,
 ) -> int | None:
     """Mark a transaction stopped. Returns the row's `meter_start_wh`
-    (Wh) on a real first-time apply, ``None`` if already stopped.
+    (Wh) on a real first-time owner-scoped apply. ``None`` means no
+    apply: already stopped, unknown ID, or owned by another station.
 
     The non-None vs None distinction is the existing applied-vs-replay
     signal callers used to switch on. Returning the start reading on
@@ -543,10 +546,16 @@ async def stop_transaction(
     # round-trip; SQLAlchemy renders `UPDATE ... RETURNING` on Postgres.
     result = await session.execute(
         update(Transaction)
-        .where(Transaction.transaction_id == transaction_id, Transaction.meter_stop_wh.is_(None))
+        .where(
+            Transaction.transaction_id == transaction_id,
+            Transaction.charge_point_id
+            == select(ChargePoint.id).where(ChargePoint.cp_id == cp_id).scalar_subquery(),
+            Transaction.meter_stop_wh.is_(None),
+        )
         .values(
             meter_stop_wh=meter_stop_wh,
             stopped_reported_at=stopped_reported_at,
+            stopped_received_at=func.coalesce(Transaction.stopped_received_at, stopped_received_at),
             stop_reason=reason,
             idempotency_key=idempotency_key,
         )

@@ -10,7 +10,8 @@ Component checks:
 - `clickhouse` — bounded `SELECT 1` through the archive read client.
 
 This observation probe does not alter `/ready` or WS liveness.
-Kafka delivery and ingestor progress are not verified by this probe.
+Kafka delivery and ingestor progress are not verified by this process;
+they are explicitly unknown and keep overall health degraded.
 
 This endpoint is exempt from auth (see `_auth._AUTH_BYPASS_PATHS`)
 so the operator's load balancer can dial it regardless of token
@@ -57,10 +58,14 @@ async def health(request: Request) -> dict[str, object]:
     ch_status, ch_error = await _probe_clickhouse(request)
     components["clickhouse"] = ch_status
     components["clickhouse_error_class"] = ch_error
+    components["ingestor"] = "unknown"
 
     overall = (
         "ok"
-        if all(components[k] in {"ok", "unconfigured"} for k in ("postgres", "redis", "clickhouse"))
+        if all(
+            components[k] in {"ok", "unconfigured"}
+            for k in ("postgres", "redis", "clickhouse", "ingestor")
+        )
         else "degraded"
     )
 
@@ -68,6 +73,12 @@ async def health(request: Request) -> dict[str, object]:
         "status": overall,
         "version": _gateway_version(),
         "components": components,
+        "archive": {
+            "state": "unknown",
+            "reason": "ingestor_progress_not_observed",
+            "consumer_lag_messages": None,
+            "last_successful_commit_at": None,
+        },
         "request_id": request.state.request_id,
     }
 

@@ -45,7 +45,9 @@ class ClickHouseReadClient:
     async def start(self) -> None:
         async with self._query_lock:
             self._closed = False
-            await self._connect()
+            # Archive availability must not prevent the core gateway from
+            # accepting station connections. Queries/probes connect lazily.
+            await self._discard_connection()
         log.info(
             "clickhouse.read_client.started",
             clickhouse_host=self._settings.clickhouse_host,

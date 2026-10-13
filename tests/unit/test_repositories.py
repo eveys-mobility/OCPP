@@ -190,9 +190,11 @@ async def test_stop_transaction_skips_replays() -> None:
 
     applied = await repositories.stop_transaction(
         session,
+        cp_id="CP1",
         transaction_id=1,
         meter_stop_wh=100,
         stopped_reported_at=datetime.now(UTC),
+        stopped_received_at=datetime.now(UTC),
         reason="Local",
         idempotency_key="dup",
     )
@@ -216,9 +218,11 @@ async def test_stop_transaction_applies_when_no_replay() -> None:
 
     applied = await repositories.stop_transaction(
         session,
+        cp_id="CP1",
         transaction_id=1,
         meter_stop_wh=100,
         stopped_reported_at=datetime.now(UTC),
+        stopped_received_at=datetime.now(UTC),
         reason="Local",
         idempotency_key="new",
     )

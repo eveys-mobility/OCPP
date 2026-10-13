@@ -9,14 +9,33 @@ import pytest
 
 
 @pytest.mark.asyncio
-async def test_health_reports_ok_when_postgres_responds(
+async def test_clickhouse_connectivity_does_not_claim_archive_progress(
     client: httpx.AsyncClient,
 ) -> None:
     response = await client.get("/api/v1/health")
 
     assert response.status_code == 200
     body = response.json()
-    assert body["status"] == "ok"
+    assert body["components"]["clickhouse"] == "ok"
+    assert body["components"].get("ingestor") == "unknown"
+    assert body["status"] == "degraded"
+    assert body.get("archive") == {
+        "state": "unknown",
+        "reason": "ingestor_progress_not_observed",
+        "consumer_lag_messages": None,
+        "last_successful_commit_at": None,
+    }
+
+
+@pytest.mark.asyncio
+async def test_health_reports_core_reachability_without_claiming_archive_progress(
+    client: httpx.AsyncClient,
+) -> None:
+    response = await client.get("/api/v1/health")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "degraded"
     assert body["components"]["postgres"] == "ok"
     assert body["request_id"]
     assert "version" in body

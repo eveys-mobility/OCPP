@@ -80,6 +80,49 @@
         "title": "ActiveSession",
         "type": "object"
       },
+      "ArchiveObservation": {
+        "description": "Archive delivery is separate from a successful ClickHouse read probe.",
+        "properties": {
+          "consumer_lag_messages": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Consumer Lag Messages"
+          },
+          "last_successful_commit_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Successful Commit At"
+          },
+          "reason": {
+            "const": "ingestor_progress_not_observed",
+            "title": "Reason",
+            "type": "string"
+          },
+          "state": {
+            "const": "unknown",
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "reason"
+        ],
+        "title": "ArchiveObservation",
+        "type": "object"
+      },
       "ChargePoint": {
         "description": "One row of `GET /api/v1/charge-points`. Detail endpoint adds\n`active_reservations` and `active_charging_profiles`.",
         "properties": {
@@ -949,6 +992,12 @@
             "description": "Exception class only.",
             "title": "Clickhouse Error Class"
           },
+          "ingestor": {
+            "const": "unknown",
+            "description": "The gateway does not observe sidecar progress.",
+            "title": "Ingestor",
+            "type": "string"
+          },
           "postgres": {
             "description": "`ok` or `unavailable`.",
             "title": "Postgres",
@@ -963,7 +1012,8 @@
         "required": [
           "postgres",
           "redis",
-          "clickhouse"
+          "clickhouse",
+          "ingestor"
         ],
         "title": "HealthComponents",
         "type": "object"
@@ -971,16 +1021,24 @@
       "HealthResponse": {
         "description": "`GET /api/v1/health`. Liveness + per-component probe.",
         "example": {
+          "archive": {
+            "reason": "ingestor_progress_not_observed",
+            "state": "unknown"
+          },
           "components": {
             "clickhouse": "ok",
+            "ingestor": "unknown",
             "postgres": "ok",
             "redis": "ok"
           },
           "request_id": "9b3c5d18-1f7c-4b6a-8e0e-5b9a3c4f2e10",
-          "status": "ok",
+          "status": "degraded",
           "version": "0.1.0"
         },
         "properties": {
+          "archive": {
+            "$ref": "#/components/schemas/ArchiveObservation"
+          },
           "components": {
             "$ref": "#/components/schemas/HealthComponents"
           },
@@ -989,7 +1047,7 @@
             "type": "string"
           },
           "status": {
-            "description": "`degraded` on a configured component failure; otherwise `ok`.",
+            "description": "`degraded` when a component fails or archive progress is unknown.",
             "title": "Status",
             "type": "string"
           },
@@ -1003,6 +1061,7 @@
           "status",
           "version",
           "components",
+          "archive",
           "request_id"
         ],
         "title": "HealthResponse",
@@ -1920,6 +1979,7 @@
               "start": 38.0
             }
           },
+          "telemetry_state": "available",
           "transaction_id": 12345
         },
         "properties": {
@@ -1996,7 +2056,32 @@
                 "type": "null"
               }
             ],
-            "description": "ClickHouse-backed snapshot \u2014 SoC start/last and per-phase voltage/current/power. `null` when the gateway has no ClickHouse read client configured."
+            "description": "ClickHouse-backed snapshot \u2014 SoC start/last and per-phase voltage/current/power. `null` when archive reading is unconfigured or unavailable; see telemetry_state."
+          },
+          "telemetry_error": {
+            "anyOf": [
+              {
+                "enum": [
+                  "ARCHIVE_UNAVAILABLE",
+                  "ARCHIVE_UNCONFIGURED"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Telemetry Error"
+          },
+          "telemetry_state": {
+            "description": "Read outcome; available does not prove archive completeness or freshness.",
+            "enum": [
+              "available",
+              "unavailable",
+              "unconfigured"
+            ],
+            "title": "Telemetry State",
+            "type": "string"
           },
           "transaction_id": {
             "description": "OCPP 1.6 transaction id assigned by the gateway.",
@@ -2012,6 +2097,7 @@
           "meter_start_wh",
           "started_at",
           "open",
+          "telemetry_state",
           "request_id"
         ],
         "title": "TransactionDetail",
@@ -4804,6 +4890,16 @@
               }
             },
             "description": "Validation Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Archive read unavailable."
           }
         },
         "summary": "ClickHouse-backed OCPP frame audit for a charge point (both directions)",
@@ -4937,6 +5033,16 @@
               }
             },
             "description": "Validation Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Archive read unavailable."
           }
         },
         "summary": "ClickHouse-backed MeterValues time-series for a charge point",
@@ -5103,6 +5209,16 @@
               }
             },
             "description": "Validation Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Archive read unavailable."
           }
         },
         "summary": "ClickHouse-backed offline-duration history for a charge point",
@@ -5601,6 +5717,16 @@
               }
             },
             "description": "Validation Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Archive read unavailable."
           }
         },
         "summary": "ClickHouse-backed StatusNotification history for a charge point",
@@ -5971,6 +6097,16 @@
               }
             },
             "description": "Validation Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Archive read unavailable."
           }
         },
         "summary": "Uptime % for a charge point over a date range",
@@ -6138,6 +6274,16 @@
               }
             },
             "description": "Validation Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Archive read unavailable."
           }
         },
         "summary": "Fleet-wide StatusNotification history (e.g. all Faulted statuses this week)",
@@ -6723,6 +6869,16 @@
               }
             },
             "description": "Validation Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Archive read unavailable."
           }
         },
         "summary": "OCPP frame audit trail for one transaction",

@@ -73,9 +73,11 @@ async def test_reject_invalid_id_tag(fake_cp: Any, monkeypatch: pytest.MonkeyPat
 
 
 @pytest.mark.asyncio
-async def test_replay_skips_db_write(fake_cp: Any, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Cache hit → return Accepted without invoking the DB-layer stop."""
-    stop = AsyncMock(return_value=0)
+async def test_cache_marker_cannot_skip_authoritative_db_dedup(
+    fake_cp: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A Redis marker cannot prove that the prior Stop was committed."""
+    stop = AsyncMock(return_value=None)
     monkeypatch.setattr(stop_transaction, "stop_transaction", stop)
 
     fake_idem = AsyncMock()
@@ -91,10 +93,8 @@ async def test_replay_skips_db_write(fake_cp: Any, monkeypatch: pytest.MonkeyPat
     )
 
     assert result.id_tag_info.status == AuthorizationStatus.accepted
-    stop.assert_not_awaited()
-    fake_idem.check_and_record.assert_awaited_once_with(
-        cp_id="TEST_CP_001", message_id="MSG-RETRY-1"
-    )
+    stop.assert_awaited_once()
+    fake_idem.check_and_record.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -119,10 +119,10 @@ async def test_first_sighting_runs_handler(fake_cp: Any, monkeypatch: pytest.Mon
 
 
 @pytest.mark.asyncio
-async def test_cache_outage_falls_through_to_db_dedup(
+async def test_post_commit_cache_outage_does_not_fail_the_stop(
     fake_cp: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Redis outage → fall through to the DB-layer dedup. Defense in depth."""
+    """The committed Stop remains successful when its cache hint fails."""
     stop = AsyncMock(return_value=0)
     monkeypatch.setattr(stop_transaction, "stop_transaction", stop)
 
@@ -265,13 +265,11 @@ async def test_unavailable_keeps_state_and_accepts(
 
 
 @pytest.mark.asyncio
-async def test_replay_cache_hit_skips_backend(
+async def test_pg_non_apply_skips_backend_even_with_an_old_cache_marker(
     fake_cp: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """E2-11 cache hit must short-circuit BEFORE the backend call —
-    chargers retry aggressively and the first request already settled
-    the session backend-side."""
-    stop = AsyncMock()
+    """The PG non-apply, rather than an unverified cache marker, deduplicates."""
+    stop = AsyncMock(return_value=None)
     monkeypatch.setattr(stop_transaction, "stop_transaction", stop)
     fake_idem = AsyncMock()
     fake_idem.check_and_record = AsyncMock(return_value=True)  # replay
@@ -289,7 +287,7 @@ async def test_replay_cache_hit_skips_backend(
     )
 
     assert result.id_tag_info.status == AuthorizationStatus.accepted
-    stop.assert_not_awaited()
+    stop.assert_awaited_once()
     fake_cp.backend_client.close_session.assert_not_awaited()
 
 
