@@ -16,14 +16,13 @@ Behavior:
    rather than auto-creating — silent auto-create would mask BootNotification
    bugs.
 3. Insert a transaction row; surrogate `id` doubles as `transaction_id`.
-4. Call the backend's `POST /api/eveys/sessions/open` (E3-5) if a
-   `backend_client` is wired. The backend's `id_tag_info.status` flows
-   through to the OCPP response. On `BackendUnavailableError` we keep
-   the local row and reply `Accepted` — the row is the audit-of-record
-   and the reconciler heals when the backend recovers. On
-   `BackendBusinessError` (4xx) we reply `Invalid` but keep the row
-   for the same audit reason.
-5. Publish a `tx.started` event to Kafka (E2-8). Best-effort — publish
+4. Require a fresh backend `POST /api/eveys/sessions/open` decision.
+   No backend or an unavailable backend returns `Invalid`. A cached
+   Authorize hint never substitutes for admission of a new physical ID.
+   In the same DB transaction, close rejected audit rows using the server
+   receive timestamp and `DeAuthorized`, without inventing a charger Stop.
+5. After commit, publish `tx.started` only for an accepted admission.
+   Best-effort — publish
    failure is logged and dropped, never raised, since the OCPP reply is
    already on its way back.
 6. Reply with the resolved status + assigned `transaction_id`.
@@ -43,6 +42,7 @@ Deviations from the OCA spec to verify before W2 / OCTT
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
@@ -57,7 +57,11 @@ from eveys_ocpp.metrics import record_handler_error, time_handler
 from eveys_ocpp.metrics import registry as metrics_registry
 from eveys_ocpp.observability import bind_contextvars, get_logger
 from eveys_ocpp.persistence.db import session_scope
-from eveys_ocpp.persistence.repositories import get_charge_point_pk, insert_transaction
+from eveys_ocpp.persistence.repositories import (
+    get_charge_point_pk,
+    insert_transaction,
+    reject_transaction_start,
+)
 from eveys_ocpp.platform import BackendBusinessError, BackendUnavailableError
 
 if TYPE_CHECKING:
@@ -162,43 +166,56 @@ async def _start_inner(
             started_reported_at=reported_at,
         )
 
-    # Backend round-trip (E3-5). The local row is already committed;
-    # whatever the backend says, we keep that row as the audit-of-
-    # record. On a backend outage we still reply Accepted so the
-    # charger keeps charging — the reconciler heals later. On a
-    # business rejection we forward Invalid to the charger (it stops)
-    # but keep the row so the operations team has a trace of the
-    # decision.
-    backend_status = AuthorizationStatus.accepted
-    if cp.backend_client is not None:
-        try:
-            result = await cp.backend_client.open_session(
-                transaction_id=transaction_id,
-                cp_id=cp.id,
-                connector_id=connector_id,
-                id_tag=id_tag,
-                meter_start_wh=meter_start,
-                started_reported_at=timestamp,
-                idempotency_key=f"ocpp-session-open-{transaction_id}",
+        # Hold the uncommitted candidate through the bounded backend request.
+        # The backend reserves the ID; tx.started follows only after PG commit.
+        # Exceptions/cancellation roll back the candidate rather than leaving
+        # a phantom OPEN row. An ambiguous backend ACK still needs reconciliation.
+        backend_status = AuthorizationStatus.invalid
+        if cp.backend_client is not None:
+            # HTTPX's per-phase timeout can reset while a response trickles.
+            # Bound the whole admission while its candidate holds a DB slot.
+            admission_budget = cp.settings.backend_timeout_sessions_open_seconds * (
+                cp.settings.backend_retry_attempts_sessions_open + 1
             )
-            backend_status = _AUTH_STATUS_MAP.get(
-                result.id_tag_info.status, AuthorizationStatus.invalid
+            try:
+                async with asyncio.timeout(admission_budget):
+                    result = await cp.backend_client.open_session(
+                        transaction_id=transaction_id,
+                        cp_id=cp.id,
+                        connector_id=connector_id,
+                        id_tag=id_tag,
+                        meter_start_wh=meter_start,
+                        started_reported_at=timestamp,
+                        idempotency_key=f"ocpp-session-open-{transaction_id}",
+                    )
+                backend_status = _AUTH_STATUS_MAP.get(
+                    result.id_tag_info.status, AuthorizationStatus.invalid
+                )
+            except TimeoutError:
+                log.warning(
+                    "start_transaction.admission_deadline_exceeded",
+                    transaction_id=transaction_id,
+                    budget_seconds=admission_budget,
+                )
+            except BackendUnavailableError as exc:
+                log.warning(
+                    "start_transaction.backend_unavailable",
+                    transaction_id=transaction_id,
+                    error=str(exc),
+                    error_code=exc.error_code,
+                )
+            except BackendBusinessError as exc:
+                log.warning(
+                    "start_transaction.backend_business_rejected",
+                    transaction_id=transaction_id,
+                    error_code=exc.error_code,
+                    message=str(exc),
+                )
+
+        if backend_status != AuthorizationStatus.accepted:
+            await reject_transaction_start(
+                session, transaction_id=transaction_id, rejected_at=datetime.now(UTC)
             )
-        except BackendUnavailableError as exc:
-            log.warning(
-                "start_transaction.backend_unavailable",
-                transaction_id=transaction_id,
-                error=str(exc),
-                error_code=exc.error_code,
-            )
-        except BackendBusinessError as exc:
-            log.warning(
-                "start_transaction.backend_business_rejected",
-                transaction_id=transaction_id,
-                error_code=exc.error_code,
-                message=str(exc),
-            )
-            backend_status = AuthorizationStatus.invalid
 
     log.info(
         "start_transaction.decided",
@@ -208,7 +225,7 @@ async def _start_inner(
         decision=backend_status.value,
     )
 
-    if cp.event_producer is not None:
+    if backend_status == AuthorizationStatus.accepted and cp.event_producer is not None:
         payload = events_pb2.TxStarted(
             transaction_id=transaction_id,
             connector_id=connector_id,

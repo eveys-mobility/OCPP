@@ -5,6 +5,13 @@
 - **Author**: Eveys engineering (E3 platform integration; AI-assisted draft, human-reviewed)
 - **Reviewers**: Project tech lead
 
+> **2026-10-13 admission update:** The optional offline grants described below
+> are superseded for Authorize and new StartTransaction admission. Missing or
+> unavailable backend decisions return Invalid, including the legacy
+> `accept_offline` Authorize setting. A cached Authorize result cannot admit a
+> new physical transaction; every Start requires a fresh backend decision.
+> Existing open physical Meter/Stop/WS reconnect handling is unchanged.
+
 ## Context
 
 Phase 3 connects `eveys/ocpp` (the OCPP gateway) to the Eveys backend. The integration target is a single backend speaking REST.

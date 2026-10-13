@@ -187,6 +187,7 @@ class Transaction(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
     stopped_reported_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Also records server admission rejection; then reported time/meter stay NULL.
     stopped_received_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     stop_reason: Mapped[str | None] = mapped_column(String(32))
 

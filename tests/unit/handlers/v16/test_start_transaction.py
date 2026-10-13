@@ -16,6 +16,8 @@ from eveys_ocpp.handlers.v16 import start_transaction
 async def test_assigns_transaction_id(fake_cp: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(start_transaction, "get_charge_point_pk", AsyncMock(return_value=42))
     monkeypatch.setattr(start_transaction, "insert_transaction", AsyncMock(return_value=999))
+    fake_cp.backend_client = AsyncMock()
+    fake_cp.backend_client.open_session = AsyncMock(return_value=_session_open_result())
 
     result = await start_transaction.handle(
         fake_cp,
@@ -80,6 +82,8 @@ async def test_publishes_to_tx_started_topic_when_producer_attached(
 ) -> None:
     monkeypatch.setattr(start_transaction, "get_charge_point_pk", AsyncMock(return_value=42))
     monkeypatch.setattr(start_transaction, "insert_transaction", AsyncMock(return_value=999))
+    fake_cp.backend_client = AsyncMock()
+    fake_cp.backend_client.open_session = AsyncMock(return_value=_session_open_result())
     fake_producer = AsyncMock()
     fake_cp.event_producer = fake_producer
 
@@ -148,6 +152,8 @@ async def test_no_publish_when_producer_is_none(
 ) -> None:
     monkeypatch.setattr(start_transaction, "get_charge_point_pk", AsyncMock(return_value=42))
     monkeypatch.setattr(start_transaction, "insert_transaction", AsyncMock(return_value=999))
+    fake_cp.backend_client = AsyncMock()
+    fake_cp.backend_client.open_session = AsyncMock(return_value=_session_open_result())
     fake_cp.event_producer = None
 
     result = await start_transaction.handle(
@@ -170,6 +176,8 @@ async def test_handler_survives_kafka_publish_exception(
     flow even if the downstream tx.started emit fails."""
     monkeypatch.setattr(start_transaction, "get_charge_point_pk", AsyncMock(return_value=42))
     monkeypatch.setattr(start_transaction, "insert_transaction", AsyncMock(return_value=999))
+    fake_cp.backend_client = AsyncMock()
+    fake_cp.backend_client.open_session = AsyncMock(return_value=_session_open_result())
     fake_producer = AsyncMock()
     fake_producer.publish = AsyncMock(side_effect=RuntimeError("broker is down"))
     fake_cp.event_producer = fake_producer
@@ -234,12 +242,11 @@ async def test_calls_backend_open_session_with_assigned_transaction_id(
 
 
 @pytest.mark.asyncio
-async def test_business_error_returns_invalid_but_keeps_row_and_emits(
+async def test_business_error_returns_invalid_without_start_event(
     fake_cp: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A 4xx from the backend (e.g. quota exceeded between Authorize and
-    StartTransaction) maps to OCPP `Invalid`, but the local row is the
-    audit-of-record and Kafka still emits."""
+    StartTransaction) maps to OCPP `Invalid`; no customer Start is emitted."""
     from eveys_ocpp.platform import BackendBusinessError
 
     monkeypatch.setattr(start_transaction, "get_charge_point_pk", AsyncMock(return_value=42))
@@ -264,15 +271,14 @@ async def test_business_error_returns_invalid_but_keeps_row_and_emits(
     assert result.transaction_id == 999  # row kept
     assert result.id_tag_info.status == AuthorizationStatus.invalid
     insert.assert_awaited_once()
-    producer.publish.assert_awaited_once()
+    producer.publish.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_keeps_row_and_accepts_when_backend_unavailable(
+async def test_keeps_audit_and_rejects_when_backend_unavailable(
     fake_cp: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Backend network outage: the local row anchors reconciliation,
-    the charger continues to deliver energy, the reconciler heals."""
+    """An unavailable backend cannot admit a new physical transaction."""
     from eveys_ocpp.platform import BackendUnavailableError
 
     monkeypatch.setattr(start_transaction, "get_charge_point_pk", AsyncMock(return_value=42))
@@ -295,8 +301,8 @@ async def test_keeps_row_and_accepts_when_backend_unavailable(
     )
 
     assert result.transaction_id == 999
-    assert result.id_tag_info.status == AuthorizationStatus.accepted
-    producer.publish.assert_awaited_once()
+    assert result.id_tag_info.status == AuthorizationStatus.invalid
+    producer.publish.assert_not_awaited()
 
 
 @pytest.mark.asyncio

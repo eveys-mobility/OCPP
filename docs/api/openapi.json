@@ -1832,7 +1832,7 @@
             "title": "Meter Stop Wh"
           },
           "open": {
-            "description": "True until StopTransaction lands.",
+            "description": "True while neither a charger Stop nor server rejection exists.",
             "title": "Open",
             "type": "boolean"
           },
@@ -1952,7 +1952,7 @@
             "title": "Meter Stop Wh"
           },
           "open": {
-            "description": "True until StopTransaction lands.",
+            "description": "True while neither a charger Stop nor server rejection exists.",
             "title": "Open",
             "type": "boolean"
           },

@@ -493,6 +493,25 @@ async def insert_transaction(
     return tx.transaction_id
 
 
+async def reject_transaction_start(
+    session: AsyncSession, *, transaction_id: int, rejected_at: datetime
+) -> None:
+    """Close a rejected admission audit without fabricating a charger Stop.
+
+    Called in the same transaction as insert + backend admission. Preserve
+    charger stop time/meter and the Stop replay anchor for a later real Stop.
+    """
+    await session.execute(
+        update(Transaction)
+        .where(
+            Transaction.transaction_id == transaction_id,
+            Transaction.stopped_reported_at.is_(None),
+            Transaction.stopped_received_at.is_(None),
+        )
+        .values(stopped_received_at=rejected_at, stop_reason="DeAuthorized")
+    )
+
+
 async def stop_transaction(
     session: AsyncSession,
     *,
@@ -1255,8 +1274,14 @@ def _transactions_by_cp_filter_conditions(
         conditions.append(Transaction.id_tag == id_tag)
     if open_only is True:
         conditions.append(Transaction.stopped_reported_at.is_(None))
+        conditions.append(Transaction.stopped_received_at.is_(None))
     elif open_only is False:
-        conditions.append(Transaction.stopped_reported_at.is_not(None))
+        conditions.append(
+            or_(
+                Transaction.stopped_reported_at.is_not(None),
+                Transaction.stopped_received_at.is_not(None),
+            )
+        )
     if started_from is not None:
         conditions.append(Transaction.started_reported_at >= started_from)
     if started_to is not None:
@@ -1315,7 +1340,7 @@ async def list_transactions_by_cp(
     `UNKNOWN_CP_ID`); empty list = known charger with no matching txns.
 
     Filters: `id_tag` exact match; `open_only=True` keeps txns whose
-    `stopped_reported_at IS NULL` (currently charging); `False` keeps
+    both stop timestamps NULL (open physical record); `False` keeps
     only stopped txns; `None` returns both. Time window matches on
     `started_reported_at`.
     """
@@ -1506,8 +1531,14 @@ def _transactions_filter_conditions(
         conditions.append(Transaction.id_tag == id_tag)
     if active is True:
         conditions.append(Transaction.stopped_reported_at.is_(None))
+        conditions.append(Transaction.stopped_received_at.is_(None))
     elif active is False:
-        conditions.append(Transaction.stopped_reported_at.is_not(None))
+        conditions.append(
+            or_(
+                Transaction.stopped_reported_at.is_not(None),
+                Transaction.stopped_received_at.is_not(None),
+            )
+        )
     if started_from is not None:
         conditions.append(Transaction.started_reported_at >= started_from)
     if started_to is not None:

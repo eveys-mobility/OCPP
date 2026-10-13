@@ -361,8 +361,7 @@ async def _fetch_active_sessions(
 
     Returns `(active_sessions, latest_meter)`. Either side may be
     empty / None when:
-    - no `transactions` rows have `stopped_received_at IS NULL`
-      (charger idle);
+    - no physical transaction records have both stop timestamps NULL;
     - the ClickHouse client isn't wired (dev / tests);
     - the ClickHouse query failed (broker hiccup) — degrade rather
       than 500.

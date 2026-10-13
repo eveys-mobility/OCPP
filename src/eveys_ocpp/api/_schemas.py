@@ -422,7 +422,7 @@ class Transaction(BaseModel):
     meter_stop_wh: int | None = None
     stopped_at: str | None = None
     stop_reason: str | None = None
-    open: bool = Field(description="True until StopTransaction lands.")
+    open: bool = Field(description="True while neither a charger Stop nor server rejection exists.")
 
 
 class TransactionDetail(Transaction):

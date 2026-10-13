@@ -29,7 +29,7 @@ Why two layers of dedup:
 - Postgres ``idempotency_key`` (legacy) survives Redis flushes and
   cross-pod retries that arrive after the cache TTL expires.
 
-Backend failure policy (matches StartTransaction in E3-5):
+Backend failure policy for an already reported physical Stop:
 - `BackendUnavailableError` → keep the local DB row (audit-of-record),
   reply `Accepted`. Reconciler heals when the backend recovers.
 - `BackendBusinessError` (e.g. billing-fraud `Blocked`) → keep the

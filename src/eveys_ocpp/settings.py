@@ -1574,16 +1574,16 @@ class Settings(BaseSettings):
     backend_authorize_fallback: Literal["reject", "accept_offline"] = Field(
         default="reject",
         description=(
-            "What the Authorize handler returns when the backend is "
-            "unreachable past the retry budget. `reject` → `Invalid` "
-            "(safe). `accept_offline` → `Accepted` with a 5-min expiry "
-            "(operator opt-in to un-billable risk)."
+            "Legacy Authorize fallback setting retained for configuration "
+            "compatibility. Backend unavailability returns Invalid for both "
+            "values; accept_offline no longer grants a new authorization. "
+            "Every new StartTransaction requires fresh backend admission."
         ),
         json_schema_extra={
             "category": "backend_integration",
             "impact": (
-                "ADR-0023 § 'Fallback policy'. Default `reject` is the "
-                "safe billing-relevant choice."
+                "Strict admission overrides the legacy offline grant. "
+                "Neither value can authorize a new physical transaction offline."
             ),
             "secret": False,
             "stability": "tunable",
@@ -1604,8 +1604,8 @@ class Settings(BaseSettings):
             "impact": (
                 "Default `accept_offline` matches the contract's "
                 "fail-soft model: a backend outage must not prevent "
-                "chargers from booting and serving Authorize-cached "
-                "sessions. Flip to `reject` only if the operator "
+                "chargers from booting. Every new physical transaction "
+                "still requires fresh backend admission. Flip to `reject` only if the operator "
                 "wants chargers offline during a backend incident."
             ),
             "secret": False,

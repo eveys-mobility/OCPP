@@ -5,8 +5,8 @@ Per the contract `docs/integration/02-gateway-rest-api.md`:
 - Single-transaction detail keys off the OCPP-visible `transaction_id`,
   not the surrogate PK.
 - The list endpoint supports `from`/`to` (window on
-  `started_reported_at`), `id_tag` exact match, and `open` (currently
-  charging vs. stopped). Cursor-paginated.
+  `started_reported_at`), `id_tag` exact match, and `open` (neither a
+  charger Stop nor a server admission rejection). Cursor-paginated.
 - 404 `UNKNOWN_TRANSACTION_ID` and `UNKNOWN_CP_ID` are the only error
   cases beyond `BAD_REQUEST` (cursor malformed, time window not
   parseable).
@@ -82,8 +82,8 @@ def _transaction_to_response(tx: dict[str, Any]) -> dict[str, Any]:
     Emits both the precise `*_reported_at` / `*_received_at` pair and the
     convenience aliases `started_at` / `stopped_at` (pointing at the
     `_reported_at` value — the charger's wall clock, which is what UIs
-    render). The `open` flag is `True` while `stopped_reported_at` is
-    null so callers don't have to recompute it.
+    render). The `open` flag is `True` only while both stop timestamps
+    are null. A rejected admission can have only a server closure time.
     """
     started_reported = _isoformat(tx["started_reported_at"])
     stopped_reported = _isoformat(tx["stopped_reported_at"])
@@ -106,7 +106,7 @@ def _transaction_to_response(tx: dict[str, Any]) -> dict[str, Any]:
         # of "this session hasn't stopped yet."
         "started_at": started_reported,
         "stopped_at": stopped_reported,
-        "open": tx["stopped_reported_at"] is None,
+        "open": tx["stopped_reported_at"] is None and tx["stopped_received_at"] is None,
     }
 
 

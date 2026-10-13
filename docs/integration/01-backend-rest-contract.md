@@ -2,6 +2,19 @@
 
 > **Audience**: backend developer implementing the endpoints `eveys/ocpp` calls into.
 
+> **2026-10-13 admission update:** This overrides the historical offline/fail-open
+> policies below for Authorize and sessions/open. Missing or unavailable backend
+> decisions return Invalid; `accept_offline` no longer grants authorization.
+> Every Start requests fresh admission for a newly assigned physical transaction ID.
+> Insert, backend decision and rejection audit share one PG transaction; the backend
+> must not read that uncommitted ID from the gateway during the callback. Only an
+> accepted admission emits `tx.started`, after commit. A rejected audit sets server
+> `stopped_received_at` and `DeAuthorized`, leaving charger stop time/meter NULL.
+> The sessions/open wall-clock budget is timeout × (retries + 1), default 24 seconds;
+> timeout rejects the candidate. A backend reservation followed by PG commit failure
+> or an ambiguous ACK still requires reconciliation. Existing open physical
+> Meter/Stop/WS reconnect handling is unchanged; a new ID is not a continuation.
+
 These are the endpoints **the backend** exposes for **the gateway to call**. Every endpoint below lives at `<eveys_backend_base_url>/api/eveys/...`.
 
 The endpoints divide into two tiers:
