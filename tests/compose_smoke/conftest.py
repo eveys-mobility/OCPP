@@ -239,6 +239,13 @@ def _container_logs(name: str, tail: int = 200) -> str:
     return (proc.stdout or "") + ("\n" + proc.stderr if proc.stderr else "")
 
 
+def _capture_fixture_logs() -> None:
+    directory = _REPO_ROOT / ".compose-smoke-logs"
+    directory.mkdir(exist_ok=True)
+    for name in _EXPECTED_CONTAINERS:
+        (directory / f"fixture-{name}.log").write_text(_container_logs(name, tail=200))
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _compose_stack() -> Iterator[None]:
     """Bring the full stack up once per pytest session.
@@ -391,8 +398,12 @@ def _compose_stack() -> Iterator[None]:
             f"  stdout: {seed.stdout}\n  stderr: {seed.stderr}"
         )
 
-    yield
-
-    # Always tear down — leaving a stack up between sessions makes the
-    # next "fresh" run mysteriously broken when a config change lands.
-    _compose("down", "--volumes", "--remove-orphans")
+    try:
+        yield
+    finally:
+        # Keep bounded synthetic logs before teardown removes their containers.
+        # Later workflow/Makefile captures use different filenames.
+        try:
+            _capture_fixture_logs()
+        finally:
+            _compose("down", "--volumes", "--remove-orphans")

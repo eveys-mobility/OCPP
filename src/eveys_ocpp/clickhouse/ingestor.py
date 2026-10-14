@@ -257,7 +257,8 @@ class _Row:
     columns: dict[str, Any]
 
 
-class _ProgressListener(ConsumerRebalanceListener):
+# aiokafka does not publish typing metadata for this callback base class.
+class _ProgressListener(ConsumerRebalanceListener):  # type: ignore[misc]
     """Invalidate process-local observations; never alter pending delivery."""
 
     def __init__(self, ingestor: ClickHouseIngestor) -> None:

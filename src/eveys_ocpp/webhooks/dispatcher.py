@@ -67,7 +67,8 @@ class _OwnershipChanged(RuntimeError):
     pass
 
 
-class _RebalanceListener(ConsumerRebalanceListener):
+# aiokafka does not publish typing metadata for this callback base class.
+class _RebalanceListener(ConsumerRebalanceListener):  # type: ignore[misc]
     def __init__(self, dispatcher: WebhookDispatcher) -> None:
         self._dispatcher = dispatcher
 

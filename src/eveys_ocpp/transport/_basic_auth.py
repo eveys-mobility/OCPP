@@ -95,7 +95,7 @@ async def _lookup_or_none(
     session_factory: async_sessionmaker[AsyncSession],
     *,
     cp_id: str,
-) -> str | None | object:
+) -> str | object | None:
     """Look up the stored bcrypt hash for `cp_id`, returning:
 
     - the hash string if a row exists

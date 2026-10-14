@@ -7,7 +7,6 @@ from pathlib import Path, PurePosixPath
 
 import yaml
 
-
 COMPOSE = Path(__file__).resolve().parents[2] / "deploy/compose/docker-compose.yml"
 
 

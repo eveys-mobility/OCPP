@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import ast
 import subprocess
 from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
 import yaml
+from ocpp.messages import Call, validate_payload
 
 from eveys_ocpp.settings import Settings
 from tests.compose_smoke import conftest as smoke
@@ -70,6 +72,57 @@ def test_smoke_overlay_wires_existing_mock_contract_with_strict_auth() -> None:
     assert gateway["environment"]["EVEYS_OCPP_BACKEND_AUTHORIZE_FALLBACK"] == "reject"
     assert gateway["environment"]["EVEYS_OCPP_WEBHOOK_BASE_URL"] == ""
     assert gateway["depends_on"]["mock-backend"]["condition"] == "service_healthy"
+
+
+@pytest.mark.asyncio
+async def test_smoke_blocked_tag_is_valid_ocpp_authorize_wire_data() -> None:
+    services = yaml.safe_load(smoke._MOCK_COMPOSE_FILE.read_text())["services"]
+    tag = services["mock-backend"]["environment"]["MOCK_BACKEND_BLOCKED_ID_TAGS"]
+    tree = ast.parse((smoke._REPO_ROOT / "tests/compose_smoke/test_compose_stack.py").read_text())
+    tags = {
+        keyword.value.value for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "Authorize"
+        for keyword in node.keywords
+        if keyword.arg == "id_tag" and isinstance(keyword.value, ast.Constant)
+    }
+    assert tag in tags, "the mock's blocked tag must match the actual simulator request"
+    for value in tags:
+        await validate_payload(Call("isolated-tag", "Authorize", {"idTag": value}), "1.6")
+
+
+def test_native_fixture_keeps_bounded_logs_before_removing_test_containers(
+    tmp_path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events = []
+    monkeypatch.setattr(smoke, "_REPO_ROOT", tmp_path)
+    monkeypatch.setattr(smoke, "_gate", lambda: None)
+    monkeypatch.setattr(smoke, "_require_disposable_stack", lambda: None)
+    monkeypatch.setattr(smoke.time, "sleep", lambda _seconds: None)
+    state = {"running": "true", "restart_count": "0"}
+    monkeypatch.setattr(smoke, "_wait_for_running", lambda *_args: state)
+    monkeypatch.setattr(smoke, "_container_state", lambda _name: state)
+    monkeypatch.setattr(smoke, "_wait_for_tcp", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(smoke.subprocess, "run", lambda *_args, **_kwargs:
+                        subprocess.CompletedProcess([], 0, "", ""))
+    def compose(*args):
+        events.append(args[0])
+        return subprocess.CompletedProcess([], 0, "", "")
+    def logs(name, tail=200):
+        events.append("logs")
+        assert tail == 200
+        return f"synthetic fixture log for {name}"
+    monkeypatch.setattr(smoke, "_compose", compose)
+    monkeypatch.setattr(smoke, "_container_logs", logs)
+    fixture = smoke._compose_stack.__wrapped__()
+    next(fixture)
+    with pytest.raises(StopIteration):
+        next(fixture)
+    assert events[-1] == "down"
+    assert "logs" in events[:-1]
+    assert (tmp_path / ".compose-smoke-logs/fixture-eveys-ocpp.log").read_text().startswith(
+        "synthetic fixture log"
+    )
 
 
 @pytest.mark.asyncio

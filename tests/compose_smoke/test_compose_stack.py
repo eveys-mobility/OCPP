@@ -188,7 +188,7 @@ async def test_full_charger_flow_against_running_container() -> None:
             assert boot.status == "Accepted"
 
             blocked = await asyncio.wait_for(
-                sim.call(call.Authorize(id_tag="COMPOSE_SMOKE_BLOCKED")), timeout=10
+                sim.call(call.Authorize(id_tag="SMOKE_BLOCKED")), timeout=10
             )
             assert blocked.id_tag_info["status"] == "Blocked"
 
