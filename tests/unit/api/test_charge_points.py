@@ -286,6 +286,10 @@ async def test_list_includes_per_connector_status_from_clickhouse(
     }
     # last_changed_at serialized as ISO-8601.
     assert all(isinstance(c["last_changed_at"], str) for c in connectors)
+    assert cp["connectors_state"] == "available"
+    assert cp["connectors_source"] == "clickhouse"
+    assert cp["connectors_error"] is None
+    assert datetime.fromisoformat(cp["connectors_last_successful_at"]).tzinfo is not None
 
 
 @pytest.mark.asyncio
@@ -306,6 +310,8 @@ async def test_list_returns_empty_connectors_when_clickhouse_silent(
 
     body = response.json()
     assert body["charge_points"][0]["connectors"] == []
+    assert body["charge_points"][0]["connectors_state"] == "available"
+    assert body["charge_points"][0]["connectors_error"] is None
 
 
 @pytest.mark.asyncio
@@ -330,6 +336,25 @@ async def test_list_survives_clickhouse_failure(
     assert response.status_code == 200
     body = response.json()
     assert body["charge_points"][0]["connectors"] == []
+    assert body["charge_points"][0]["connectors_state"] == "unavailable"
+    assert body["charge_points"][0]["connectors_error"] == "query_failed"
+    assert body["charge_points"][0]["connectors_last_successful_at"] is None
+
+
+@pytest.mark.asyncio
+async def test_connector_source_without_client_is_unavailable() -> None:
+    from types import SimpleNamespace
+
+    from eveys_ocpp.api.charge_points import _enrich_with_connectors
+
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(ch_client=None)))
+    rows = await _enrich_with_connectors(request, [{"cp_id": "CP_TEST"}])
+
+    assert rows[0]["connectors"] == []
+    assert rows[0]["connectors_state"] == "unavailable"
+    assert rows[0]["connectors_source"] == "clickhouse"
+    assert rows[0]["connectors_error"] == "not_configured"
+    assert rows[0]["connectors_last_successful_at"] is None
 
 
 @pytest.mark.asyncio
@@ -363,12 +388,16 @@ async def test_detail_includes_per_connector_status(
     response = await client.get("/api/v1/charge-points/CP_001")
 
     body = response.json()
+    assert body["connectors_state"] == "available"
+    assert body["connectors_error"] is None
     assert body["connectors"] == [
         {
             "connector_id": 1,
             "status": "Faulted",
             "error_code": "GroundFailure",
             "last_changed_at": "2026-05-05T14:30:00+00:00",
+            "status_freshness": "current",
+            "stale_reason": None,
         }
     ]
 

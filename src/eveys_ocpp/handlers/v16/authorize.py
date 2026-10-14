@@ -17,11 +17,7 @@ Behaviour
   `IdTagInfo.status` to the charger verbatim. Per ADR-0023 the
   backend is the source of truth for authorization; the gateway
   doesn't second-guess it.
-- If the backend client is not wired (W1 dev stack, unit tests
-  without ``backend_base_url``), the handler returns ``Accepted``
-  for any id_tag — useful for end-to-end protocol testing without
-  a backend dependency. The gating in `__main__.py` makes this
-  explicit (logs ``backend_client.disabled``).
+- If the backend client is not wired, return ``Invalid``.
 
 Fallback policy when the backend is unreachable past the retry
 budget (ADR-0023 §"Fallback policy"):
@@ -30,9 +26,12 @@ budget (ADR-0023 §"Fallback policy"):
   ``Invalid`` to the charger. Loud, safe — a charger that can't
   authorize won't start a session, which is the right behaviour
   for a billing-relevant gate.
-- ``settings.backend_authorize_fallback="accept_offline"``: return
-  ``Accepted`` with a 5-minute ``expiry_date``. Use only when the
-  operator accepts the risk of un-billable sessions.
+- Legacy ``accept_offline`` configuration is still parsed but cannot
+  grant a new authorization during an outage; return ``Invalid``.
+
+An Authorize cache hit is a short-lived identity hint. Every new physical
+StartTransaction requires its own backend admission; the cache does not
+prove customer ownership or authorize a different physical transaction.
 
 Idempotency-Key shape: ``ocpp-auth-{cp_id}-{id_tag}-{message_id}``.
 The OCPP message-id is forwarded by the library as ``call_unique_id``.
@@ -42,7 +41,6 @@ idempotency cache instead of double-consulting.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 from ocpp.exceptions import SecurityError
@@ -77,13 +75,6 @@ _STATUS_MAP: dict[str, AuthorizationStatus] = {
     "ConcurrentTx": AuthorizationStatus.concurrent_tx,
 }
 
-# Length of the offline-Accepted window when the operator opts for
-# the `accept_offline` fallback. Five minutes balances "give the
-# user a chance to charge during a brief backend hiccup" against
-# "don't issue a too-long offline grant if the backend's outage
-# turns into hours."
-_OFFLINE_ACCEPT_WINDOW_SECONDS = 300
-
 
 async def handle(
     cp: EveysChargePoint,
@@ -106,12 +97,12 @@ async def handle(
 
     with time_handler("Authorize"):
         try:
-            # No backend client — stub `Accepted` for dev / W1.
+            # No authoritative backend decision — fail closed, including dev.
             if cp.backend_client is None:
-                log.info("authorize.no_backend_client", id_tag=id_tag, decision="Accepted")
-                metrics_registry.AUTHORIZE_TOTAL.labels(decision="Accepted", source="offline").inc()
+                log.info("authorize.no_backend_client", id_tag=id_tag, decision="Invalid")
+                metrics_registry.AUTHORIZE_TOTAL.labels(decision="Invalid", source="offline").inc()
                 return call_result.Authorize(
-                    id_tag_info=IdTagInfo(status=AuthorizationStatus.accepted)
+                    id_tag_info=IdTagInfo(status=AuthorizationStatus.invalid)
                 )
 
             # Cache lookup. Hit → forward immediately, no backend round-trip
@@ -213,9 +204,7 @@ def _result_to_response(result: AuthorizeResult) -> call_result.Authorize:
 def _fallback(
     cp: EveysChargePoint, id_tag: str, exc: BackendUnavailableError
 ) -> call_result.Authorize:
-    """Backend unreachable past the retry budget. Apply the configured
-    fallback policy and log it loudly so ops dashboards can surface
-    "backend authorize degraded" runs."""
+    """An unavailable backend cannot grant a fresh authorization."""
     policy = cp.settings.backend_authorize_fallback
     log.warning(
         "authorize.backend_unavailable",
@@ -225,16 +214,6 @@ def _fallback(
         error_code=exc.error_code,
     )
 
-    if policy == "accept_offline":
-        expiry = datetime.now(UTC) + timedelta(seconds=_OFFLINE_ACCEPT_WINDOW_SECONDS)
-        metrics_registry.AUTHORIZE_TOTAL.labels(decision="Accepted", source="offline").inc()
-        return call_result.Authorize(
-            id_tag_info=IdTagInfo(
-                status=AuthorizationStatus.accepted,
-                expiry_date=expiry.isoformat(),
-            )
-        )
-
-    # Default `reject` — return Invalid; charger refuses the session.
+    # Preserve config compatibility, but never synthesize an offline grant.
     metrics_registry.AUTHORIZE_TOTAL.labels(decision="Invalid", source="offline").inc()
     return call_result.Authorize(id_tag_info=IdTagInfo(status=AuthorizationStatus.invalid))

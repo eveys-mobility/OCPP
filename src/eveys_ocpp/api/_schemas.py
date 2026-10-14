@@ -30,7 +30,7 @@ plausible, copy-pasteable, and never include real PII.
 
 from __future__ import annotations
 
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -73,22 +73,53 @@ class ErrorEnvelope(BaseModel):
 class HealthComponents(BaseModel):
     postgres: str = Field(description="`ok` or `unavailable`.")
     redis: str = Field(description="`ok` or `unavailable`.")
+    clickhouse: Literal["ok", "error", "unconfigured"] = Field(
+        description="Archive read probe; does not verify ingestion progress."
+    )
+    clickhouse_error_class: str | None = Field(default=None, description="Exception class only.")
+    ingestor: Literal["unknown"] = Field(
+        description="The gateway does not observe sidecar progress."
+    )
+
+
+class ArchiveObservation(BaseModel):
+    """Archive delivery is separate from a successful ClickHouse read probe."""
+
+    state: Literal["unknown"]
+    reason: Literal["ingestor_progress_not_observed"]
+    consumer_lag_messages: int | None = Field(default=None)
+    last_successful_commit_at: str | None = Field(default=None)
 
 
 class HealthResponse(BaseModel):
     """`GET /api/v1/health`. Liveness + per-component probe."""
 
-    status: str = Field(description="`ok` when every component is `ok`; `degraded` otherwise.")
+    status: str = Field(
+        description="`degraded` when a component fails or archive progress is unknown."
+    )
     version: str = Field(description="Gateway package version string.")
     components: HealthComponents
+    archive: ArchiveObservation
     request_id: str
 
     model_config = {
         "json_schema_extra": {
             "example": {
-                "status": "ok",
+                "status": "degraded",
                 "version": "0.1.0",
-                "components": {"postgres": "ok", "redis": "ok"},
+                "components": {
+                    "postgres": "ok",
+                    "redis": "ok",
+                    "clickhouse": "ok",
+                    "clickhouse_error_class": None,
+                    "ingestor": "unknown",
+                },
+                "archive": {
+                    "state": "unknown",
+                    "reason": "ingestor_progress_not_observed",
+                    "consumer_lag_messages": None,
+                    "last_successful_commit_at": None,
+                },
                 "request_id": "9b3c5d18-1f7c-4b6a-8e0e-5b9a3c4f2e10",
             }
         }
@@ -110,6 +141,29 @@ class ConnectorStatus(BaseModel):
     status: str = Field(description="OCPP 1.6 §3.1.1 enum: Available, Preparing, Charging, …")
     error_code: str | None = None
     timestamp: str | None = Field(default=None, description="ISO 8601 of the StatusNotification.")
+    last_changed_at: str | None = Field(
+        default=None,
+        description=(
+            "Server EventEnvelope occurred_at of the latest archived status; "
+            "not charger clock or successful query time."
+        ),
+    )
+    status_freshness: Literal["current", "stale", "unknown"] | None = Field(
+        default=None,
+        description=(
+            "Latest boot-epoch consistency of this raw report; "
+            "current does not attest EV identity or physical state."
+        ),
+    )
+    stale_reason: Literal["before_boot", "stopped_after_status", "unverified_timestamp"] | None = (
+        Field(
+            default=None,
+            description=(
+                "Why raw status is stale/unknown; "
+                "current gateway only proves before_boot or unknown timestamps."
+            ),
+        )
+    )
     info: str | None = None
     vendor_id: str | None = None
     vendor_error_code: str | None = None
@@ -172,6 +226,15 @@ class ChargePoint(BaseModel):
         description="Which gateway pod owns the WS. None when offline.",
     )
     connectors: list[ConnectorStatus] = Field(default_factory=list)
+    connectors_state: Literal["available", "unavailable"] = Field(
+        description="Archive availability; successful empty result is not a failure."
+    )
+    connectors_source: Literal["clickhouse"] = "clickhouse"
+    connectors_error: Literal["query_failed", "not_configured"] | None = None
+    connectors_last_successful_at: str | None = Field(
+        default=None,
+        description="UTC time this request read the archive successfully; null on unavailable.",
+    )
     last_offline_seconds: int | None = Field(
         default=None,
         description=(
@@ -404,7 +467,7 @@ class Transaction(BaseModel):
     meter_stop_wh: int | None = None
     stopped_at: str | None = None
     stop_reason: str | None = None
-    open: bool = Field(description="True until StopTransaction lands.")
+    open: bool = Field(description="True while neither a charger Stop nor server rejection exists.")
 
 
 class TransactionDetail(Transaction):
@@ -412,10 +475,14 @@ class TransactionDetail(Transaction):
         default=None,
         description=(
             "ClickHouse-backed snapshot — SoC start/last and per-phase "
-            "voltage/current/power. `null` when the gateway has no "
-            "ClickHouse read client configured."
+            "voltage/current/power. `null` when archive reading is "
+            "unconfigured or unavailable; see telemetry_state."
         ),
     )
+    telemetry_state: Literal["available", "unavailable", "unconfigured"] = Field(
+        description="Read outcome; available does not prove archive completeness or freshness."
+    )
+    telemetry_error: Literal["ARCHIVE_UNAVAILABLE", "ARCHIVE_UNCONFIGURED"] | None = None
     request_id: str
 
     model_config = {
@@ -430,6 +497,8 @@ class TransactionDetail(Transaction):
                 "meter_stop_wh": 1012345,
                 "stopped_at": "2026-05-07T12:30:00+00:00",
                 "stop_reason": "Local",
+                "telemetry_state": "available",
+                "telemetry_error": None,
                 "open": False,
                 "telemetry": {
                     "soc": {"start": 38.0, "last": 81.0, "delta": 43.0},
@@ -779,6 +848,7 @@ class CommandAcceptedResponse(BaseModel):
 
 __all__ = [
     "ActiveSession",
+    "ArchiveObservation",
     "ChargePoint",
     "ChargePointDetail",
     "ChargePointListResponse",

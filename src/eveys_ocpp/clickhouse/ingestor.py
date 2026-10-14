@@ -26,9 +26,10 @@ Operational notes:
   replicas would split the partition assignment automatically (Kafka
   consumer-group rebalance) but we run one for now (single-shard
   ClickHouse — see ADR-0020).
-- At-least-once: a crash between INSERT-success and offset-commit
-  re-inserts the next time. ``event_id`` in the envelope is the
-  downstream dedup key.
+- At-least-once: a crash or ambiguous INSERT acknowledgement before
+  offset-commit can re-insert rows. The current MergeTree schemas do
+  not enforce uniqueness of ``event_id``. In-memory acknowledgements
+  avoid retrying tables known to have succeeded in this process only.
 - Batch size and time threshold are env-tunable; the defaults
   (500 / 5 s) are documented in ADR-0020.
 
@@ -41,15 +42,19 @@ import asyncio
 import json
 import signal
 import sys
+import time
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from aiokafka import AIOKafkaConsumer
+from aiokafka.abc import ConsumerRebalanceListener
 from asynch import Connection
 
 from eveys_ocpp._generated.events.v1 import events_pb2
+from eveys_ocpp.metrics import registry as metrics_registry
+from eveys_ocpp.metrics.server import MetricsServer
 from eveys_ocpp.observability import bind_contextvars, configure_logging, get_logger
 from eveys_ocpp.settings import Settings, get_settings
 
@@ -183,9 +188,9 @@ def _extract_transaction_id(raw_payload: str) -> int | None:
     The ``transactionId`` field shows up inside the payload object on
     a small set of message types (StartTransaction.conf,
     StopTransaction.req, MeterValues.req, RemoteStartTransaction.req
-    when the central system pins the id, …). It's the same key name
-    everywhere it appears, so a shallow dict lookup suffices — no
-    need to know which action we're parsing.
+    when the central system pins the id, …). Historical outbound
+    audits used ``transaction_id`` before exact wire capture; accept
+    that spelling too. Already persisted NULL indexes are not backfilled.
 
     Returns ``None`` for: unparseable JSON, unexpected frame shape, no
     ``transactionId`` key, or a value that isn't coercible to int.
@@ -205,6 +210,10 @@ def _extract_transaction_id(raw_payload: str) -> int | None:
     if not isinstance(body, dict):
         return None
     value = body.get("transactionId")
+    if value is None:
+        # Pre-fix outbound audits reconstructed dataclasses without the
+        # library's camelCase serialization. Preserve historical indexing.
+        value = body.get("transaction_id")
     if value is None:
         return None
     try:
@@ -248,6 +257,20 @@ class _Row:
     columns: dict[str, Any]
 
 
+# aiokafka does not publish typing metadata for this callback base class.
+class _ProgressListener(ConsumerRebalanceListener):  # type: ignore[misc]
+    """Invalidate process-local observations; never alter pending delivery."""
+
+    def __init__(self, ingestor: ClickHouseIngestor) -> None:
+        self._ingestor = ingestor
+
+    async def on_partitions_revoked(self, revoked: Iterable[Any]) -> None:
+        self._ingestor._reset_progress(revoked)
+
+    async def on_partitions_assigned(self, assigned: Iterable[Any]) -> None:
+        self._ingestor._reset_progress(assigned)
+
+
 class ClickHouseIngestor:
     """Long-lived Kafka→ClickHouse pipeline.
 
@@ -269,8 +292,71 @@ class ClickHouseIngestor:
         # CrashLoopBackOff. Without this the process logs forever and
         # silently fails to deliver events — see issue #24.
         self._consecutive_flush_failures = 0
+        self._acknowledged_offsets: dict[Any, int] = {}
+        self._observed_partitions: set[Any] = set()
+        self._last_poll_timestamp = 0.0
+        self._assignment_epoch = 0
+
+    def _reset_progress(self, partitions: Iterable[Any]) -> None:
+        self._assignment_epoch += 1
+        for tp in partitions:
+            self._acknowledged_offsets.pop(tp, None)
+            labels = (tp.topic, str(tp.partition))
+            metrics_registry.CLICKHOUSE_INGESTOR_CONSUMER_LAG_MESSAGES.labels(*labels).set(-1)
+            metrics_registry.CLICKHOUSE_INGESTOR_CONSUMER_LAG_KNOWN.labels(*labels).set(0)
+            metrics_registry.CLICKHOUSE_INGESTOR_LAG_SAMPLE_TIMESTAMP_SECONDS.labels(*labels).set(0)
+
+    def _observe_progress(self) -> None:
+        """Read only cached assignment/highwater; never make a metadata RPC.
+
+        Initial/renewed assignments have unknown lag until this process
+        observes a commit ACK. Consumer position can advance before INSERT
+        and is deliberately never used as the delivered watermark.
+        """
+        if self._consumer is None:
+            return
+        gauges = (
+            metrics_registry.CLICKHOUSE_INGESTOR_CONSUMER_LAG_MESSAGES,
+            metrics_registry.CLICKHOUSE_INGESTOR_CONSUMER_LAG_KNOWN,
+            metrics_registry.CLICKHOUSE_INGESTOR_LAG_SAMPLE_TIMESTAMP_SECONDS,
+        )
+        try:
+            assigned = set(self._consumer.assignment())
+            for tp in self._observed_partitions - assigned:
+                for gauge in gauges:
+                    gauge.remove(tp.topic, str(tp.partition))
+            for tp in self._acknowledged_offsets.keys() - assigned:
+                self._acknowledged_offsets.pop(tp, None)
+            self._observed_partitions = assigned
+            for tp in assigned:
+                highwater = self._consumer.highwater(tp)
+                fetched_at_ms = self._consumer.last_poll_timestamp(tp)
+                acknowledged = self._acknowledged_offsets.get(tp)
+                known = (
+                    acknowledged is not None
+                    and highwater is not None
+                    and highwater >= acknowledged
+                    and fetched_at_ms is not None
+                    and fetched_at_ms > 0
+                )
+                labels = (tp.topic, str(tp.partition))
+                gauges[0].labels(*labels).set(highwater - acknowledged if known else -1)
+                gauges[1].labels(*labels).set(int(known))
+                # This timestamp accompanies the cached broker FetchResponse.
+                # A later local/empty getmany must not make old highwater fresh.
+                gauges[2].labels(*labels).set(fetched_at_ms / 1000 if known else 0)
+        except Exception as exc:
+            # Optional observation must not alter INSERT/commit ordering.
+            for tp in self._observed_partitions:
+                gauges[0].labels(tp.topic, str(tp.partition)).set(-1)
+                gauges[1].labels(tp.topic, str(tp.partition)).set(0)
+                gauges[2].labels(tp.topic, str(tp.partition)).set(0)
+            metrics_registry.CLICKHOUSE_INGESTOR_ERRORS_TOTAL.labels(stage="observe").inc()
+            log.warning("clickhouse.ingestor.progress_unknown", error_class=type(exc).__name__)
 
     async def start(self) -> None:
+        self._shutdown.clear()
+        self._acknowledged_offsets.clear()
         topics = (
             self._settings.kafka_topic_cp_meter,
             self._settings.kafka_topic_cp_status,
@@ -280,7 +366,6 @@ class ClickHouseIngestor:
             self._settings.kafka_topic_cp_ocpp_frames,
         )
         consumer = AIOKafkaConsumer(
-            *topics,
             bootstrap_servers=self._settings.kafka_brokers,
             group_id=self._settings.clickhouse_ingestor_group,
             client_id="eveys-ocpp-clickhouse-ingestor",
@@ -292,16 +377,23 @@ class ClickHouseIngestor:
             # and recreating the consumer group.
             auto_offset_reset="earliest",
         )
-        await consumer.start()
+        consumer.subscribe(topics, listener=_ProgressListener(self))
         self._consumer = consumer
-
-        conn = Connection(
-            host=self._settings.clickhouse_host,
-            port=self._settings.clickhouse_port,
-            database=self._settings.clickhouse_db,
-        )
-        await conn.connect()
-        self._conn = conn
+        try:
+            await consumer.start()
+            await self._connect()
+        except BaseException:
+            # A failed/cancelled CH connection must not leave a Kafka
+            # consumer running while this process exits or is retried.
+            try:
+                await self.stop()
+            except BaseException as cleanup_error:
+                log.warning(
+                    "clickhouse.ingestor.start_cleanup_failed",
+                    error_class=type(cleanup_error).__name__,
+                )
+            raise
+        metrics_registry.CLICKHOUSE_INGESTOR_RUNNING.set(1)
 
         log.info(
             "clickhouse.ingestor.started",
@@ -311,25 +403,54 @@ class ClickHouseIngestor:
             topics=list(topics),
         )
 
+    async def _connect(self) -> None:
+        conn = Connection(
+            host=self._settings.clickhouse_host,
+            port=self._settings.clickhouse_port,
+            database=self._settings.clickhouse_db,
+        )
+        self._conn = conn
+        await conn.connect()
+
+    async def _discard_connection(self) -> None:
+        conn, self._conn = self._conn, None
+        if conn is not None:
+            try:
+                await asyncio.wait_for(conn.close(), timeout=1.0)
+            except Exception as exc:
+                log.warning("clickhouse.ingestor.close_failed", error_class=type(exc).__name__)
+
     async def stop(self) -> None:
         self._shutdown.set()
-        if self._consumer is not None:
-            await self._consumer.stop()
-            self._consumer = None
-        if self._conn is not None:
-            await self._conn.close()
-            self._conn = None
+        metrics_registry.CLICKHOUSE_INGESTOR_RUNNING.set(0)
+        consumer, self._consumer = self._consumer, None
+        try:
+            if consumer is not None:
+                try:
+                    await asyncio.wait_for(consumer.stop(), timeout=2.0)
+                except Exception as exc:
+                    log.warning(
+                        "clickhouse.ingestor.consumer_close_failed",
+                        error_class=type(exc).__name__,
+                    )
+        finally:
+            await self._discard_connection()
         log.info("clickhouse.ingestor.stopped")
 
-    async def _flush_batch(self, rows: Iterable[_Row]) -> None:
+    async def _flush_batch(
+        self, rows: Iterable[_Row], *, completed_tables: set[str] | None = None
+    ) -> None:
         """INSERT a batch into ClickHouse, grouped by table.
 
         Uses one ``INSERT INTO <table> VALUES`` per table touched in
         the batch. ``executemany`` lets asynch send all rows in one
-        round-trip. Failure raises; the caller does NOT commit
-        offsets, so the next poll re-delivers the batch.
+        round-trip. Remember table acknowledgements while retrying the
+        same in-memory batch; a later table failure must not reinsert a
+        table already acknowledged. This cannot deduplicate a crash or
+        an INSERT whose server acknowledgement was lost.
         """
-        assert self._conn is not None  # narrowed by start()
+        if completed_tables is None:
+            completed_tables = set()
 
         # Group by table. Order within a table is preserved.
         by_table: dict[str, list[dict[str, Any]]] = {}
@@ -337,7 +458,7 @@ class ClickHouseIngestor:
             by_table.setdefault(r.table, []).append(r.columns)
 
         for table, batch in by_table.items():
-            if not batch:
+            if not batch or table in completed_tables:
                 continue
             # Column list order must be stable across the batch — pull
             # from the first row, every other row's keys must match.
@@ -350,8 +471,18 @@ class ClickHouseIngestor:
             # ``%(name)s`` placeholders here would make CH try to parse
             # them as SQL — see Code: 62 errors in early E2-14 testing.
             sql = f"INSERT INTO {table} ({', '.join(cols)}) VALUES"
-            async with self._conn.cursor() as cursor:
-                await cursor.executemany(sql, batch)
+            try:
+                if self._conn is None:
+                    await self._connect()
+                assert self._conn is not None
+                async with self._conn.cursor() as cursor:
+                    await cursor.executemany(sql, batch)
+            except BaseException:
+                # Failed/cancelled INSERTs can leave the native driver's
+                # query flag set. Retry the pending batch on a new socket.
+                await self._discard_connection()
+                raise
+            completed_tables.add(table)
             log.info(
                 "clickhouse.ingestor.batch_inserted",
                 table=table,
@@ -398,92 +529,182 @@ class ClickHouseIngestor:
             )
             return None
 
+    def _now(self) -> float:
+        """Monotonic clock backing the batch deadline.
+
+        A method rather than a direct `loop.time()` call so tests can
+        drive the linger window without sleeping on the wall clock.
+        """
+        return asyncio.get_running_loop().time()
+
     async def ingest_loop(self) -> None:
-        """Main loop: poll, batch, INSERT, commit. Runs until
-        ``stop()`` is called or the consumer raises a non-recoverable
-        error."""
+        """Main loop: accumulate, INSERT, commit. Runs until ``stop()``
+        is called or the consumer raises a non-recoverable error.
+
+        Rows are accumulated ACROSS polls until `batch_size` rows or the
+        `batch_max_seconds` deadline, whichever comes first.
+
+        A single `getmany` does not implement that policy. Its
+        `timeout_ms` bounds only the wait for the *first* record — it is
+        not a linger, so the call returns as soon as anything is
+        buffered. Under a steady trickle every poll came back with one
+        message and we wrote one row per INSERT; in ClickHouse one
+        INSERT is one part, so a ~1.5 events/sec stream produced
+        thousands of single-row parts an hour and left the merge
+        scheduler doing all the work.
+
+        A poll advances the consumer position, so failed batches must
+        stay in memory: never poll a later batch until this one is
+        written and its explicit per-partition next offsets committed.
+        """
         assert self._consumer is not None  # narrowed by start()
 
         batch_size = self._settings.clickhouse_ingestor_batch_size
         batch_seconds = self._settings.clickhouse_ingestor_batch_max_seconds
 
         while not self._shutdown.is_set():
-            # `getmany` returns up to `max_records` messages or waits
-            # `timeout_ms` for at least one. Both bounds together
-            # implement the "500 rows OR 5 s" batch policy.
-            try:
-                records = await self._consumer.getmany(
-                    timeout_ms=int(batch_seconds * 1000),
-                    max_records=batch_size,
-                )
-            except Exception as exc:
-                log.exception("clickhouse.ingestor.poll_failed", error=str(exc))
-                await asyncio.sleep(1.0)
-                continue
-
             rows: list[_Row] = []
-            for _topic_partition, partition_records in records.items():
-                for record in partition_records:
-                    row = await self._process_record(record)
-                    if row is not None:
-                        rows.append(row)
+            offsets: dict[Any, int] = {}
+            deadline = self._now() + batch_seconds
+            poll_failed = False
 
-            if not rows:
-                continue  # poll timed out with nothing — go back to waiting
+            # ---- accumulate until full, out of time, or shutting down
+            while not self._shutdown.is_set() and len(rows) < batch_size:
+                remaining = deadline - self._now()
+                if remaining <= 0:
+                    break
+                try:
+                    records = await self._consumer.getmany(
+                        # Never block past the batch deadline. `max(1, …)`
+                        # because `timeout_ms=0` is a non-blocking poll,
+                        # which would hot-spin the last millisecond away.
+                        timeout_ms=max(1, int(remaining * 1000)),
+                        max_records=batch_size - len(rows),
+                    )
+                except Exception as exc:
+                    metrics_registry.CLICKHOUSE_INGESTOR_ERRORS_TOTAL.labels(stage="poll").inc()
+                    log.exception("clickhouse.ingestor.poll_failed", error=str(exc))
+                    poll_failed = True
+                    break
 
-            try:
-                await self._flush_batch(rows)
-            except Exception as exc:
-                # ClickHouse INSERT failed. Don't commit offsets — the
-                # next poll re-delivers. Backoff briefly to avoid a hot
-                # loop against a misbehaving broker/CH.
-                self._consecutive_flush_failures += 1
-                limit = self._settings.clickhouse_ingestor_max_flush_failures
-                log.exception(
-                    "clickhouse.ingestor.flush_failed",
-                    error=str(exc),
-                    consecutive_failures=self._consecutive_flush_failures,
-                    max_failures=limit,
+                self._last_poll_timestamp = time.time()
+                metrics_registry.CLICKHOUSE_INGESTOR_LAST_POLL_TIMESTAMP_SECONDS.set(
+                    self._last_poll_timestamp
                 )
-                if self._consecutive_flush_failures >= limit:
-                    # We've been failing in a row for `limit` polls.
-                    # Most likely the schema is missing / wrong, or
-                    # we're pointed at the wrong CH instance — neither
-                    # heals on its own. Bail so the supervisor restarts
-                    # and the misconfiguration surfaces.
-                    raise IngestorFatalError(
-                        f"flush failed {self._consecutive_flush_failures} "
-                        f"times in a row (limit {limit}); aborting"
-                    ) from exc
+                self._observe_progress()
+
+                for topic_partition, partition_records in records.items():
+                    for record in partition_records:
+                        # Kafka commit offsets identify the NEXT record.
+                        # Include intentionally dropped malformed records
+                        # under the existing parse/drop policy, but never
+                        # consumer positions outside this batch.
+                        offsets[topic_partition] = max(
+                            offsets.get(topic_partition, 0), record.offset + 1
+                        )
+                        row = await self._process_record(record)
+                        if row is not None:
+                            rows.append(row)
+
+            # ---- flush, then (only then) commit ---------------------
+            #
+            # Shutdown breaks the inner loop rather than discarding
+            # what it collected, so a partial batch is still flushed
+            # and committed on the way out.
+            if offsets:
+                completed_tables: set[str] = set()
+                written = False
+                commit_failures = 0
+                limit = self._settings.clickhouse_ingestor_max_flush_failures
+                while True:
+                    if not written:
+                        try:
+                            if rows:
+                                await self._flush_batch(rows, completed_tables=completed_tables)
+                        except Exception as exc:
+                            metrics_registry.CLICKHOUSE_INGESTOR_ERRORS_TOTAL.labels(
+                                stage="flush"
+                            ).inc()
+                            self._consecutive_flush_failures += 1
+                            log.exception(
+                                "clickhouse.ingestor.flush_failed",
+                                error=str(exc),
+                                consecutive_failures=self._consecutive_flush_failures,
+                                max_failures=limit,
+                            )
+                            if self._consecutive_flush_failures >= limit:
+                                raise IngestorFatalError(
+                                    f"flush failed {self._consecutive_flush_failures} "
+                                    f"times in a row (limit {limit}); aborting"
+                                ) from exc
+                            if self._shutdown.is_set():
+                                return  # keep offsets uncommitted for restart
+                            await asyncio.sleep(1.0)
+                            continue
+                        written = True
+                        self._consecutive_flush_failures = 0
+
+                    try:
+                        commit_epoch = self._assignment_epoch
+                        await self._consumer.commit(offsets)
+                    except Exception as exc:
+                        metrics_registry.CLICKHOUSE_INGESTOR_ERRORS_TOTAL.labels(
+                            stage="commit"
+                        ).inc()
+                        commit_failures += 1
+                        log.exception(
+                            "clickhouse.ingestor.commit_failed",
+                            error=str(exc),
+                            consecutive_failures=commit_failures,
+                        )
+                        if commit_failures >= limit:
+                            raise IngestorFatalError(
+                                f"commit failed {commit_failures} times in a row "
+                                f"(limit {limit}); aborting"
+                            ) from exc
+                        if self._shutdown.is_set():
+                            return
+                        await asyncio.sleep(1.0)
+                        continue  # retry commit without another INSERT or poll
+                    if commit_epoch == self._assignment_epoch:
+                        self._acknowledged_offsets.update(offsets)
+                    metrics_registry.CLICKHOUSE_INGESTOR_LAST_SUCCESSFUL_COMMIT_TIMESTAMP_SECONDS.set(
+                        time.time()
+                    )
+                    self._observe_progress()
+                    break
+
+            if poll_failed:
                 await asyncio.sleep(1.0)
-                continue
-
-            # The batch landed — flush failures don't count once we
-            # see green. The counter only catches sustained failure,
-            # not the occasional transient hiccup.
-            self._consecutive_flush_failures = 0
-
-            # Commit only after the batch landed successfully.
-            try:
-                await self._consumer.commit()
-            except Exception as exc:
-                log.exception("clickhouse.ingestor.commit_failed", error=str(exc))
 
 
 async def _run() -> None:
     settings = get_settings()
     configure_logging(level=settings.log_level, json=settings.log_json)
     ingestor = ClickHouseIngestor(settings)
-    await ingestor.start()
-
-    loop = asyncio.get_running_loop()
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, ingestor._shutdown.set)
-
+    metrics_server = (
+        MetricsServer(
+            host=settings.metrics_host,
+            port=settings.metrics_port,
+            include_python_collectors=settings.metrics_include_python_collectors,
+        )
+        if settings.metrics_enabled
+        else None
+    )
     try:
+        if metrics_server is not None:
+            await metrics_server.start()
+        await ingestor.start()
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, ingestor._shutdown.set)
         await ingestor.ingest_loop()
     finally:
-        await ingestor.stop()
+        try:
+            await ingestor.stop()
+        finally:
+            if metrics_server is not None:
+                await metrics_server.stop()
 
 
 def main() -> None:

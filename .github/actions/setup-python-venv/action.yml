@@ -3,7 +3,7 @@
 # generate the gRPC stubs that mypy / pytest import transitively.
 #
 # Caches:
-# - .venv/ keyed on pyproject.toml so a deps change rebuilds.
+# - .venv/ keyed on the resolved interpreter/path/ABI and pyproject.toml.
 # - uv's download cache keyed on the same so the next run is fast even
 #   on a fresh runner.
 name: Set up Python venv with project deps
@@ -14,9 +14,24 @@ runs:
   using: composite
   steps:
     - name: Set up Python
+      id: python
       uses: actions/setup-python@v5
       with:
         python-version: "3.13"
+
+    - name: Identify resolved Python
+      id: python-identity
+      shell: bash
+      run: |
+        python -I -S - <<'PY'
+        import hashlib, json, os, platform, sys, sysconfig
+        executable = os.path.realpath(sys.executable)
+        version = platform.python_version()
+        identity = [version, executable, sysconfig.get_config_var("SOABI")]
+        fingerprint = hashlib.sha256(json.dumps(identity).encode()).hexdigest()
+        with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+            output.write(f"version={version}\nexecutable={executable}\ncache-key={fingerprint}\n")
+        PY
 
     - name: Cache uv download cache
       uses: actions/cache@v4
@@ -31,7 +46,31 @@ runs:
       uses: actions/cache@v4
       with:
         path: .venv
-        key: venv-${{ runner.os }}-py313-${{ hashFiles('pyproject.toml') }}
+        key: venv-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.python-identity.outputs.version }}-${{ steps.python-identity.outputs.cache-key }}-${{ hashFiles('pyproject.toml') }}
+
+    - name: Validate restored venv interpreter
+      id: validate-venv
+      shell: bash
+      run: |
+        python -I -S - <<'PY'
+        import json, os, platform, subprocess, sys, sysconfig
+        expected = [platform.python_version(), os.path.realpath(sys.executable),
+                    sysconfig.get_config_var("SOABI")]
+        probe = (
+            "import json,os,platform,sys,sysconfig; "
+            "print(json.dumps([platform.python_version(), "
+            "os.path.realpath(sys._base_executable), sysconfig.get_config_var('SOABI')]))"
+        )
+        valid = False
+        try:
+            result = subprocess.run([".venv/bin/python", "-I", "-S", "-c", probe],
+                                    capture_output=True, text=True, timeout=10, check=True)
+            valid = json.loads(result.stdout) == expected
+        except (OSError, subprocess.SubprocessError, ValueError):
+            pass
+        with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+            output.write(f"valid={str(valid).lower()}\n")
+        PY
 
     - name: Install uv
       shell: bash
@@ -39,15 +78,16 @@ runs:
         curl -LsSf https://astral.sh/uv/install.sh | sh
         echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
-    - name: Build venv (cache miss)
-      if: steps.cache-venv.outputs.cache-hit != 'true'
+    - name: Build venv (cache miss or invalid interpreter)
+      if: steps.cache-venv.outputs.cache-hit != 'true' || steps.validate-venv.outputs.valid != 'true'
       shell: bash
       env:
         UV_CACHE_DIR: ${{ github.workspace }}/.uv-cache
         UV_PROJECT_ENVIRONMENT: ${{ github.workspace }}/.venv
+        CI_BASE_PYTHON: ${{ steps.python-identity.outputs.executable }}
       run: |
         # `--clear` on cache miss so a stale layer can't poison the build.
-        uv venv --clear .venv
+        uv venv --python "$CI_BASE_PYTHON" --clear .venv
         uv pip install --python .venv/bin/python -e ".[dev]"
 
     # Generate gRPC stubs every run (cheap; the .venv cache covers deps but

@@ -48,7 +48,7 @@ def _settings(**overrides: Any) -> Settings:
 
 def _make_boot_envelope() -> events_pb2.EventEnvelope:
     env = events_pb2.EventEnvelope()
-    env.event_id = "evt-int-001"
+    env.event_id = "00000000-0000-0000-0000-000000000101"
     env.occurred_at = "2026-05-07T14:00:00+00:00"
     env.cp_id = "CP_INT_001"
     env.cp_boot.vendor = "ACME"
@@ -83,7 +83,7 @@ async def test_envelope_delivers_signed_request_with_correct_headers() -> None:
 
     # Headers per docs/integration/03-webhooks.md § Common headers.
     assert req.headers["content-type"] == "application/json"
-    assert req.headers["x-eveys-event-id"] == "evt-int-001"
+    assert req.headers["x-eveys-event-id"] == "00000000-0000-0000-0000-000000000101"
     assert req.headers["x-eveys-event-type"] == "cp.boot"
     assert req.headers["x-eveys-attempt"] == "1"
     assert "x-eveys-delivered-at" in req.headers
@@ -115,18 +115,18 @@ async def test_envelope_for_disabled_event_makes_no_request() -> None:
     d = WebhookDispatcher(_settings(webhook_enable_cp_boot=False))
     d._http = httpx.AsyncClient(transport=httpx.MockTransport(receiver))
 
-    await d._deliver_one(_FakeRecord(value=_make_boot_envelope().SerializeToString()))
+    with pytest.raises(RuntimeError, match="disabled"):
+        await d._deliver_one(_FakeRecord(value=_make_boot_envelope().SerializeToString()))
 
     assert captured == []
     await d._http.aclose()
 
 
 @pytest.mark.asyncio
-async def test_unparseable_record_is_logged_and_skipped(
+async def test_unparseable_record_is_retained_for_review(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """A malformed Kafka record (not a valid protobuf) shouldn't crash
-    the dispatcher — log + skip."""
+    """Malformed bytes raise so the caller keeps its batch for investigation."""
     captured: list[httpx.Request] = []
 
     def receiver(request: httpx.Request) -> httpx.Response:  # pragma: no cover
@@ -136,7 +136,8 @@ async def test_unparseable_record_is_logged_and_skipped(
     d = WebhookDispatcher(_settings())
     d._http = httpx.AsyncClient(transport=httpx.MockTransport(receiver))
 
-    await d._deliver_one(_FakeRecord(value=b"not-a-protobuf"))
+    with pytest.raises(RuntimeError, match="decoded"):
+        await d._deliver_one(_FakeRecord(value=b"not-a-protobuf"))
 
     assert captured == []
     await d._http.aclose()
@@ -157,7 +158,7 @@ async def test_cp_online_event_routes_to_online_url() -> None:
     d._http = httpx.AsyncClient(transport=httpx.MockTransport(receiver))
 
     env = events_pb2.EventEnvelope()
-    env.event_id = "evt-online-001"
+    env.event_id = "00000000-0000-0000-0000-000000000102"
     env.occurred_at = "2026-05-07T14:00:00+00:00"
     env.cp_id = "CP_INT_001"
     env.cp_connected.subprotocol = "ocpp1.6"

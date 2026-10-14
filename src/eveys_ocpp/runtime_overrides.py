@@ -79,6 +79,21 @@ def _coerce_bool(value: Any) -> bool:
     raise ValueError(f"expected boolean, got {value!r}")
 
 
+def _coerce_str(value: Any) -> str:
+    """Plain string coercion for free-form values.
+
+    Rejects the container types a JSON body can produce so a caller
+    that sends `["A","B"]` for a comma-separated field gets a clear
+    error rather than the stringified list `"['A', 'B']"` silently
+    becoming the value.
+    """
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, (int, float, bool)) or value is None:
+        raise ValueError(f"expected string, got {value!r}")
+    raise ValueError(f"expected string, got {type(value).__name__}")
+
+
 def _coerce_url_or_empty(value: Any) -> str:
     """A URL field that may be empty (the empty string means "fall
     back to the global default" in the dispatcher). Validates the
@@ -307,6 +322,22 @@ _ALLOWLIST: dict[str, _AllowlistEntry] = {
         coerce=_coerce_int_in_range(5, 3600, "ocpp_cfg_websocket_ping_interval_seconds"),
         description="WebSocketPingInterval (seconds) pushed after boot.",
     ),
+    "ocpp_cfg_post_boot_push_enabled": _AllowlistEntry(
+        name="ocpp_cfg_post_boot_push_enabled",
+        coerce=_coerce_bool,
+        description=(
+            "Master switch for the post-boot ChangeConfiguration push. "
+            "Off means the gateway pushes nothing after BootNotification."
+        ),
+    ),
+    "ocpp_cfg_post_boot_push_skip_keys": _AllowlistEntry(
+        name="ocpp_cfg_post_boot_push_skip_keys",
+        coerce=_coerce_str,
+        description=(
+            "Comma-separated OCPP keys to omit from the post-boot push "
+            "(case-insensitive); empty pushes every key."
+        ),
+    ),
     "ocpp_cfg_iso15118_pnc_enabled": _AllowlistEntry(
         name="ocpp_cfg_iso15118_pnc_enabled",
         coerce=_coerce_bool,
@@ -469,6 +500,8 @@ AllowlistName = Literal[
     "ocpp_cfg_transaction_message_attempts",
     "ocpp_cfg_transaction_message_retry_interval_seconds",
     "ocpp_cfg_websocket_ping_interval_seconds",
+    "ocpp_cfg_post_boot_push_enabled",
+    "ocpp_cfg_post_boot_push_skip_keys",
     "ocpp_cfg_iso15118_pnc_enabled",
     "ocpp_cfg_plug_and_charge_mode",
     "ocpp_cfg_contract_validation_offline",

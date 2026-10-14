@@ -639,3 +639,100 @@ async def test_pending_boot_closes_ws_when_row_expired(
 
     fake_cp._connection.close.assert_awaited_once_with(1008, "authorization pending expired")
     upsert.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Post-boot push kill switch + per-key trim
+# ---------------------------------------------------------------------------
+#
+# The push replays on EVERY reconnect, so for a charger that is already
+# flapping it is a burst of sequential CALLs every couple of minutes.
+# These knobs make "is the push itself what this firmware can't survive?"
+# a runtime experiment instead of a deploy.
+
+
+@pytest.mark.asyncio
+async def test_post_boot_push_disabled_sends_nothing(
+    fake_cp: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The master switch suppresses the whole burst.
+
+    The charger keeps whatever configuration it already had; the boot
+    itself is still Accepted.
+    """
+    from eveys_ocpp.settings import Settings
+
+    upsert = AsyncMock(return_value=None)
+    monkeypatch.setattr(boot_notification, "upsert_charge_point_boot", upsert)
+    monkeypatch.setattr(boot_notification, "_POST_BOOT_PUSH_DELAY_SECONDS", 0)
+    monkeypatch.setattr(boot_notification, "_POST_BOOT_INTER_CALL_GAP_SECONDS", 0)
+    fake_cp.call = AsyncMock(return_value=MagicMock(status="Accepted"))
+    fake_cp.settings = Settings(ocpp_cfg_post_boot_push_enabled=False)
+
+    result = await boot_notification.handle(fake_cp, charge_point_vendor="ACME")
+
+    task = fake_cp.__dict__.get("_meter_value_push_task")
+    assert task is not None
+    await task
+
+    assert fake_cp.call.await_count == 0, "kill switch must suppress every key"
+    assert result.status == "Accepted", "the boot itself is unaffected"
+
+
+@pytest.mark.asyncio
+async def test_post_boot_push_skips_listed_keys(
+    fake_cp: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Named keys are dropped; everything else still converges.
+
+    The motivating case is a firmware that answers `NotSupported` to
+    the ISO 15118 keys — they cost a round trip on every reconnect and
+    change nothing.
+    """
+    from eveys_ocpp.settings import Settings
+
+    upsert = AsyncMock(return_value=None)
+    monkeypatch.setattr(boot_notification, "upsert_charge_point_boot", upsert)
+    monkeypatch.setattr(boot_notification, "_POST_BOOT_PUSH_DELAY_SECONDS", 0)
+    monkeypatch.setattr(boot_notification, "_POST_BOOT_INTER_CALL_GAP_SECONDS", 0)
+    fake_cp.call = AsyncMock(return_value=MagicMock(status="Accepted"))
+    fake_cp.settings = Settings(
+        # Mixed case on purpose — matching is case-insensitive.
+        ocpp_cfg_post_boot_push_skip_keys=(
+            "ISO15118PnCEnabled, plugandchargemode ,ContractValidationOffline"
+        )
+    )
+
+    await boot_notification.handle(fake_cp, charge_point_vendor="ACME")
+    await fake_cp.__dict__["_meter_value_push_task"]
+
+    pushed = {c.args[0].key for c in fake_cp.call.await_args_list}
+    assert "ISO15118PnCEnabled" not in pushed
+    assert "PlugandChargeMode" not in pushed
+    assert "ContractValidationOffline" not in pushed
+    # The rest of the matrix is untouched.
+    assert "MeterValueSampleInterval" in pushed
+    assert "HeartbeatInterval" in pushed
+
+
+@pytest.mark.asyncio
+async def test_post_boot_push_ignores_unknown_skip_keys(
+    fake_cp: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A typo in the skip list must not silently drop a real key."""
+    from eveys_ocpp.settings import Settings
+
+    upsert = AsyncMock(return_value=None)
+    monkeypatch.setattr(boot_notification, "upsert_charge_point_boot", upsert)
+    monkeypatch.setattr(boot_notification, "_POST_BOOT_PUSH_DELAY_SECONDS", 0)
+    monkeypatch.setattr(boot_notification, "_POST_BOOT_INTER_CALL_GAP_SECONDS", 0)
+    fake_cp.call = AsyncMock(return_value=MagicMock(status="Accepted"))
+    fake_cp.settings = Settings(ocpp_cfg_post_boot_push_skip_keys="NotARealKey,,  ")
+
+    await boot_notification.handle(fake_cp, charge_point_vendor="ACME")
+    await fake_cp.__dict__["_meter_value_push_task"]
+
+    pushed = {c.args[0].key for c in fake_cp.call.await_args_list}
+    assert "MeterValueSampleInterval" in pushed
+    assert "HeartbeatInterval" in pushed
+    assert "ISO15118PnCEnabled" in pushed

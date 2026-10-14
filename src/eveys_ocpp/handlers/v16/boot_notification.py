@@ -393,7 +393,29 @@ def _post_boot_keys(cp: EveysChargePoint) -> list[tuple[str, str]]:
     def _b(field: str, default: bool) -> str:
         return "true" if bool(get_override(field, default)) else "false"
 
-    return [
+    # Operator kill switch. Returning an empty list (rather than
+    # short-circuiting the caller) keeps every downstream "did we push
+    # anything" check in one place.
+    if not bool(
+        get_override(
+            "ocpp_cfg_post_boot_push_enabled",
+            settings.ocpp_cfg_post_boot_push_enabled,
+        )
+    ):
+        return []
+
+    raw_skip = str(
+        get_override(
+            "ocpp_cfg_post_boot_push_skip_keys",
+            settings.ocpp_cfg_post_boot_push_skip_keys,
+        )
+    )
+    # Case-insensitive so an operator typing `plugandchargemode` in a
+    # hurry still gets what they meant. Unknown names are simply
+    # never matched.
+    skip = {part.strip().casefold() for part in raw_skip.split(",") if part.strip()}
+
+    pairs = [
         (
             "MeterValueSampleInterval",
             _i("meter_value_sample_interval_seconds", settings.meter_value_sample_interval_seconds),
@@ -450,6 +472,8 @@ def _post_boot_keys(cp: EveysChargePoint) -> list[tuple[str, str]]:
         ),
     ]
 
+    return [(key, value) for (key, value) in pairs if key.casefold() not in skip]
+
 
 def _schedule_post_boot_configuration_push(cp: EveysChargePoint) -> None:
     """Spawn the deferred ChangeConfiguration task.
@@ -491,6 +515,13 @@ async def _push_post_boot_configuration(cp: EveysChargePoint) -> None:
         raise
 
     pairs = _post_boot_keys(cp)
+    if not pairs:
+        # Either the master switch is off or every key was skipped.
+        # Logged so an operator running the "is the push what's killing
+        # this charger?" experiment can see it took effect.
+        log.info("boot_notification.change_configuration.push_skipped", cp_id=cp.id)
+        return
+
     for idx, (key, value) in enumerate(pairs):
         try:
             request = call.ChangeConfiguration(key=key, value=value)

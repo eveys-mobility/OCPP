@@ -123,7 +123,7 @@ WS_MESSAGES_OUT_TOTAL: Counter = Counter(
 OCPP_FRAMES_PUBLISH_FAILURES_TOTAL: Counter = Counter(
     "eveys_ocpp_ocpp_frames_publish_failures_total",
     "Times the cp.ocpp_frames Kafka publish failed and the frame was "
-    "dropped (best-effort: never blocks the WS path). Labelled by direction.",
+    "dropped (best-effort: publish exceptions do not fail the handler). Labelled by direction.",
     labelnames=("direction",),
 )
 
@@ -458,10 +458,69 @@ WEBHOOK_CONSUMER_LAG_MESSAGES: Gauge = Gauge(
     labelnames=("topic", "partition"),
 )
 
+# Sidecar-local observations. The gateway health endpoint cannot read these
+# in-memory values from another process and reports ingestion as unknown.
+CLICKHOUSE_INGESTOR_RUNNING: Gauge = Gauge(
+    "eveys_ocpp_clickhouse_ingestor_running", "One only after sidecar startup succeeds."
+)
+CLICKHOUSE_INGESTOR_LAST_POLL_TIMESTAMP_SECONDS: Gauge = Gauge(
+    "eveys_ocpp_clickhouse_ingestor_last_poll_timestamp_seconds",
+    "Unix time of the last successful Kafka poll, including idle polls.",
+)
+CLICKHOUSE_INGESTOR_LAST_SUCCESSFUL_COMMIT_TIMESTAMP_SECONDS: Gauge = Gauge(
+    "eveys_ocpp_clickhouse_ingestor_last_successful_commit_timestamp_seconds",
+    "Unix time of the last acknowledged explicit offset commit; zero before the first ACK.",
+)
+CLICKHOUSE_INGESTOR_CONSUMER_LAG_MESSAGES: Gauge = Gauge(
+    "eveys_ocpp_clickhouse_ingestor_consumer_lag_messages",
+    "Cached highwater minus this process's ACKed offset; -1 when unknown.",
+    labelnames=("topic", "partition"),
+)
+CLICKHOUSE_INGESTOR_CONSUMER_LAG_KNOWN: Gauge = Gauge(
+    "eveys_ocpp_clickhouse_ingestor_consumer_lag_known",
+    "One only when an assigned partition has an observed commit ACK and usable highwater.",
+    labelnames=("topic", "partition"),
+)
+CLICKHOUSE_INGESTOR_LAG_SAMPLE_TIMESTAMP_SECONDS: Gauge = Gauge(
+    "eveys_ocpp_clickhouse_ingestor_lag_sample_timestamp_seconds",
+    "Unix time of this partition's broker FetchResponse updating cached highwater; "
+    "zero when unknown. Local/empty polls do not refresh this sample age.",
+    labelnames=("topic", "partition"),
+)
+CLICKHOUSE_INGESTOR_ERRORS_TOTAL: Counter = Counter(
+    "eveys_ocpp_clickhouse_ingestor_errors_total",
+    "Sidecar failures by bounded stage: poll, flush, commit, or observe.",
+    labelnames=("stage",),
+)
+
 # Webhook durable backlog (dispatcher tail). The dispatcher inserts an
 # envelope into `webhook_delivery_backlog` after its in-loop retries
 # exhaust; `WebhookBacklogDrainer` polls that table and either drains
 # the row on 2xx or reschedules it. See `webhooks/backlog_drainer.py`.
+TRANSACTION_OUTBOX_PENDING: Gauge = Gauge(
+    "eveys_ocpp_transaction_outbox_pending",
+    "Physical Stop events awaiting a committed broker publication mark; -1 when unobserved.",
+)
+TRANSACTION_OUTBOX_OLDEST_AGE_SECONDS: Gauge = Gauge(
+    "eveys_ocpp_transaction_outbox_oldest_age_seconds",
+    "Age of oldest pending physical Stop event at last PG observation; -1 when unobserved.",
+)
+TRANSACTION_OUTBOX_SAMPLE_TIMESTAMP_SECONDS: Gauge = Gauge(
+    "eveys_ocpp_transaction_outbox_sample_timestamp_seconds",
+    "UTC epoch of last successful PG outbox observation; 0 when unobserved.",
+)
+TRANSACTION_OUTBOX_PUBLISHED_TOTAL: Counter = Counter(
+    "eveys_ocpp_transaction_outbox_published_total",
+    "Physical Stop broker ACKs whose publication mark committed to PG.",
+)
+TRANSACTION_OUTBOX_ERRORS_TOTAL: Counter = Counter(
+    "eveys_ocpp_transaction_outbox_errors_total",
+    "Outbox failures by bounded stage: publish, observe, cycle.",
+    labelnames=("stage",),
+)
+TRANSACTION_OUTBOX_PENDING.set(-1)
+TRANSACTION_OUTBOX_OLDEST_AGE_SECONDS.set(-1)
+
 WEBHOOK_BACKLOG_SIZE: Gauge = Gauge(
     "eveys_ocpp_webhook_backlog_size",
     "Rows in `webhook_delivery_backlog` where NOT dead. Sampled once "
@@ -621,6 +680,13 @@ __all__ = [
     "BUS_INFLIGHT",
     "BUS_REQUESTS_TOTAL",
     "BUS_REQUEST_LATENCY_SECONDS",
+    "CLICKHOUSE_INGESTOR_CONSUMER_LAG_KNOWN",
+    "CLICKHOUSE_INGESTOR_CONSUMER_LAG_MESSAGES",
+    "CLICKHOUSE_INGESTOR_ERRORS_TOTAL",
+    "CLICKHOUSE_INGESTOR_LAG_SAMPLE_TIMESTAMP_SECONDS",
+    "CLICKHOUSE_INGESTOR_LAST_POLL_TIMESTAMP_SECONDS",
+    "CLICKHOUSE_INGESTOR_LAST_SUCCESSFUL_COMMIT_TIMESTAMP_SECONDS",
+    "CLICKHOUSE_INGESTOR_RUNNING",
     "DATA_TRANSFERS_TOTAL",
     "DB_POOL_IN_USE",
     "DB_POOL_OVERFLOW",
@@ -658,6 +724,11 @@ __all__ = [
     "STOP_TRANSACTIONS_RECEIVED_TOTAL",
     "STOP_TRANSACTIONS_TOTAL",
     "STOP_TRANSACTION_REPLAYS_TOTAL",
+    "TRANSACTION_OUTBOX_ERRORS_TOTAL",
+    "TRANSACTION_OUTBOX_OLDEST_AGE_SECONDS",
+    "TRANSACTION_OUTBOX_PENDING",
+    "TRANSACTION_OUTBOX_PUBLISHED_TOTAL",
+    "TRANSACTION_OUTBOX_SAMPLE_TIMESTAMP_SECONDS",
     "WEBHOOK_ATTEMPTS_TOTAL",
     "WEBHOOK_BACKLOG_DEADLETTER_TOTAL",
     "WEBHOOK_BACKLOG_DRAIN_TOTAL",

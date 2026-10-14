@@ -190,9 +190,11 @@ async def test_stop_transaction_skips_replays() -> None:
 
     applied = await repositories.stop_transaction(
         session,
+        cp_id="CP1",
         transaction_id=1,
         meter_stop_wh=100,
         stopped_reported_at=datetime.now(UTC),
+        stopped_received_at=datetime.now(UTC),
         reason="Local",
         idempotency_key="dup",
     )
@@ -209,20 +211,22 @@ async def test_stop_transaction_applies_when_no_replay() -> None:
     not_existing = MagicMock()
     not_existing.scalar_one_or_none.return_value = None
     update_result = MagicMock()
-    update_result.first.return_value = (4_500_000,)  # meter_start_wh from RETURNING
+    update_result.first.return_value = (1, 2, 4_500_000)
 
     session = AsyncMock()
     session.execute = AsyncMock(side_effect=[not_existing, update_result])
 
     applied = await repositories.stop_transaction(
         session,
+        cp_id="CP1",
         transaction_id=1,
         meter_stop_wh=100,
         stopped_reported_at=datetime.now(UTC),
+        stopped_received_at=datetime.now(UTC),
         reason="Local",
         idempotency_key="new",
     )
-    assert applied == 4_500_000
+    assert applied == repositories.StoppedTransaction(1, 2, 4_500_000)
     assert session.execute.await_count == 2
 
 

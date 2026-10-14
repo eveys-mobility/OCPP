@@ -24,13 +24,9 @@
 //   tx.started            → TxStarted                 (StartTransaction arrived)
 //   tx.stopped            → TxStopped                 (StopTransaction arrived + persisted)
 //
-// `tx.stopped` ships as a belt-and-braces signal alongside the
-// synchronous `/api/eveys/sessions/close` REST call (per the
-// integration contract): if the synchronous call timed out or was
-// retried, the webhook gives the backend a second chance to reconcile.
-// It is NOT a billing/CDR primitive — Postgres `transactions` row
-// state remains the gateway's authoritative record. The webhook is
-// at-least-once, best-effort.
+// `tx.stopped` is retained with the physical Stop in a PG outbox before
+// broker publication. Retries retain the same event_id and envelope bytes;
+// downstream receipt dedup is still required for at-least-once delivery.
 //
 // Partitioning: every record uses `cp_id` as the Kafka partition key
 // (per AGENTS rule "message ordering is preserved per charger"). This
@@ -345,15 +341,9 @@ message CpSecurityEvent {
 // tx.stopped — StopTransaction arrived AND persisted to Postgres
 // -----------------------------------------------------------------------------
 //
-// Emitted from the StopTransaction handler immediately after the DB
-// commit (the same point where `STOP_TRANSACTIONS_TOTAL` ticks). A
-// stop that fails to persist does NOT produce this event — the
-// dispatcher treats it as an at-least-once-delivery signal that
-// "the transaction is closed in our records."
-//
-// Replays don't re-emit: the DB-layer dedup branch in the handler
-// returns before the publish call. Same shape rule the other
-// emitters use.
+// Retained atomically with the owner-scoped Stop UPDATE. Broker retries
+// can duplicate an envelope but cannot invent a new event_id. Failed PG
+// commits retain neither the physical Stop nor its event.
 
 message TxStopped {
   int64 transaction_id = 1;
@@ -371,8 +361,15 @@ message TxStopped {
   // when the charger omitted it (allowed). Kept as a string for
   // forward-compat with vendor extensions.
   string stop_reason = 5;
-  // Charger-claimed timestamp. Server-receive time is in the envelope.
+  // Charger-claimed timestamp, retained without trusting its clock.
   string charger_reported_at = 6;
+  // Authoritative stored physical connector binding. Absent in old events.
+  int32 connector_id = 7;
+  // Actual Stop handler server-receive time. Conservative upper bound on
+  // the physical stop instant; queued/offline reports may arrive much later.
+  // Not envelope emission time or an earlier server admission rejection.
+  // Empty in historical events: consumers must keep provenance unknown.
+  string stopped_received_at = 8;
 }
 
 // -----------------------------------------------------------------------------

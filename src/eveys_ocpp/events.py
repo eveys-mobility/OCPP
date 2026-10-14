@@ -38,8 +38,9 @@ log = get_logger(__name__)
 
 class EventProducer(Protocol):
     """Minimal contract handlers depend on. Implementations may batch,
-    retry, or drop — the contract is just "publish bytes to a topic
-    keyed by cp_id, fire-and-forget at this layer."
+    retry, or drop. Durable outbox callers additionally require the
+    explicit broker_acknowledged capability; a drop implementation cannot
+    establish delivery by returning successfully.
     """
 
     async def publish(self, *, topic: str, key: str, value: bytes) -> None: ...
@@ -47,6 +48,9 @@ class EventProducer(Protocol):
     async def start(self) -> None: ...
 
     async def stop(self) -> None: ...
+
+    @property
+    def broker_acknowledged(self) -> bool: ...
 
 
 class KafkaEventProducer:
@@ -138,6 +142,10 @@ class KafkaEventProducer:
                 time.perf_counter() - start
             )
 
+    @property
+    def broker_acknowledged(self) -> bool:
+        return self._acks in {"all", "1"}
+
 
 class NullEventProducer:
     """Drop-everything producer.
@@ -149,6 +157,8 @@ class NullEventProducer:
 
     async def start(self) -> None:
         return None
+
+    broker_acknowledged = False
 
     async def stop(self) -> None:
         return None

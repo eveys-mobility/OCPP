@@ -83,19 +83,19 @@ async def test_heartbeat_records_registry_reclaim_when_key_expired(
 
 
 @pytest.mark.asyncio
-async def test_authorize_no_backend_increments_offline_accepted(
+async def test_authorize_no_backend_increments_offline_invalid(
     fake_cp: MagicMock,
 ) -> None:
-    """W1/dev path (no backend wired) returns Accepted via the offline
+    """No backend wired returns Invalid via the offline
     fallback bucket."""
     from eveys_ocpp.handlers.v16 import authorize
 
     fake_cp.backend_client = None
     fake_cp.authorize_cache = None
 
-    before = _counter_sample(m.AUTHORIZE_TOTAL, decision="Accepted", source="offline")
+    before = _counter_sample(m.AUTHORIZE_TOTAL, decision="Invalid", source="offline")
     await authorize.handle(fake_cp, id_tag="RFID_X")
-    after = _counter_sample(m.AUTHORIZE_TOTAL, decision="Accepted", source="offline")
+    after = _counter_sample(m.AUTHORIZE_TOTAL, decision="Invalid", source="offline")
     assert after == before + 1
 
 

@@ -21,6 +21,7 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     LargeBinary,
     Numeric,
@@ -187,12 +188,45 @@ class Transaction(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
     stopped_reported_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Also records server admission rejection; then reported time/meter stay NULL.
     stopped_received_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     stop_reason: Mapped[str | None] = mapped_column(String(32))
 
     # Idempotency anchor for inbound StopTransaction retries (AGENTS rule 3).
     # Once a stop is recorded for a transaction, replays must be no-ops.
     idempotency_key: Mapped[str | None] = mapped_column(Text, unique=True, index=True)
+
+
+class TransactionEventOutbox(Base):
+    """Immutable physical Stop event retained until a real broker ACK.
+
+    Operator revoke may cascade away the physical row. SET NULL preserves
+    this independent ledger's immutable physical identity and delivery bytes.
+    """
+
+    __tablename__ = "transaction_event_outbox"
+    __table_args__ = (
+        UniqueConstraint("transaction_pk", "topic", name="uq_transaction_event_outbox_tx_topic"),
+        Index(
+            "ix_transaction_event_outbox_ready",
+            "next_attempt_at",
+            "created_at",
+            postgresql_where="published_at IS NULL",
+        ),
+    )
+
+    event_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True)
+    transaction_pk: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("transactions.id", ondelete="SET NULL"), nullable=True
+    )
+    topic: Mapped[str] = mapped_column(String(255), nullable=False)
+    cp_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    body: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    next_attempt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error_class: Mapped[str | None] = mapped_column(String(128))
 
 
 class LocalAuthList(Base):

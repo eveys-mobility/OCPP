@@ -18,7 +18,7 @@ lives at `clickhouse/read_client.py`.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Query, Request
@@ -27,9 +27,9 @@ from eveys_ocpp._ocpp_enums import (
     ocpp_string_for,
     proto_enum_name_for_measurand,
 )
+from eveys_ocpp.api._archive import archive_read
 from eveys_ocpp.api._errors import (
     ERR_BAD_REQUEST,
-    ERR_INTERNAL_ERROR,
     ERR_UNKNOWN_CP_ID,
     ERR_WINDOW_TOO_LARGE,
     ApiError,
@@ -71,8 +71,11 @@ def _isoformat(value: datetime | None) -> str | None:
 
 def _parse_iso8601(value: str, *, field_name: str) -> datetime:
     try:
-        return datetime.fromisoformat(value)
-    except ValueError as exc:
+        parsed = datetime.fromisoformat(value)
+        # Archive columns use UTC; the driver serializes only the clock value.
+        # Existing offset-free inputs represent UTC, independent of server TZ.
+        return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC)
+    except (ValueError, OverflowError) as exc:
         raise ApiError(
             status_code=400,
             error_code=ERR_BAD_REQUEST,
@@ -112,22 +115,12 @@ async def _ensure_cp_exists(request: Request, cp_id: str) -> None:
         )
 
 
-def _ch_client(request: Request) -> Any:
-    client = getattr(request.app.state, "ch_client", None)
-    if client is None:
-        raise ApiError(
-            status_code=500,
-            error_code=ERR_INTERNAL_ERROR,
-            message="ClickHouse read client not configured on this gateway",
-        )
-    return client
-
-
 @router.get(
     "/charge-points/{cp_id}/meter-values",
     summary="ClickHouse-backed MeterValues time-series for a charge point",
     responses={
         200: {"model": MeterValuesResponse},
+        503: {"model": ErrorEnvelope, "description": "Archive read unavailable."},
         400: {"model": ErrorEnvelope, "description": "Bad from/to or window too large."},
         404: {"model": ErrorEnvelope, "description": "Unknown cp_id."},
     },
@@ -168,7 +161,9 @@ async def list_meter_values(
                 "request_id": request.state.request_id,
             }
 
-    rows = await _ch_client(request).fetch_meter_values(
+    rows = await archive_read(
+        request,
+        "fetch_meter_values",
         cp_id=cp_id,
         started_from=started_from,
         started_to=started_to,
@@ -188,6 +183,7 @@ async def list_meter_values(
     summary="ClickHouse-backed StatusNotification history for a charge point",
     responses={
         200: {"model": StatusHistoryResponse},
+        503: {"model": ErrorEnvelope, "description": "Archive read unavailable."},
         400: {"model": ErrorEnvelope, "description": "Bad from/to or window too large."},
         404: {"model": ErrorEnvelope, "description": "Unknown cp_id."},
     },
@@ -213,7 +209,9 @@ async def list_status_history(
 
     await _ensure_cp_exists(request, cp_id)
 
-    rows = await _ch_client(request).fetch_status_history(
+    rows = await archive_read(
+        request,
+        "fetch_status_history",
         cp_id=cp_id,
         started_from=started_from,
         started_to=started_to,
@@ -232,6 +230,7 @@ async def list_status_history(
     summary="Fleet-wide StatusNotification history (e.g. all Faulted statuses this week)",
     responses={
         200: {"model": FleetStatusResponse},
+        503: {"model": ErrorEnvelope, "description": "Archive read unavailable."},
         400: {"model": ErrorEnvelope, "description": "Bad from/to or window too large."},
     },
 )
@@ -263,7 +262,9 @@ async def list_fleet_status_history(
     started_to = _parse_iso8601(to, field_name="to")
     _validate_window(started_from, started_to)
 
-    rows = await _ch_client(request).fetch_fleet_status_history(
+    rows = await archive_read(
+        request,
+        "fetch_fleet_status_history",
         started_from=started_from,
         started_to=started_to,
         statuses=status,
@@ -282,6 +283,7 @@ async def list_fleet_status_history(
     summary="ClickHouse-backed OCPP frame audit for a charge point (both directions)",
     responses={
         200: {"model": OcppFramesByCpResponse},
+        503: {"model": ErrorEnvelope, "description": "Archive read unavailable."},
         400: {"model": ErrorEnvelope, "description": "Bad from/to or window too large."},
         404: {"model": ErrorEnvelope, "description": "Unknown cp_id."},
     },
@@ -316,7 +318,9 @@ async def list_frames_by_cp(
 
     await _ensure_cp_exists(request, cp_id)
 
-    rows = await _ch_client(request).fetch_frames_by_cp(
+    rows = await archive_read(
+        request,
+        "fetch_frames_by_cp",
         cp_id=cp_id,
         started_from=started_from,
         started_to=started_to,
@@ -382,6 +386,7 @@ def _meter_to_response(row: dict[str, Any]) -> dict[str, Any]:
     summary="ClickHouse-backed offline-duration history for a charge point",
     responses={
         200: {"model": OfflineHistoryResponse},
+        503: {"model": ErrorEnvelope, "description": "Archive read unavailable."},
         400: {"model": ErrorEnvelope, "description": "Bad since/until or pagination."},
         404: {"model": ErrorEnvelope, "description": "Unknown cp_id."},
     },
@@ -410,8 +415,6 @@ async def list_offline_history(
 
     await _ensure_cp_exists(request, cp_id)
 
-    client = _ch_client(request)
-
     if page is not None:
         effective_size = clamp_limit(
             page_size if page_size is not None else limit,
@@ -419,7 +422,9 @@ async def list_offline_history(
             maximum=settings.rest_max_page_size,
         )
         offset = offset_for_page(page, effective_size)
-        rows, total = await client.fetch_offline_history(
+        rows, total = await archive_read(
+            request,
+            "fetch_offline_history",
             cp_id=cp_id,
             since=since_dt,
             until=until_dt,
@@ -456,7 +461,9 @@ async def list_offline_history(
             )
         cursor_offset = raw_offset
 
-    rows, total = await client.fetch_offline_history(
+    rows, total = await archive_read(
+        request,
+        "fetch_offline_history",
         cp_id=cp_id,
         since=since_dt,
         until=until_dt,
@@ -494,6 +501,7 @@ def _offline_to_response(row: dict[str, Any]) -> dict[str, Any]:
     summary="Uptime % for a charge point over a date range",
     responses={
         200: {"model": UptimeResponse},
+        503: {"model": ErrorEnvelope, "description": "Archive read unavailable."},
         400: {"model": ErrorEnvelope, "description": "Bad from/to or window too large."},
         404: {"model": ErrorEnvelope, "description": "Unknown cp_id."},
     },
@@ -533,7 +541,9 @@ async def get_uptime_for_cp(
 
     await _ensure_cp_exists(request, cp_id)
 
-    offline_total, raw_intervals = await _ch_client(request).fetch_uptime_for_cp(
+    offline_total, raw_intervals = await archive_read(
+        request,
+        "fetch_uptime_for_cp",
         cp_id=cp_id,
         window_from=started_from,
         window_to=started_to,

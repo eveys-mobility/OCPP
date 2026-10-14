@@ -1,0 +1,106 @@
+rule_files:
+  - rules.yml
+evaluation_interval: 30s
+tests:
+  - name: reachable exporter with a frozen poll is actionable
+    interval: 30s
+    input_series:
+      - series: 'up{job="eveys-ocpp-clickhouse-ingestor",instance="sidecar:9100"}'
+        values: '1+0x20'
+      - series: 'eveys_ocpp_clickhouse_ingestor_running{job="eveys-ocpp-clickhouse-ingestor",instance="sidecar:9100"}'
+        values: '1+0x20'
+      - series: 'eveys_ocpp_clickhouse_ingestor_last_poll_timestamp_seconds{job="eveys-ocpp-clickhouse-ingestor",instance="sidecar:9100"}'
+        values: '0+0x20'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: EveysOcppArchivePollStalled
+        exp_alerts:
+          - exp_labels:
+              job: eveys-ocpp-clickhouse-ingestor
+              instance: sidecar:9100
+              severity: warning
+            exp_annotations:
+              summary: OCPP archive ingestor polling has stalled
+              description: The exporter is reachable but the consumer has not completed a poll; inspect the sidecar without assuming archive freshness.
+  - name: stale positive lag marked unknown is not treated as confirmed
+    interval: 30s
+    input_series:
+      - series: 'up{job="eveys-ocpp-clickhouse-ingestor",instance="sidecar:9100"}'
+        values: '1+0x24'
+      - series: 'eveys_ocpp_clickhouse_ingestor_last_successful_commit_timestamp_seconds{job="eveys-ocpp-clickhouse-ingestor",instance="sidecar:9100"}'
+        values: '0+0x24'
+      - series: 'eveys_ocpp_clickhouse_ingestor_consumer_lag_messages{job="eveys-ocpp-clickhouse-ingestor",instance="sidecar:9100",topic="cp.meter_values",partition="0"}'
+        values: '42+0x24'
+      - series: 'eveys_ocpp_clickhouse_ingestor_consumer_lag_known{job="eveys-ocpp-clickhouse-ingestor",instance="sidecar:9100",topic="cp.meter_values",partition="0"}'
+        values: '0+0x24'
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: EveysOcppArchiveDeliveryStalled
+        exp_alerts: []
+  - name: idle unknown lag is not a delivery failure
+    interval: 30s
+    input_series:
+      - series: 'up{job="eveys-ocpp-clickhouse-ingestor",instance="sidecar:9100"}'
+        values: '1+0x20'
+      - series: 'eveys_ocpp_clickhouse_ingestor_running{job="eveys-ocpp-clickhouse-ingestor",instance="sidecar:9100"}'
+        values: '1+0x20'
+      - series: 'eveys_ocpp_clickhouse_ingestor_last_poll_timestamp_seconds{job="eveys-ocpp-clickhouse-ingestor",instance="sidecar:9100"}'
+        values: '0+30x20'
+      - series: 'eveys_ocpp_clickhouse_ingestor_consumer_lag_messages{job="eveys-ocpp-clickhouse-ingestor",instance="sidecar:9100",topic="cp.meter_values",partition="0"}'
+        values: '-1+0x20'
+      - series: 'eveys_ocpp_clickhouse_ingestor_consumer_lag_known{job="eveys-ocpp-clickhouse-ingestor",instance="sidecar:9100",topic="cp.meter_values",partition="0"}'
+        values: '0+0x20'
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: EveysOcppArchiveIngestorUnavailable
+        exp_alerts: []
+      - eval_time: 8m
+        alertname: EveysOcppArchivePollStalled
+        exp_alerts: []
+      - eval_time: 8m
+        alertname: EveysOcppArchiveDeliveryStalled
+        exp_alerts: []
+  - name: unreachable exporter is actionable
+    interval: 30s
+    input_series:
+      - series: 'up{job="eveys-ocpp-clickhouse-ingestor",instance="sidecar:9100"}'
+        values: '0+0x20'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: EveysOcppArchiveIngestorUnavailable
+        exp_alerts:
+          - exp_labels:
+              job: eveys-ocpp-clickhouse-ingestor
+              instance: sidecar:9100
+              severity: critical
+            exp_annotations:
+              summary: OCPP archive ingestor cannot be observed
+              description: Check the sidecar and scrape target; exporter failure does not identify the physical charging state.
+  - name: known positive lag without commit progress is actionable
+    interval: 30s
+    input_series:
+      - series: 'up{job="eveys-ocpp-clickhouse-ingestor",instance="sidecar:9100"}'
+        values: '1+0x24'
+      - series: 'eveys_ocpp_clickhouse_ingestor_running{job="eveys-ocpp-clickhouse-ingestor",instance="sidecar:9100"}'
+        values: '1+0x24'
+      - series: 'eveys_ocpp_clickhouse_ingestor_last_poll_timestamp_seconds{job="eveys-ocpp-clickhouse-ingestor",instance="sidecar:9100"}'
+        values: '0+30x24'
+      - series: 'eveys_ocpp_clickhouse_ingestor_last_successful_commit_timestamp_seconds{job="eveys-ocpp-clickhouse-ingestor",instance="sidecar:9100"}'
+        values: '0+0x24'
+      - series: 'eveys_ocpp_clickhouse_ingestor_consumer_lag_messages{job="eveys-ocpp-clickhouse-ingestor",instance="sidecar:9100",topic="cp.meter_values",partition="0"}'
+        values: '42+0x24'
+      - series: 'eveys_ocpp_clickhouse_ingestor_consumer_lag_known{job="eveys-ocpp-clickhouse-ingestor",instance="sidecar:9100",topic="cp.meter_values",partition="0"}'
+        values: '1+0x24'
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: EveysOcppArchiveDeliveryStalled
+        exp_alerts:
+          - exp_labels:
+              job: eveys-ocpp-clickhouse-ingestor
+              instance: sidecar:9100
+              topic: cp.meter_values
+              partition: '0'
+              severity: warning
+            exp_annotations:
+              summary: OCPP archive has pending delivery without commit progress
+              description: Inspect ClickHouse INSERT and offset commit failures before resuming or replaying consumption.

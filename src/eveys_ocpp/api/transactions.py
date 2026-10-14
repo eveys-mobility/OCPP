@@ -5,8 +5,8 @@ Per the contract `docs/integration/02-gateway-rest-api.md`:
 - Single-transaction detail keys off the OCPP-visible `transaction_id`,
   not the surrogate PK.
 - The list endpoint supports `from`/`to` (window on
-  `started_reported_at`), `id_tag` exact match, and `open` (currently
-  charging vs. stopped). Cursor-paginated.
+  `started_reported_at`), `id_tag` exact match, and `open` (neither a
+  charger Stop nor a server admission rejection). Cursor-paginated.
 - 404 `UNKNOWN_TRANSACTION_ID` and `UNKNOWN_CP_ID` are the only error
   cases beyond `BAD_REQUEST` (cursor malformed, time window not
   parseable).
@@ -19,7 +19,9 @@ from typing import Any
 
 from fastapi import APIRouter, Query, Request
 
+from eveys_ocpp.api._archive import archive_read
 from eveys_ocpp.api._errors import (
+    ERR_ARCHIVE_UNAVAILABLE,
     ERR_BAD_REQUEST,
     ERR_UNKNOWN_CP_ID,
     ERR_UNKNOWN_TRANSACTION_ID,
@@ -41,6 +43,7 @@ from eveys_ocpp.api._schemas import (
     TransactionListResponse,
     TransactionsAggregateResponse,
 )
+from eveys_ocpp.observability import get_logger
 from eveys_ocpp.persistence.db import session_scope
 from eveys_ocpp.persistence.repositories import (
     aggregate_transactions,
@@ -52,6 +55,7 @@ from eveys_ocpp.persistence.repositories import (
 )
 
 router = APIRouter(tags=["transactions"])
+log = get_logger(__name__)
 
 # Sort + direction enums for `GET /transactions`. The Console UI is the
 # only intended consumer today; expand here when a new use case lands.
@@ -82,8 +86,8 @@ def _transaction_to_response(tx: dict[str, Any]) -> dict[str, Any]:
     Emits both the precise `*_reported_at` / `*_received_at` pair and the
     convenience aliases `started_at` / `stopped_at` (pointing at the
     `_reported_at` value — the charger's wall clock, which is what UIs
-    render). The `open` flag is `True` while `stopped_reported_at` is
-    null so callers don't have to recompute it.
+    render). The `open` flag is `True` only while both stop timestamps
+    are null. A rejected admission can have only a server closure time.
     """
     started_reported = _isoformat(tx["started_reported_at"])
     stopped_reported = _isoformat(tx["stopped_reported_at"])
@@ -106,7 +110,7 @@ def _transaction_to_response(tx: dict[str, Any]) -> dict[str, Any]:
         # of "this session hasn't stopped yet."
         "started_at": started_reported,
         "stopped_at": stopped_reported,
-        "open": tx["stopped_reported_at"] is None,
+        "open": tx["stopped_reported_at"] is None and tx["stopped_received_at"] is None,
     }
 
 
@@ -493,7 +497,19 @@ async def get_transaction_route(request: Request, transaction_id: int) -> dict[s
             message=f"unknown transaction_id: {transaction_id}",
         )
     response = _transaction_to_response(tx)
-    response["telemetry"] = await _telemetry_for(request, tx)
+    response.update(
+        telemetry=None, telemetry_state="unconfigured", telemetry_error="ARCHIVE_UNCONFIGURED"
+    )
+    if getattr(request.app.state, "ch_client", None) is not None:
+        try:
+            response["telemetry"] = await _telemetry_for(request, tx)
+        except Exception as exc:
+            # PostgreSQL still owns the physical transaction's identity
+            # and closure. An archive failure must not hide that state.
+            response.update(telemetry_state="unavailable", telemetry_error=ERR_ARCHIVE_UNAVAILABLE)
+            log.warning("rest.telemetry_unavailable", error_class=type(exc).__name__)
+        else:
+            response.update(telemetry_state="available", telemetry_error=None)
     response["request_id"] = request.state.request_id
     return response
 
@@ -504,6 +520,7 @@ async def get_transaction_route(request: Request, transaction_id: int) -> dict[s
     responses={
         200: {"model": OcppFramesByTransactionResponse},
         404: {"model": ErrorEnvelope, "description": "Unknown transaction_id."},
+        503: {"model": ErrorEnvelope, "description": "Archive read unavailable."},
     },
 )
 async def get_transaction_frames_route(
@@ -534,17 +551,9 @@ async def get_transaction_frames_route(
         maximum=settings.rest_max_page_size,
     )
 
-    ch_client = getattr(request.app.state, "ch_client", None)
-    if ch_client is None:
-        # Same posture as get_transaction_route's telemetry: tests and
-        # compose-smoke run without ClickHouse — surface frames=[]
-        # instead of 500ing.
-        rows: list[dict[str, Any]] = []
-    else:
-        rows = await ch_client.fetch_frames_by_transaction(
-            transaction_id=transaction_id,
-            limit=page_size,
-        )
+    rows = await archive_read(
+        request, "fetch_frames_by_transaction", transaction_id=transaction_id, limit=page_size
+    )
 
     return {
         "transaction_id": transaction_id,

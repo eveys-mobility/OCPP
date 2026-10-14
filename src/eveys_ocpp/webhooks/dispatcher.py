@@ -20,12 +20,15 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 import httpx
-from aiokafka import AIOKafkaConsumer
+from aiokafka import AIOKafkaConsumer, ConsumerRebalanceListener
+from aiokafka.errors import CommitFailedError, IllegalStateError
+from aiokafka.structs import OffsetAndMetadata
 
 from eveys_ocpp._generated.events.v1 import events_pb2
 from eveys_ocpp._ocpp_enums import ocpp_string_for
@@ -47,6 +50,33 @@ log = get_logger(__name__)
 # semantics. Indexed by attempt number (0 = first attempt; we sleep
 # this many seconds BEFORE the (n+1)th attempt).
 _BACKOFF_SECONDS: tuple[float, ...] = (1.0, 5.0, 15.0, 30.0, 60.0)
+_COMMIT_RETRY_LIMIT = 5
+_CONSUMER_OPERATION_TIMEOUT_SECONDS = 5.0
+# Leave room for a durable SQL ACK without holding one Kafka record for
+# the default 300 s max-poll interval. These are total wall-clock budgets,
+# not HTTPX's per-phase timeouts. Cancellation never establishes an ACK.
+_DELIVERY_HTTP_BUDGET_SECONDS = 55.0
+_BACKLOG_COMMIT_TIMEOUT_SECONDS = 5.0
+
+
+def _delivery_now() -> float:
+    return time.monotonic()
+
+
+class _OwnershipChanged(RuntimeError):
+    pass
+
+
+# aiokafka does not publish typing metadata for this callback base class.
+class _RebalanceListener(ConsumerRebalanceListener):  # type: ignore[misc]
+    def __init__(self, dispatcher: WebhookDispatcher) -> None:
+        self._dispatcher = dispatcher
+
+    async def on_partitions_revoked(self, revoked: Any) -> None:
+        self._dispatcher._assignment_changed(revoked)
+
+    async def on_partitions_assigned(self, assigned: Any) -> None:
+        self._dispatcher._assignment_changed(assigned)
 
 
 class WebhookDispatcher:
@@ -57,7 +87,8 @@ class WebhookDispatcher:
     row into ``webhook_delivery_backlog`` for
     :class:`WebhookBacklogDrainer` to pick up. Legacy callers
     (tests, tools that don't touch Postgres) can pass ``None`` and
-    fall back to the pre-tail drop-on-exhaust behaviour.
+    retain the Kafka batch on failed HTTP delivery until a durable ACK
+    becomes possible. Missing or disabled backlog never permits a drop.
     """
 
     def __init__(
@@ -70,6 +101,85 @@ class WebhookDispatcher:
         self._consumer: AIOKafkaConsumer | None = None
         self._http: httpx.AsyncClient | None = None
         self._shutdown = asyncio.Event()
+        self._assignment_epoch = 0
+        self._assignment_changed_event = asyncio.Event()
+        self._topics: tuple[str, ...] = ()
+
+    def _assignment_changed(self, partitions: Any) -> None:
+        self._assignment_epoch += 1
+        self._assignment_changed_event.set()
+        for tp in partitions:
+            metrics_registry.WEBHOOK_CONSUMER_LAG_MESSAGES.labels(
+                topic=tp.topic, partition=str(tp.partition)
+            ).set(-1)
+
+    async def _open_consumer(self) -> None:
+        consumer = AIOKafkaConsumer(
+            bootstrap_servers=self._settings.kafka_brokers,
+            group_id=self._settings.webhook_consumer_group,
+            client_id="eveys-ocpp-webhook-dispatcher",
+            enable_auto_commit=False,
+            auto_offset_reset="earliest",
+        )
+        consumer.subscribe(topics=self._topics, listener=_RebalanceListener(self))
+        try:
+            async with asyncio.timeout(_CONSUMER_OPERATION_TIMEOUT_SECONDS):
+                await consumer.start()
+        except BaseException:
+            with suppress(Exception):
+                async with asyncio.timeout(_CONSUMER_OPERATION_TIMEOUT_SECONDS):
+                    await consumer.stop()
+            raise
+        self._consumer = consumer
+
+    async def _recreate_consumer(self) -> None:
+        """Release stale ownership; rejoin from broker committed offsets.
+
+        No revoked offset is committed, no seek/offset reset is performed.
+        Completed HTTP requests may replay with their stable event UUID.
+        """
+        old, self._consumer = self._consumer, None
+        self._assignment_changed(old.assignment() if old is not None else ())
+        if old is not None:
+            with suppress(Exception):
+                async with asyncio.timeout(_CONSUMER_OPERATION_TIMEOUT_SECONDS):
+                    await old.stop()
+        while not self._shutdown.is_set():
+            try:
+                await self._open_consumer()
+                return
+            except Exception as exc:
+                log.warning("webhook_dispatcher.rejoin_failed", error_class=type(exc).__name__)
+                with suppress(TimeoutError):
+                    await asyncio.wait_for(self._shutdown.wait(), timeout=1.0)
+
+    def _owns(self, consumer: AIOKafkaConsumer, epoch: int, partitions: Any) -> bool:
+        return self._assignment_epoch == epoch and set(partitions).issubset(consumer.assignment())
+
+    async def _while_owned(
+        self,
+        operation: Any,
+        *,
+        consumer: AIOKafkaConsumer,
+        epoch: int,
+        partitions: Any,
+        timeout: float | None = None,
+    ) -> Any:
+        task = asyncio.ensure_future(operation)
+        changed = asyncio.create_task(self._assignment_changed_event.wait())
+        try:
+            if not self._owns(consumer, epoch, partitions):
+                raise _OwnershipChanged()
+            async with asyncio.timeout(timeout):
+                done, _ = await asyncio.wait((task, changed), return_when=asyncio.FIRST_COMPLETED)
+                if changed in done or not self._owns(consumer, epoch, partitions):
+                    raise _OwnershipChanged()
+                return await task
+        finally:
+            for pending in (task, changed):
+                if not pending.done():
+                    pending.cancel()
+            await asyncio.gather(task, changed, return_exceptions=True)
 
     async def start(self) -> None:
         """Open the Kafka consumer and the HTTP client. Idempotent
@@ -81,21 +191,8 @@ class WebhookDispatcher:
             log.info("webhook_dispatcher.no_enabled_events")
             return
 
-        consumer = AIOKafkaConsumer(
-            *topics,
-            bootstrap_servers=self._settings.kafka_brokers,
-            group_id=self._settings.webhook_consumer_group,
-            client_id="eveys-ocpp-webhook-dispatcher",
-            # Manual commit: only commit after a delivery attempt
-            # ends (success OR exhausted-retries). At-least-once.
-            enable_auto_commit=False,
-            # Earliest so a brand-new dispatcher catches existing
-            # rows on first deploy. Operators replay by deleting
-            # and recreating the consumer group.
-            auto_offset_reset="earliest",
-        )
-        await consumer.start()
-        self._consumer = consumer
+        self._topics = tuple(topics)
+        await self._open_consumer()
 
         if not self._settings.outbound_tls_verify:
             # Symmetric warning to the one BackendHTTPClient emits.
@@ -126,19 +223,31 @@ class WebhookDispatcher:
 
     async def stop(self) -> None:
         self._shutdown.set()
-        if self._consumer is not None:
-            await self._consumer.stop()
-            self._consumer = None
-        if self._http is not None:
-            await self._http.aclose()
-            self._http = None
+        consumer, self._consumer = self._consumer, None
+        http, self._http = self._http, None
+        self._assignment_changed(consumer.assignment() if consumer is not None else ())
+        try:
+            if consumer is not None:
+                async with asyncio.timeout(_CONSUMER_OPERATION_TIMEOUT_SECONDS):
+                    await consumer.stop()
+        except Exception as exc:
+            log.warning("webhook_dispatcher.consumer_close_failed", error_class=type(exc).__name__)
+        finally:
+            if http is not None:
+                try:
+                    async with asyncio.timeout(_CONSUMER_OPERATION_TIMEOUT_SECONDS):
+                        await http.aclose()
+                except Exception as exc:
+                    log.warning(
+                        "webhook_dispatcher.http_close_failed", error_class=type(exc).__name__
+                    )
         log.info("webhook_dispatcher.stopped")
 
     async def serve_forever(self) -> None:
         """Main loop: poll Kafka, deliver each record, commit offsets.
 
-        Exits on `stop()`. Failures during a single delivery are
-        contained — they don't tear the loop down. Failures during
+        Exits on `stop()`. Failed delivery/commit retains the exact batch;
+        no subsequent poll may move the failure boundary. Failures during
         Kafka consumer ops (broker dropping, etc.) propagate so the
         TaskGroup can decide how to handle them."""
         if self._consumer is None or self._http is None:
@@ -148,35 +257,90 @@ class WebhookDispatcher:
             await self._shutdown.wait()
             return
 
-        consumer = self._consumer
         try:
             while not self._shutdown.is_set():
+                consumer = self._consumer
+                if consumer is None:
+                    await self._recreate_consumer()
+                    continue
                 # 1 s poll keeps shutdown latency low without burning CPU.
-                batch = await consumer.getmany(timeout_ms=1000)
+                batch = await consumer.getmany(timeout_ms=1000, max_records=1000)
                 if not batch:
                     continue
-
-                for _tp, records in batch.items():
-                    for record in records:
-                        try:
-                            await self._deliver_one(record)
-                        except Exception as exc:
-                            # Log + continue; never crash the loop on
-                            # one bad record.
-                            log.exception(
-                                "webhook_dispatcher.unexpected_error",
-                                topic=record.topic,
-                                offset=record.offset,
-                                error=str(exc),
+                epoch = self._assignment_epoch
+                self._assignment_changed_event.clear()
+                # Keep the unresolved batch while committing only each
+                # delivered prefix. Rejoins resume broker-ACKed progress
+                # instead of replaying a slow successful prefix forever.
+                pending = [(tp, record) for tp, records in batch.items() for record in records]
+                cursor = 0
+                delivered = False
+                commit_failures = 0
+                rejoin = False
+                while cursor < len(pending) and not self._shutdown.is_set():
+                    try:
+                        if not self._owns(consumer, epoch, batch):
+                            raise _OwnershipChanged()
+                        tp, record = pending[cursor]
+                        if not delivered:
+                            await self._while_owned(
+                                self._deliver_one(record),
+                                consumer=consumer,
+                                epoch=epoch,
+                                partitions=batch,
                             )
-                # Commit after each batch — at-least-once, same as the
-                # ClickHouse ingestor pattern.
-                await consumer.commit()
+                            delivered = True
+                        # Explicit partition offsets cannot acknowledge a
+                        # later record or an unrelated pending partition.
+                        offsets = {tp: OffsetAndMetadata(record.offset + 1, "")}
+                        await self._while_owned(
+                            consumer.commit(offsets),
+                            consumer=consumer,
+                            epoch=epoch,
+                            partitions=batch,
+                            timeout=_CONSUMER_OPERATION_TIMEOUT_SECONDS,
+                        )
+                    except (_OwnershipChanged, IllegalStateError, CommitFailedError):
+                        rejoin = True
+                        break
+                    except Exception as exc:
+                        # Do not repeat a completed delivery for a transient
+                        # commit failure, or assume its ACK until it returns.
+                        if delivered:
+                            commit_failures += 1
+                            if commit_failures >= _COMMIT_RETRY_LIMIT:
+                                rejoin = True
+                                break
+                        log.warning(
+                            "webhook_dispatcher.batch_pending", error_class=type(exc).__name__
+                        )
+                        with suppress(TimeoutError):
+                            await asyncio.wait_for(self._shutdown.wait(), timeout=1.0)
+                    else:
+                        cursor += 1
+                        delivered = False
+                        commit_failures = 0
+                if self._shutdown.is_set():
+                    break
+                if rejoin:
+                    await self._recreate_consumer()
+                    continue
                 # Sample the per-partition lag right after committing.
                 # Cheap (one Kafka API call per assigned partition) and
                 # only fires when there was traffic this iteration —
                 # idle partitions don't poll the broker for nothing.
-                await self._sample_consumer_lag(consumer)
+                try:
+                    await self._while_owned(
+                        self._sample_consumer_lag(consumer),
+                        consumer=consumer,
+                        epoch=epoch,
+                        partitions=batch,
+                        timeout=_CONSUMER_OPERATION_TIMEOUT_SECONDS,
+                    )
+                except Exception as exc:
+                    log.debug(
+                        "webhook_dispatcher.observation_interrupted", error_class=type(exc).__name__
+                    )
         except asyncio.CancelledError:
             log.info("webhook_dispatcher.cancelled")
             raise
@@ -210,9 +374,8 @@ class WebhookDispatcher:
 
     async def _deliver_one(self, record: ConsumerRecord) -> None:
         """Decode a Kafka record, build the webhook body, deliver
-        with retry. Returns when the delivery succeeds OR retries
-        are exhausted; either way the offset is committed by the
-        caller."""
+        with retry. Return only after HTTP 2xx or committed backlog.
+        Malformed/disabled events raise and retain the caller's batch."""
         envelope = events_pb2.EventEnvelope()
         try:
             envelope.ParseFromString(record.value)
@@ -223,16 +386,20 @@ class WebhookDispatcher:
                 offset=record.offset,
                 error=str(exc),
             )
-            return
+            raise RuntimeError("webhook envelope could not be decoded") from exc
+
+        try:
+            UUID(envelope.event_id)
+        except (ValueError, TypeError) as exc:
+            raise RuntimeError("webhook envelope has no stable event identity") from exc
 
         body = self._build_body(envelope)
         if body is None:
-            # Event type not enabled or unknown payload — silently skip.
-            return
+            raise RuntimeError("webhook event unavailable or disabled")
 
         url = self._url_for(envelope)
         if url is None:
-            return  # disabled event type
+            raise RuntimeError("webhook destination unavailable or disabled")
 
         body_bytes = json.dumps(body, separators=(",", ":")).encode("utf-8")
         # E5-7: webhook_secret is a SecretStr; unwrap once at the
@@ -257,12 +424,69 @@ class WebhookDispatcher:
         event_id: str,
         event_type: str,
     ) -> None:
-        """POST with exponential backoff. Per spec, 4xx (except 429)
-        is non-retryable — backend's bug, not transient."""
+        """At most 55 s HTTP/backoff plus 5 s for committed backlog.
+
+        Return only for HTTP 2xx or a completed SQL commit. External
+        cancellation/ownership loss cannot turn a pending record into ACK.
+        """
+        deadline = _delivery_now() + _DELIVERY_HTTP_BUDGET_SECONDS
+        try:
+            async with asyncio.timeout(_DELIVERY_HTTP_BUDGET_SECONDS):
+                if await self._post_attempts(
+                    url=url,
+                    body_bytes=body_bytes,
+                    signature=signature,
+                    event_id=event_id,
+                    event_type=event_type,
+                    deadline=deadline,
+                ):
+                    return
+        except TimeoutError:
+            log.warning(
+                "webhook.delivery_budget_exhausted", event_id=event_id, event_type=event_type
+            )
+
+        log.error(
+            "webhook.delivery_failed",
+            url=url,
+            event_id=event_id,
+            event_type=event_type,
+            max_attempts=self._settings.webhook_max_attempts,
+        )
+        metrics_registry.WEBHOOK_DELIVERIES_TOTAL.labels(
+            event_type=event_type, outcome="failed"
+        ).inc()
+        try:
+            async with asyncio.timeout(_BACKLOG_COMMIT_TIMEOUT_SECONDS):
+                await self._enqueue_backlog(
+                    url=url,
+                    body_bytes=body_bytes,
+                    signature=signature,
+                    event_id=event_id,
+                    event_type=event_type,
+                )
+        except TimeoutError as exc:
+            raise RuntimeError(
+                "webhook backlog commit deadline exceeded; delivery remains pending"
+            ) from exc
+
+    async def _post_attempts(
+        self,
+        *,
+        url: str,
+        body_bytes: bytes,
+        signature: str,
+        event_id: str,
+        event_type: str,
+        deadline: float,
+    ) -> bool:
         assert self._http is not None  # narrowed by start()
 
         max_attempts = self._settings.webhook_max_attempts
         for attempt in range(1, max_attempts + 1):
+            remaining = deadline - _delivery_now()
+            if remaining <= 0:
+                break
             metrics_registry.WEBHOOK_ATTEMPTS_TOTAL.labels(event_type=event_type).inc()
             headers = {
                 "Content-Type": "application/json",
@@ -274,8 +498,11 @@ class WebhookDispatcher:
             }
             attempt_started = time.perf_counter()
             try:
-                response = await self._http.post(url, content=body_bytes, headers=headers)
-            except (httpx.TimeoutException, httpx.NetworkError) as exc:
+                async with asyncio.timeout(
+                    min(self._settings.webhook_request_timeout_seconds, remaining)
+                ):
+                    response = await self._http.post(url, content=body_bytes, headers=headers)
+            except (TimeoutError, httpx.TimeoutException, httpx.NetworkError) as exc:
                 metrics_registry.WEBHOOK_DELIVERY_LATENCY_SECONDS.labels(
                     event_type=event_type
                 ).observe(time.perf_counter() - attempt_started)
@@ -289,7 +516,10 @@ class WebhookDispatcher:
                 )
                 if attempt >= max_attempts:
                     break
-                await asyncio.sleep(_BACKOFF_SECONDS[attempt - 1])
+                delay = _BACKOFF_SECONDS[min(attempt - 1, len(_BACKOFF_SECONDS) - 1)]
+                if delay >= deadline - _delivery_now():
+                    break
+                await asyncio.sleep(delay)
                 continue
 
             metrics_registry.WEBHOOK_DELIVERY_LATENCY_SECONDS.labels(event_type=event_type).observe(
@@ -308,7 +538,7 @@ class WebhookDispatcher:
                 metrics_registry.WEBHOOK_DELIVERIES_TOTAL.labels(
                     event_type=event_type, outcome="delivered"
                 ).inc()
-                return
+                return True
 
             # Non-2xx: everything is retryable. The customer contract
             # is "only 2xx = accepted"; a 4xx from the backend during a
@@ -327,26 +557,12 @@ class WebhookDispatcher:
             )
             if attempt >= max_attempts:
                 break
-            await asyncio.sleep(_BACKOFF_SECONDS[attempt - 1])
+            delay = _BACKOFF_SECONDS[min(attempt - 1, len(_BACKOFF_SECONDS) - 1)]
+            if delay >= deadline - _delivery_now():
+                break
+            await asyncio.sleep(delay)
             continue
-
-        log.error(
-            "webhook.delivery_failed",
-            url=url,
-            event_id=event_id,
-            event_type=event_type,
-            max_attempts=max_attempts,
-        )
-        metrics_registry.WEBHOOK_DELIVERIES_TOTAL.labels(
-            event_type=event_type, outcome="failed"
-        ).inc()
-        await self._enqueue_backlog(
-            url=url,
-            body_bytes=body_bytes,
-            signature=signature,
-            event_id=event_id,
-            event_type=event_type,
-        )
+        return False
 
     async def _enqueue_backlog(
         self,
@@ -361,20 +577,16 @@ class WebhookDispatcher:
         ``webhook_delivery_backlog`` for the drainer to keep
         retrying.
 
-        Silently no-ops when ``webhook_backlog_enabled`` is False or
-        no session factory was wired — restores the pre-tail
-        drop-on-exhaust behaviour for callers who explicitly want
-        it (e.g. tests that don't stand up Postgres).
+        Missing/disabled backlog, invalid identity, or commit failure
+        raises. The consumer must retain its batch and not commit offsets.
 
         The row's ``next_attempt_at`` is set to
         ``now + backlog_poll_seconds`` so the drainer picks it up on
         its next cycle instead of racing against the current one.
-        A parse failure on ``event_id`` (should never happen — the
-        Kafka events emit UUIDs) is logged and swallowed rather
-        than crashing the delivery loop.
+        A parse failure on ``event_id`` is retained for investigation.
         """
         if not self._settings.webhook_backlog_enabled:
-            return
+            raise RuntimeError("webhook backlog is disabled; delivery remains pending")
         if self._session_factory is None:
             log.warning(
                 "webhook.backlog_no_session_factory",
@@ -383,10 +595,10 @@ class WebhookDispatcher:
                 detail=(
                     "webhook_backlog_enabled=True but the dispatcher was "
                     "constructed without a session_factory; envelope "
-                    "dropped. Wire the factory in __main__.py."
+                    "pending. Wire the factory in __main__.py."
                 ),
             )
-            return
+            raise RuntimeError("webhook backlog has no session factory")
         try:
             event_uuid = UUID(event_id)
         except (TypeError, ValueError) as exc:
@@ -396,7 +608,7 @@ class WebhookDispatcher:
                 event_type=event_type,
                 error=str(exc),
             )
-            return
+            raise RuntimeError("webhook backlog has no stable event identity") from exc
         next_attempt = datetime.now(UTC) + timedelta(
             seconds=self._settings.webhook_backlog_poll_seconds
         )
@@ -419,7 +631,7 @@ class WebhookDispatcher:
                 event_type=event_type,
                 error=str(exc),
             )
-            return
+            raise RuntimeError("webhook backlog commit failed") from exc
         metrics_registry.WEBHOOK_BACKLOG_ENQUEUED_TOTAL.labels(event_type=event_type).inc()
         log.info(
             "webhook.backlog_enqueued",
@@ -537,6 +749,7 @@ class WebhookDispatcher:
                 "event_id": envelope.event_id,
                 "event_type": "tx.started",
                 "occurred_at": envelope.occurred_at,
+                "charger_reported_at": p.charger_reported_at,
                 "cp_id": envelope.cp_id,
                 "connector_id": p.connector_id,
                 "transaction_id": p.transaction_id,
@@ -561,6 +774,10 @@ class WebhookDispatcher:
                 "consumed_wh": p.consumed_wh,
                 "stop_reason": p.stop_reason,
             }
+            if p.connector_id > 0:
+                data["connector_id"] = p.connector_id
+            if p.stopped_received_at:
+                data["stopped_received_at"] = p.stopped_received_at
             return _envelope(data)
 
         if (

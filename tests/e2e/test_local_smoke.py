@@ -135,6 +135,7 @@ async def running_service() -> AsyncIterator[None]:
         try:
             await conn.execute(sa.text("SELECT 1 FROM charge_points LIMIT 1"))
             await conn.execute(sa.text("SELECT 1 FROM transactions LIMIT 1"))
+            await conn.execute(sa.text("SELECT 1 FROM transaction_event_outbox LIMIT 1"))
         except Exception:
             msg = "schema not applied — run `alembic upgrade head` first"
             if os.environ.get("E2E_REQUIRE") == "1":
@@ -166,7 +167,7 @@ async def running_service() -> AsyncIterator[None]:
     os.environ["EVEYS_OCPP_WS_PORT"] = str(_TEST_WS_PORT)
     os.environ["EVEYS_OCPP_GRPC_PORT"] = str(_TEST_GRPC_PORT)
     os.environ["EVEYS_OCPP_DB_URL"] = _TEST_DB_URL
-    os.environ["EVEYS_OCPP_REDIS_URL"] = f"redis://{_REDIS_HOST}:6379/0"
+    os.environ["EVEYS_OCPP_REDIS_URL"] = f"redis://{_REDIS_HOST}:{_REDIS_PORT}/0"
     os.environ["EVEYS_OCPP_KAFKA_BROKERS"] = f"{_KAFKA_HOST}:9092"
     os.environ["EVEYS_OCPP_LOG_JSON"] = "false"
 
@@ -176,9 +177,11 @@ async def running_service() -> AsyncIterator[None]:
     from eveys_ocpp.persistence.db import make_engine, make_session_factory
     from eveys_ocpp.registry import Registry
     from eveys_ocpp.settings import get_settings
+    from eveys_ocpp.transaction_event_outbox import TransactionEventOutboxPublisher
     from eveys_ocpp.transport.grpc_server import OcppGatewayService
     from eveys_ocpp.transport.grpc_server import serve_forever as serve_grpc_forever
     from eveys_ocpp.transport.ws_server import serve_forever as serve_ws_forever
+    from tests.mock_backend.client import in_process_backend_client
 
     settings = get_settings()
     db_engine = make_engine(settings.db_url.get_secret_value())
@@ -187,6 +190,13 @@ async def running_service() -> AsyncIterator[None]:
     connections = ConnectionMap()
     event_producer = KafkaEventProducer.from_settings(settings)
     await event_producer.start()
+    # Real typed backend client + existing ASGI mock contract; no production URL,
+    # socket, auth bypass or offline grant is used by the strict admission flow.
+    backend_client = in_process_backend_client(settings)
+    outbox = TransactionEventOutboxPublisher(
+        settings, session_factory=session_factory, producer=event_producer,
+    )
+    outbox_task = asyncio.create_task(outbox.serve_forever())
 
     # Under the new auth model an unknown cp_id lands on the Redis
     # pending queue and every non-Boot CALL is CALLERROR'd until an
@@ -216,6 +226,7 @@ async def running_service() -> AsyncIterator[None]:
             event_producer=event_producer,
             pending_store=pending_store,
             ip_rate_limiter=None,
+            backend_client=backend_client,
         )
     )
     command_service = OcppGatewayService(
@@ -232,12 +243,17 @@ async def running_service() -> AsyncIterator[None]:
     try:
         yield
     finally:
+        await outbox.stop()
+        outbox_task.cancel()
         ws_task.cancel()
         grpc_task.cancel()
         with suppress(asyncio.CancelledError, Exception):
             await ws_task
         with suppress(asyncio.CancelledError, Exception):
             await grpc_task
+        with suppress(asyncio.CancelledError, Exception):
+            await outbox_task
+        await backend_client.aclose()
         await event_producer.stop()
         await registry.close()
         await db_engine.dispose()
@@ -307,6 +323,9 @@ async def _drive_full_transaction(cp_id: str) -> int:
             call.BootNotification(charge_point_vendor="ACME", charge_point_model="X1")
         )
         assert boot.status == "Accepted"
+
+        blocked = await sim.call(call.Authorize(id_tag="SMOKE_BLOCKED"))
+        assert blocked.id_tag_info["status"] == "Blocked"
 
         auth = await sim.call(call.Authorize(id_tag="VALID_RFID_001"))
         assert auth.id_tag_info["status"] == "Accepted"
@@ -380,6 +399,7 @@ async def test_full_charger_round_trip(
     assert tx_row.meter_start_wh == 0
     assert tx_row.meter_stop_wh == 12345
     assert tx_row.stop_reason == "Local"
+    await _assert_native_stop_publication(db_engine, cp_id, transaction_id)
 
 
 @pytest.mark.asyncio
@@ -390,6 +410,7 @@ async def test_stop_transaction_replay_is_idempotent(
     cp_id = "SMOKE_E1_13_002"
 
     transaction_id = await _drive_full_transaction(cp_id)
+    first = await _read_native_stop_outbox(db_engine, cp_id, transaction_id)
 
     # Second StopTransaction with the same triple → idempotency key collision.
     # The handler still replies Accepted (charger doesn't need to know it's a
@@ -419,6 +440,54 @@ async def test_stop_transaction_replay_is_idempotent(
             )
         ).scalar_one()
     assert row_count == 1
+    replay = await _read_native_stop_outbox(db_engine, cp_id, transaction_id)
+    assert replay["event_id"] == first["event_id"]
+    assert replay["body"] == first["body"]
+
+
+async def _read_native_stop_outbox(
+    engine: sa.ext.asyncio.AsyncEngine, cp_id: str, transaction_id: int,
+) -> dict[str, object]:
+    async with engine.connect() as conn:
+        row = (await conn.execute(sa.text(
+            "SELECT o.event_id, o.body, o.published_at FROM transaction_event_outbox o "
+            "JOIN transactions t ON t.id=o.transaction_pk "
+            "WHERE o.cp_id=:cp_id AND t.transaction_id=:transaction_id AND o.topic='tx.stopped'"
+        ), {"cp_id": cp_id, "transaction_id": transaction_id})).one()
+    return dict(row._mapping)
+
+
+async def _assert_native_stop_publication(
+    engine: sa.ext.asyncio.AsyncEngine, cp_id: str, transaction_id: int,
+) -> None:
+    from aiokafka import AIOKafkaConsumer
+
+    from eveys_ocpp._generated.events.v1 import events_pb2
+
+    row = await _read_native_stop_outbox(engine, cp_id, transaction_id)
+    consumer = AIOKafkaConsumer(
+        "tx.stopped", bootstrap_servers=f"{_KAFKA_HOST}:9092", group_id=None,
+        enable_auto_commit=False, auto_offset_reset="earliest",
+    )
+    await consumer.start()
+    try:
+        async with asyncio.timeout(20):
+            matched = False
+            while not matched:
+                for records in (await consumer.getmany(timeout_ms=1000, max_records=100)).values():
+                    for record in records:
+                        envelope = events_pb2.EventEnvelope.FromString(record.value)
+                        if envelope.event_id == str(row["event_id"]):
+                            assert envelope.cp_id == cp_id
+                            assert envelope.tx_stopped.transaction_id == transaction_id
+                            assert record.value == bytes(row["body"])
+                            matched = True
+            while (
+                await _read_native_stop_outbox(engine, cp_id, transaction_id)
+            )["published_at"] is None:
+                await asyncio.sleep(0.1)
+    finally:
+        await consumer.stop()
 
 
 @pytest.mark.asyncio

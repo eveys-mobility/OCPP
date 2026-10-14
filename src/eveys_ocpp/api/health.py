@@ -7,12 +7,11 @@ The backend's monitoring should alert on `status != "ok"`.
 Component checks:
 - `postgres` — `SELECT 1` against the gateway's pool.
 - `redis` — `PING` via the registry's client (when wired).
+- `clickhouse` — bounded `SELECT 1` through the archive read client.
 
-Kafka and ClickHouse are NOT probed here in the foundation slice:
-- Kafka producer health surfaces via `cp.boot`/`cp.status` publish
-  failures already (and the producer auto-reconnects).
-- ClickHouse read client lands in commit 4; its health hook will
-  follow.
+This observation probe does not alter `/ready` or WS liveness.
+Kafka delivery and ingestor progress are not verified by this process;
+they are explicitly unknown and keep overall health degraded.
 
 This endpoint is exempt from auth (see `_auth._AUTH_BYPASS_PATHS`)
 so the operator's load balancer can dial it regardless of token
@@ -21,6 +20,7 @@ configuration.
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, Request
@@ -35,6 +35,7 @@ if TYPE_CHECKING:
 log = get_logger(__name__)
 
 router = APIRouter(tags=["health"])
+CLICKHOUSE_PROBE_TIMEOUT_SECONDS = 2.0
 
 
 @router.get(
@@ -43,7 +44,7 @@ router = APIRouter(tags=["health"])
     responses={200: {"model": HealthResponse}},
 )
 async def health(request: Request) -> dict[str, object]:
-    components: dict[str, str] = {}
+    components: dict[str, str | None] = {}
 
     # Postgres: open a session, run a trivial query, swallow only the
     # specific connection-class exceptions. Any other failure (mypy
@@ -54,15 +55,46 @@ async def health(request: Request) -> dict[str, object]:
     # Redis (via the registry). Optional — the Kafka-less local stack
     # legitimately runs without it.
     components["redis"] = await _probe_redis(request)
+    ch_status, ch_error = await _probe_clickhouse(request)
+    components["clickhouse"] = ch_status
+    components["clickhouse_error_class"] = ch_error
+    components["ingestor"] = "unknown"
 
-    overall = "ok" if all(v == "ok" for v in components.values()) else "degraded"
+    overall = (
+        "ok"
+        if all(
+            components[k] in {"ok", "unconfigured"}
+            for k in ("postgres", "redis", "clickhouse", "ingestor")
+        )
+        else "degraded"
+    )
 
     return {
         "status": overall,
         "version": _gateway_version(),
         "components": components,
+        "archive": {
+            "state": "unknown",
+            "reason": "ingestor_progress_not_observed",
+            "consumer_lag_messages": None,
+            "last_successful_commit_at": None,
+        },
         "request_id": request.state.request_id,
     }
+
+
+async def _probe_clickhouse(request: Request) -> tuple[str, str | None]:
+    client = getattr(request.app.state, "ch_client", None)
+    if client is None:
+        return "unconfigured", None
+    try:
+        async with asyncio.timeout(CLICKHOUSE_PROBE_TIMEOUT_SECONDS):
+            await client.probe()
+        return "ok", None
+    except Exception as exc:
+        error_class = type(exc).__name__
+        log.warning("rest.health.clickhouse_unavailable", error_class=error_class)
+        return "error", error_class
 
 
 async def _probe_postgres(request: Request) -> str:

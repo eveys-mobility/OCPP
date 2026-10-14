@@ -10,8 +10,8 @@ drop, and the outbound payload-to-dict path.
 
 from __future__ import annotations
 
+import asyncio
 import json
-from dataclasses import dataclass
 from unittest.mock import AsyncMock
 
 import pytest
@@ -19,6 +19,48 @@ import pytest
 from eveys_ocpp._generated.events.v1 import events_pb2
 from eveys_ocpp.ocpp_frames import publish_inbound, publish_outbound
 from eveys_ocpp.settings import Settings
+
+
+@pytest.mark.asyncio
+async def test_stuck_raw_frame_publish_has_a_hard_deadline():
+    async def hang(**_):
+        await asyncio.Event().wait()
+
+    producer = AsyncMock()
+    producer.publish.side_effect = hang
+    await asyncio.wait_for(
+        publish_outbound(
+            producer=producer,
+            settings=_settings(ocpp_frame_publish_timeout_seconds=0.01),
+            cp_id="CP_TEST",
+            raw_msg='[3,"exact-wire-id",{}]',
+        ),
+        timeout=0.1,
+    )
+
+
+@pytest.mark.asyncio
+async def test_external_cancellation_of_raw_frame_publish_propagates():
+    entered = asyncio.Event()
+
+    async def hang(**_):
+        entered.set()
+        await asyncio.Event().wait()
+
+    producer = AsyncMock()
+    producer.publish.side_effect = hang
+    task = asyncio.create_task(
+        publish_outbound(
+            producer=producer,
+            settings=_settings(),
+            cp_id="CP_TEST",
+            raw_msg='[3,"exact-wire-id",{}]',
+        )
+    )
+    await entered.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
 
 
 def _settings(**overrides: object) -> Settings:
@@ -124,45 +166,32 @@ async def test_inbound_swallows_broker_error() -> None:
     # No assertion: the test passes if the call returned without raising.
 
 
-@dataclass
-class _FakeRemoteStart:
-    """Stand-in for `ocpp.v16.call.RemoteStartTransaction`. Dataclass
-    so `asdict()` works exactly like it does for the real library
-    payload classes."""
-
-    id_tag: str
-    connector_id: int
-
-
 @pytest.mark.asyncio
-async def test_outbound_publishes_with_rebuilt_wire_payload() -> None:
+async def test_outbound_publishes_the_exact_sent_payload() -> None:
     producer = AsyncMock()
-    payload = _FakeRemoteStart(id_tag="TAG-1", connector_id=1)
+    raw = '[2,"msg-42","RemoteStartTransaction",{"idTag":"TAG-1","connectorId":1}]'
 
     await publish_outbound(
         producer=producer,
         settings=_settings(),
         cp_id="CP_A",
-        payload=payload,
-        unique_id="msg-42",
+        raw_msg=raw,
     )
 
     producer.publish.assert_awaited_once()
     envelope = events_pb2.EventEnvelope.FromString(producer.publish.await_args.kwargs["value"])
     frame = envelope.cp_ocpp_frame
     assert frame.direction == "outbound"
-    assert frame.action == "_FakeRemoteStart"
+    assert frame.action == "RemoteStartTransaction"
     assert frame.message_id == "msg-42"
     assert frame.message_type == 2
 
-    # The raw_payload is the [type, unique_id, action, dict] shape the
-    # library writes to the WS. Round-trip through json so we don't
-    # depend on key ordering.
+    assert frame.raw_payload == raw
     parsed = json.loads(frame.raw_payload)
     assert parsed[0] == 2
     assert parsed[1] == "msg-42"
-    assert parsed[2] == "_FakeRemoteStart"
-    assert parsed[3] == {"id_tag": "TAG-1", "connector_id": 1}
+    assert parsed[2] == "RemoteStartTransaction"
+    assert parsed[3] == {"idTag": "TAG-1", "connectorId": 1}
 
 
 @pytest.mark.asyncio
@@ -173,6 +202,5 @@ async def test_outbound_swallows_broker_error() -> None:
         producer=producer,
         settings=_settings(),
         cp_id="CP_A",
-        payload=_FakeRemoteStart(id_tag="t", connector_id=1),
-        unique_id="x",
+        raw_msg='[2,"x","RemoteStartTransaction",{"idTag":"t","connectorId":1}]',
     )

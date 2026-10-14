@@ -47,14 +47,13 @@ def _result(status: str, **info: object) -> AuthorizeResult:
 
 
 @pytest.mark.asyncio
-async def test_accepts_when_no_backend_client_wired(fake_cp: Any) -> None:
-    """W1 / local-dev path: backend_client is None → stub Accepted.
-    Lets the protocol layer be tested end-to-end without a backend."""
+async def test_rejects_when_no_backend_client_wired(fake_cp: Any) -> None:
+    """No backend decision cannot establish a customer's authorization."""
     fake_cp.backend_client = None
 
     result = await authorize.handle(fake_cp, id_tag="RFID_X")
 
-    assert result.id_tag_info.status == AuthorizationStatus.accepted
+    assert result.id_tag_info.status == AuthorizationStatus.invalid
 
 
 # ---- Backend wired: forward charger replies verbatim ---------------------
@@ -187,11 +186,10 @@ async def test_fallback_reject_returns_invalid_on_network_error(
 
 
 @pytest.mark.asyncio
-async def test_fallback_accept_offline_returns_accepted_with_expiry(
+async def test_legacy_accept_offline_setting_cannot_authorize_unknown_tag(
     fake_cp: Any, settings_factory: Any
 ) -> None:
-    """`accept_offline` policy → Accepted with a 5-min expiry the
-    charger caches locally per OCPP § 4.2."""
+    """A legacy config value cannot turn an outage into a customer grant."""
     fake_cp.settings = settings_factory(backend_authorize_fallback="accept_offline")
     fake_cp.backend_client = AsyncMock()
     fake_cp.backend_client.authorize = AsyncMock(
@@ -199,13 +197,8 @@ async def test_fallback_accept_offline_returns_accepted_with_expiry(
     )
 
     result = await authorize.handle(fake_cp, id_tag="RFID_X")
-    assert result.id_tag_info.status == AuthorizationStatus.accepted
-    # Expiry is set to ~5 minutes from now in ISO-8601 form. Just
-    # check it's an ISO string (the exact value depends on now()).
-    expiry = result.id_tag_info.expiry_date
-    assert expiry is not None
-    assert "T" in expiry
-    assert expiry.endswith("+00:00")
+    assert result.id_tag_info.status == AuthorizationStatus.invalid
+    assert result.id_tag_info.expiry_date is None
 
 
 # ---- Cache integration (E3-4) -------------------------------------------

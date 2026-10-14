@@ -58,6 +58,10 @@ spec:
               value: {{ .Values.gateway.config.logJson | quote }}
             - name: EVEYS_OCPP_BACKEND_BASE_URL
               value: {{ .Values.gateway.config.backendBaseUrl | quote }}
+            - name: EVEYS_OCPP_WS_KEEPALIVE_PING_INTERVAL_SECONDS
+              value: {{ .Values.gateway.config.wsKeepalivePingIntervalSeconds | quote }}
+            - name: EVEYS_OCPP_WS_KEEPALIVE_PING_TIMEOUT_SECONDS
+              value: {{ .Values.gateway.config.wsKeepalivePingTimeoutSeconds | quote }}
             {{- if .Values.gateway.mtls.enabled }}
             - name: EVEYS_OCPP_WS_MTLS_ENABLED
               value: "true"

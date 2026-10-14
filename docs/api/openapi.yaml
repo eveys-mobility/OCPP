@@ -62,6 +62,33 @@ components:
       - meter_start_wh
       title: ActiveSession
       type: object
+    ArchiveObservation:
+      description: Archive delivery is separate from a successful ClickHouse read
+        probe.
+      properties:
+        consumer_lag_messages:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Consumer Lag Messages
+        last_successful_commit_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Last Successful Commit At
+        reason:
+          const: ingestor_progress_not_observed
+          title: Reason
+          type: string
+        state:
+          const: unknown
+          title: State
+          type: string
+      required:
+      - state
+      - reason
+      title: ArchiveObservation
+      type: object
     ChargePoint:
       description: 'One row of `GET /api/v1/charge-points`. Detail endpoint adds
 
@@ -72,6 +99,33 @@ components:
             $ref: '#/components/schemas/ConnectorStatus'
           title: Connectors
           type: array
+        connectors_error:
+          anyOf:
+          - enum:
+            - query_failed
+            - not_configured
+            type: string
+          - type: 'null'
+          title: Connectors Error
+        connectors_last_successful_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: UTC time this request read the archive successfully; null on
+            unavailable.
+          title: Connectors Last Successful At
+        connectors_source:
+          const: clickhouse
+          default: clickhouse
+          title: Connectors Source
+          type: string
+        connectors_state:
+          description: Archive availability; successful empty result is not a failure.
+          enum:
+          - available
+          - unavailable
+          title: Connectors State
+          type: string
         cp_id:
           description: Stable identifier the charger sent in BootNotification.
           title: Cp Id
@@ -150,6 +204,7 @@ components:
       required:
       - cp_id
       - online
+      - connectors_state
       title: ChargePoint
       type: object
     ChargePointDetail:
@@ -193,6 +248,33 @@ components:
             $ref: '#/components/schemas/ConnectorStatus'
           title: Connectors
           type: array
+        connectors_error:
+          anyOf:
+          - enum:
+            - query_failed
+            - not_configured
+            type: string
+          - type: 'null'
+          title: Connectors Error
+        connectors_last_successful_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: UTC time this request read the archive successfully; null on
+            unavailable.
+          title: Connectors Last Successful At
+        connectors_source:
+          const: clickhouse
+          default: clickhouse
+          title: Connectors Source
+          type: string
+        connectors_state:
+          description: Archive availability; successful empty result is not a failure.
+          enum:
+          - available
+          - unavailable
+          title: Connectors State
+          type: string
         cp_id:
           description: Stable identifier the charger sent in BootNotification.
           title: Cp Id
@@ -278,6 +360,7 @@ components:
       required:
       - cp_id
       - online
+      - connectors_state
       - request_id
       title: ChargePointDetail
       type: object
@@ -429,10 +512,39 @@ components:
           - type: string
           - type: 'null'
           title: Info
+        last_changed_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Server EventEnvelope occurred_at of the latest archived status;
+            not charger clock or successful query time.
+          title: Last Changed At
+        stale_reason:
+          anyOf:
+          - enum:
+            - before_boot
+            - stopped_after_status
+            - unverified_timestamp
+            type: string
+          - type: 'null'
+          description: Why raw status is stale/unknown; current gateway only proves
+            before_boot or unknown timestamps.
+          title: Stale Reason
         status:
           description: 'OCPP 1.6 §3.1.1 enum: Available, Preparing, Charging, …'
           title: Status
           type: string
+        status_freshness:
+          anyOf:
+          - enum:
+            - current
+            - stale
+            - unknown
+            type: string
+          - type: 'null'
+          description: Latest boot-epoch consistency of this raw report; current does
+            not attest EV identity or physical state.
+          title: Status Freshness
         timestamp:
           anyOf:
           - type: string
@@ -570,6 +682,25 @@ components:
       type: object
     HealthComponents:
       properties:
+        clickhouse:
+          description: Archive read probe; does not verify ingestion progress.
+          enum:
+          - ok
+          - error
+          - unconfigured
+          title: Clickhouse
+          type: string
+        clickhouse_error_class:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Exception class only.
+          title: Clickhouse Error Class
+        ingestor:
+          const: unknown
+          description: The gateway does not observe sidecar progress.
+          title: Ingestor
+          type: string
         postgres:
           description: '`ok` or `unavailable`.'
           title: Postgres
@@ -581,25 +712,34 @@ components:
       required:
       - postgres
       - redis
+      - clickhouse
+      - ingestor
       title: HealthComponents
       type: object
     HealthResponse:
       description: '`GET /api/v1/health`. Liveness + per-component probe.'
       example:
+        archive:
+          reason: ingestor_progress_not_observed
+          state: unknown
         components:
+          clickhouse: ok
+          ingestor: unknown
           postgres: ok
           redis: ok
         request_id: 9b3c5d18-1f7c-4b6a-8e0e-5b9a3c4f2e10
-        status: ok
+        status: degraded
         version: 0.1.0
       properties:
+        archive:
+          $ref: '#/components/schemas/ArchiveObservation'
         components:
           $ref: '#/components/schemas/HealthComponents'
         request_id:
           title: Request Id
           type: string
         status:
-          description: '`ok` when every component is `ok`; `degraded` otherwise.'
+          description: '`degraded` when a component fails or archive progress is unknown.'
           title: Status
           type: string
         version:
@@ -610,6 +750,7 @@ components:
       - status
       - version
       - components
+      - archive
       - request_id
       title: HealthResponse
       type: object
@@ -1222,7 +1363,7 @@ components:
           - type: 'null'
           title: Meter Stop Wh
         open:
-          description: True until StopTransaction lands.
+          description: True while neither a charger Stop nor server rejection exists.
           title: Open
           type: boolean
         started_at:
@@ -1286,6 +1427,7 @@ components:
             delta: 43.0
             last: 81.0
             start: 38.0
+        telemetry_state: available
         transaction_id: 12345
       properties:
         connector_id:
@@ -1307,7 +1449,7 @@ components:
           - type: 'null'
           title: Meter Stop Wh
         open:
-          description: True until StopTransaction lands.
+          description: True while neither a charger Stop nor server rejection exists.
           title: Open
           type: boolean
         request_id:
@@ -1332,7 +1474,24 @@ components:
           - $ref: '#/components/schemas/TransactionTelemetry'
           - type: 'null'
           description: ClickHouse-backed snapshot — SoC start/last and per-phase voltage/current/power.
-            `null` when the gateway has no ClickHouse read client configured.
+            `null` when archive reading is unconfigured or unavailable; see telemetry_state.
+        telemetry_error:
+          anyOf:
+          - enum:
+            - ARCHIVE_UNAVAILABLE
+            - ARCHIVE_UNCONFIGURED
+            type: string
+          - type: 'null'
+          title: Telemetry Error
+        telemetry_state:
+          description: Read outcome; available does not prove archive completeness
+            or freshness.
+          enum:
+          - available
+          - unavailable
+          - unconfigured
+          title: Telemetry State
+          type: string
         transaction_id:
           description: OCPP 1.6 transaction id assigned by the gateway.
           title: Transaction Id
@@ -1345,6 +1504,7 @@ components:
       - meter_start_wh
       - started_at
       - open
+      - telemetry_state
       - request_id
       title: TransactionDetail
       type: object
@@ -3353,6 +3513,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
           description: Validation Error
+        '503':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+          description: Archive read unavailable.
       summary: ClickHouse-backed OCPP frame audit for a charge point (both directions)
       tags:
       - timeseries
@@ -3433,6 +3599,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
           description: Validation Error
+        '503':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+          description: Archive read unavailable.
       summary: ClickHouse-backed MeterValues time-series for a charge point
       tags:
       - timeseries
@@ -3528,6 +3700,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
           description: Validation Error
+        '503':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+          description: Archive read unavailable.
       summary: ClickHouse-backed offline-duration history for a charge point
       tags:
       - timeseries
@@ -3842,6 +4020,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
           description: Validation Error
+        '503':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+          description: Archive read unavailable.
       summary: ClickHouse-backed StatusNotification history for a charge point
       tags:
       - timeseries
@@ -4072,6 +4256,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
           description: Validation Error
+        '503':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+          description: Archive read unavailable.
       summary: Uptime % for a charge point over a date range
       tags:
       - timeseries
@@ -4188,6 +4378,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
           description: Validation Error
+        '503':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+          description: Archive read unavailable.
       summary: Fleet-wide StatusNotification history (e.g. all Faulted statuses this
         week)
       tags:
@@ -4557,6 +4753,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
           description: Validation Error
+        '503':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+          description: Archive read unavailable.
       summary: OCPP frame audit trail for one transaction
       tags:
       - transactions
