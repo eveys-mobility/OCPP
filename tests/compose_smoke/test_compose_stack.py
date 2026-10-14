@@ -20,13 +20,16 @@ from __future__ import annotations
 import asyncio
 import json
 import subprocess
+import time
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from aiokafka import AIOKafkaConsumer
 from ocpp.v16 import ChargePoint as Cp
 from ocpp.v16 import call
 from websockets.asyncio.client import connect
 
+from eveys_ocpp._generated.events.v1 import events_pb2
 from tests.compose_smoke.conftest import (
     HOST_CH_HTTP_PORT,
     HOST_REST_PORT,
@@ -96,6 +99,9 @@ def test_gateway_has_required_env_for_in_network_clients() -> None:
     assert "redis:" in env.get("EVEYS_OCPP_REDIS_URL", ""), env
     assert "postgres:" in env.get("EVEYS_OCPP_DB_URL", ""), env
     assert env.get("EVEYS_OCPP_CLICKHOUSE_HOST") == "clickhouse", env
+    assert env.get("EVEYS_OCPP_BACKEND_BASE_URL") == "http://mock-backend:9200/api/eveys"
+    assert env.get("EVEYS_OCPP_BACKEND_AUTHORIZE_FALLBACK") == "reject"
+    assert env.get("EVEYS_OCPP_WEBHOOK_BASE_URL") == ""
 
 
 def test_no_gateway_dependency_errors_in_logs() -> None:
@@ -181,6 +187,11 @@ async def test_full_charger_flow_against_running_container() -> None:
             )
             assert boot.status == "Accepted"
 
+            blocked = await asyncio.wait_for(
+                sim.call(call.Authorize(id_tag="COMPOSE_SMOKE_BLOCKED")), timeout=10
+            )
+            assert blocked.id_tag_info["status"] == "Blocked"
+
             auth = await asyncio.wait_for(
                 sim.call(call.Authorize(id_tag="VALID_RFID_001")),
                 timeout=10,
@@ -256,8 +267,72 @@ async def test_full_charger_flow_against_running_container() -> None:
                 timeout=10,
             )
             assert stop.id_tag_info["status"] == "Accepted"
+            first = _owned_stop_outbox()
+            assert first["transaction_id"] == tx_id
+            assert first["meter_stop_wh"] == 12345
+            assert first["stopped_received_at"] is not None
+
+            replay = await asyncio.wait_for(
+                sim.call(call.StopTransaction(
+                    meter_stop=99999, timestamp=datetime.now(UTC).isoformat(),
+                    transaction_id=tx_id, reason="Local", id_tag="VALID_RFID_001",
+                )), timeout=10,
+            )
+            assert replay.id_tag_info["status"] == "Accepted"
+            unchanged = _owned_stop_outbox()
+            assert unchanged["event_id"] == first["event_id"]
+            assert unchanged["body_hex"] == first["body_hex"]
+            assert unchanged["meter_stop_wh"] == first["meter_stop_wh"]
+            await _assert_broker_stop(first)
         finally:
             loop.cancel()
+
+
+def _owned_stop_outbox() -> dict[str, object]:
+    """Read only the synthetic smoke customer's PG evidence, never production data."""
+    query = """
+        SELECT json_build_object(
+            'event_id', o.event_id, 'body_hex', encode(o.body, 'hex'),
+            'published_at', o.published_at, 'transaction_id', t.transaction_id,
+            'meter_stop_wh', t.meter_stop_wh, 'stopped_received_at', t.stopped_received_at
+        ) FROM transaction_event_outbox o JOIN transactions t ON t.id = o.transaction_pk
+        WHERE o.cp_id = 'COMPOSE_SMOKE_CP' AND o.topic = 'tx.stopped'
+    """
+    result = subprocess.run(
+        ["docker", "exec", "eveys-ocpp-postgres", "psql", "-U", "eveys", "-d",
+         "eveys_ocpp", "-At", "-c", query], check=True, capture_output=True, text=True,
+    )
+    rows = result.stdout.strip().splitlines()
+    assert len(rows) == 1, "the owned physical Stop must retain exactly one immutable envelope"
+    return json.loads(rows[0])
+
+
+async def _assert_broker_stop(row: dict[str, object]) -> None:
+    consumer = AIOKafkaConsumer(
+        "tx.stopped", bootstrap_servers=f"{PUBLISHED_HOST}:9092", group_id=None,
+        enable_auto_commit=False, auto_offset_reset="earliest",
+    )
+    await consumer.start()
+    try:
+        deadline = time.monotonic() + 20
+        matched = False
+        while time.monotonic() < deadline and not matched:
+            for records in (await consumer.getmany(timeout_ms=1000, max_records=100)).values():
+                for record in records:
+                    envelope = events_pb2.EventEnvelope.FromString(record.value)
+                    if envelope.event_id == row["event_id"]:
+                        assert envelope.cp_id == "COMPOSE_SMOKE_CP"
+                        assert record.value.hex() == row["body_hex"]
+                        assert envelope.tx_stopped.transaction_id == row["transaction_id"]
+                        matched = True
+        assert matched, "the immutable PG Stop envelope must reach the real broker"
+        while time.monotonic() < deadline:
+            if _owned_stop_outbox()["published_at"] is not None:
+                break
+            await asyncio.sleep(0.1)
+        assert _owned_stop_outbox()["published_at"] is not None
+    finally:
+        await consumer.stop()
 
 
 def test_meter_value_enums_land_in_clickhouse_as_proto_enum_names() -> None:

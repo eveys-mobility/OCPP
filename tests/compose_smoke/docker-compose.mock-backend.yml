@@ -1,0 +1,27 @@
+# Test-only overlay. The production compose file and auth policy stay unchanged.
+# All URLs are within this disposable compose network; no host .env is loaded.
+services:
+  mock-backend:
+    image: eveys-ocpp:dev
+    container_name: eveys-ocpp-compose-mock-backend
+    command: ["-m", "tests.mock_backend", "--host", "0.0.0.0", "--port", "9200", "--log-level", "warning"]
+    volumes:
+      - ../../tests:/build/tests:ro
+    environment:
+      MOCK_BACKEND_TOKEN: compose-smoke-backend-only
+      MOCK_BACKEND_BLOCKED_ID_TAGS: COMPOSE_SMOKE_BLOCKED
+    healthcheck:
+      test: ["CMD", "python3.13", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9200/api/eveys/health', timeout=2)"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+  ocpp:
+    environment:
+      EVEYS_OCPP_REST_INBOUND_TOKENS: compose-smoke-inbound-only
+      EVEYS_OCPP_BACKEND_BASE_URL: http://mock-backend:9200/api/eveys
+      EVEYS_OCPP_BACKEND_TOKEN: compose-smoke-backend-only
+      EVEYS_OCPP_BACKEND_AUTHORIZE_FALLBACK: reject
+      EVEYS_OCPP_OUTBOUND_TLS_VERIFY: "true"
+      EVEYS_OCPP_WEBHOOK_BASE_URL: ""
+    depends_on:
+      mock-backend: { condition: service_healthy }

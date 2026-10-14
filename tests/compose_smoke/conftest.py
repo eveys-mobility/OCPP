@@ -37,6 +37,7 @@ import pytest
 # invoke us from anywhere.
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _COMPOSE_FILE = _REPO_ROOT / "deploy" / "compose" / "docker-compose.yml"
+_MOCK_COMPOSE_FILE = _REPO_ROOT / "tests" / "compose_smoke" / "docker-compose.mock-backend.yml"
 
 # How long after a container is "Up" we wait before re-checking
 # `restart_count`. A container that exits a few seconds in is a startup
@@ -56,6 +57,7 @@ _EXPECTED_CONTAINERS = (
     "eveys-ocpp-redis",
     "eveys-ocpp-kafka",
     "eveys-ocpp-clickhouse",
+    "eveys-ocpp-compose-mock-backend",
     "eveys-ocpp-clickhouse-ingestor",
     "eveys-ocpp",
 )
@@ -112,27 +114,20 @@ def _gate() -> None:
 
 
 def _compose(*args: str) -> subprocess.CompletedProcess[str]:
-    """Run `docker compose -f <file> <args>` from the repo root.
+    """Run the disposable stack with only its test backend and public test tokens.
 
-    Mirrors `make compose-up`: passes `--env-file .env` when present so
-    container-side env (e.g. `EVEYS_OCPP_REST_INBOUND_TOKENS` for the
-    REST surface) is loaded the same way developers see locally.
-    Without this, the smoke stack runs with an empty inbound-token
-    allowlist and every REST call 401s — silent until a test actually
-    hits REST.
-
-    On CI no `.env` exists; a process-level
-    `EVEYS_OCPP_REST_INBOUND_TOKENS` (set by the harness fixture
-    below) takes over via compose's variable substitution on the
-    `${EVEYS_OCPP_REST_INBOUND_TOKENS:-}` fallback in the YAML.
+    Ignore developer .env and inherited gateway/mock configuration so this
+    native smoke can never authorize or deliver webhooks to their backend.
     """
-    env_args: list[str] = []
-    env_file = _REPO_ROOT / ".env"
-    if env_file.exists():
-        env_args = ["--env-file", str(env_file)]
+    child_env = {
+        key: value for key, value in os.environ.items()
+        if not key.startswith(("EVEYS_OCPP_", "MOCK_BACKEND_"))
+    }
     return subprocess.run(
-        ["docker", "compose", "-f", str(_COMPOSE_FILE), *env_args, *args],
+        ["docker", "compose", "--env-file", os.devnull,
+         "-f", str(_COMPOSE_FILE), "-f", str(_MOCK_COMPOSE_FILE), *args],
         cwd=str(_REPO_ROOT),
+        env=child_env,
         check=False,
         capture_output=True,
         text=True,
@@ -163,6 +158,15 @@ def _container_state(name: str) -> dict[str, str]:
         "restart_count": restart_count,
         "running": running,
     }
+
+
+def _require_disposable_stack() -> None:
+    for name in (*_EXPECTED_CONTAINERS, "eveys-ocpp-migrate-postgres",
+                 "eveys-ocpp-migrate-clickhouse", "eveys-ocpp-envoy"):
+        if _container_state(name):
+            raise RuntimeError(
+                f"compose-smoke refuses existing {name}; use a disposable Docker environment"
+            )
 
 
 def _wait_for_running(name: str, timeout_s: int) -> dict[str, str]:
@@ -243,18 +247,7 @@ def _compose_stack() -> Iterator[None]:
     the next session's "first run" mysteriously broken.
     """
     _gate()
-
-    # Inbound-token discipline: REST tests need a known-good bearer.
-    # Local devs have one in `.env`; CI runs without an .env, so seed
-    # a random per-session token if none is set. Compose's
-    # `${EVEYS_OCPP_REST_INBOUND_TOKENS:-}` interpolation picks it up
-    # at `up` time. Setting it on the parent process here means the
-    # token survives across compose's variable substitution AND any
-    # tests that read it back via `docker inspect` later.
-    if not os.environ.get("EVEYS_OCPP_REST_INBOUND_TOKENS"):
-        import secrets
-
-        os.environ["EVEYS_OCPP_REST_INBOUND_TOKENS"] = secrets.token_hex(16)
+    _require_disposable_stack()
 
     # Clean slate. Downing here is cheap if no project exists; it
     # prevents stale containers from a prior aborted run masking an
