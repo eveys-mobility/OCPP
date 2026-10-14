@@ -125,6 +125,21 @@ def test_native_fixture_keeps_bounded_logs_before_removing_test_containers(
     )
 
 
+def test_native_fixture_logs_are_uploadable_from_the_hidden_capture_directory() -> None:
+    workflow = yaml.safe_load(
+        (smoke._REPO_ROOT / ".github/workflows/compose-smoke.yml").read_text()
+    )
+    upload = next(
+        step for step in workflow["jobs"]["compose-smoke"]["steps"]
+        if step.get("uses", "").startswith("actions/upload-artifact@")
+    )
+    assert upload["if"] == "always()"
+    assert upload["with"]["path"] == ".compose-smoke-logs/"
+    assert upload["with"].get("include-hidden-files") is True, (
+        "upload-artifact excludes the hidden fixture-log directory by default"
+    )
+
+
 @pytest.mark.asyncio
 async def test_native_fixture_client_uses_real_mock_contract_without_outbound_network() -> None:
     client = in_process_backend_client(Settings(

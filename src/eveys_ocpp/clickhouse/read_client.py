@@ -19,6 +19,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from asynch import Connection
+from asynch.proto.utils.escape import escape_params
 
 from eveys_ocpp.observability import get_logger
 
@@ -80,6 +81,10 @@ class ClickHouseReadClient:
                 log.warning("clickhouse.read_client.close_failed", error_class=type(exc).__name__)
 
     async def _fetch(self, sql: str, params: dict[str, Any]) -> tuple[list[str], list[Any]]:
+        # asynch 0.3 uses brace placeholders; 0.4 uses percent placeholders.
+        # Escape with the driver helper and render our trusted templates once.
+        # Passing no args keeps either driver from reinterpreting literal data.
+        rendered_sql = sql.format(**escape_params(params))
         # Native connections cannot run two queries concurrently, even if
         # they use distinct cursors. Hold the lock through full fetchall.
         async with self._query_lock:
@@ -91,7 +96,7 @@ class ClickHouseReadClient:
                         await self._connect()
                     assert self._conn is not None
                     async with self._conn.cursor() as cursor:
-                        await cursor.execute(sql, params)
+                        await cursor.execute(rendered_sql)
                         cols = [d[0] for d in cursor.description]
                         rows = await cursor.fetchall()
                     return cols, rows
@@ -127,9 +132,8 @@ class ClickHouseReadClient:
         # ARRAY JOIN flattens the Nested column; the route caller pages
         # with `limit + 1` for next-page detection.
         #
-        # `asynch` substitutes via `query.format(**escape_params(params))`,
-        # so placeholders are `{name}` — NOT the DB-API `%(name)s` shape.
-        # See `fetch_latest_connector_statuses` for the same convention.
+        # `_fetch` renders escaped `{name}` placeholders before passing
+        # the query to either supported asynch parameter convention.
         sql = """
             SELECT
                 event_id,
@@ -193,11 +197,9 @@ class ClickHouseReadClient:
         if not cp_ids:
             return {}
 
-        # `asynch` substitutes parameters via `str.format(**escape_params(params))`,
-        # so placeholders are `{name}` not the DB-API `%(name)s` paramstyle. The
-        # IN list expands as one named placeholder per id — `escape_params`
-        # quotes each value, so user-controlled cp_ids cannot break out of
-        # the IN expression.
+        # The IN list expands as one brace placeholder per id. `_fetch`
+        # quotes each value with `escape_params`, so user-controlled
+        # cp_ids cannot break out of the IN expression.
         placeholders = ", ".join(f"{{cp_id_{i}}}" for i in range(len(cp_ids)))
         # Fully-qualified table name — ClickHouse 24's analyzer does not
         # always honour the connection's `currentDatabase()` for unqualified
@@ -505,10 +507,7 @@ class ClickHouseReadClient:
     ) -> list[dict[str, Any]]:
         """Return StatusNotification transitions for one charger inside
         [from, to]. One row per transition (no ARRAY JOIN needed)."""
-        # Same `{name}` placeholder convention as `fetch_meter_values` /
-        # `fetch_latest_connector_statuses` — `asynch` uses
-        # `query.format(**escape_params(params))`, not DB-API
-        # `%(name)s`.
+        # Same escaped `{name}` templates as the other read helpers.
         sql = """
             SELECT
                 event_id,

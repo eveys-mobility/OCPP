@@ -18,7 +18,7 @@ lives at `clickhouse/read_client.py`.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Query, Request
@@ -71,8 +71,11 @@ def _isoformat(value: datetime | None) -> str | None:
 
 def _parse_iso8601(value: str, *, field_name: str) -> datetime:
     try:
-        return datetime.fromisoformat(value)
-    except ValueError as exc:
+        parsed = datetime.fromisoformat(value)
+        # Archive columns use UTC; the driver serializes only the clock value.
+        # Existing offset-free inputs represent UTC, independent of server TZ.
+        return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC)
+    except (ValueError, OverflowError) as exc:
         raise ApiError(
             status_code=400,
             error_code=ERR_BAD_REQUEST,

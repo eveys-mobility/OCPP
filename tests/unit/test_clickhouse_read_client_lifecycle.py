@@ -43,7 +43,7 @@ class _Cursor:
     async def __aexit__(self, *_: Any) -> None:
         pass
 
-    async def execute(self, _sql: str, _params: dict[str, Any]) -> None:
+    async def execute(self, _sql: str, _params: dict[str, Any] | None = None) -> None:
         if self.connection.executing:
             self.connection.overlapped = True
             raise ProgrammingError("some records have not been fetched")

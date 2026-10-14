@@ -1,26 +1,15 @@
-"""Read-client unit tests — placeholder shape sanity (issue #92).
+"""Read-client SQL boundary checks without booting ClickHouse.
 
-The route-layer tests mock the client wholesale, so they never see
-the SQL. That left a real bug in production: `asynch` substitutes
-parameters via `query.format(**escape_params(params))` — i.e. Python
-`str.format` `{name}` placeholders, NOT the DB-API `%(name)s`
-paramstyle. The two read methods used `%(name)s` and got 500s on
-every real call (ClickHouse parses the literal `%`).
-
-These tests stub the cursor at the boundary and assert the SQL we
-*hand* to the server is well-formed under `asynch`'s substitution
-rules — catches the regression at unit-test speed without booting
-ClickHouse.
+Our brace templates are escaped and rendered before the cursor call.
+This preserves the queries across asynch's 0.3/0.4 paramstyle change.
 """
 
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from asynch.proto.utils.escape import escape_params
 
 from eveys_ocpp.clickhouse.read_client import ClickHouseReadClient
 
@@ -28,7 +17,7 @@ from eveys_ocpp.clickhouse.read_client import ClickHouseReadClient
 def _client_with_fake_cursor() -> tuple[ClickHouseReadClient, MagicMock]:
     """Build a client whose `Connection.cursor()` yields an
     AsyncMock cursor. Tests inspect `cursor.execute.await_args` to
-    see the SQL + params actually sent."""
+    see the rendered SQL actually sent."""
 
     class _FakeSettings:
         clickhouse_host = "ch"
@@ -50,10 +39,11 @@ def _client_with_fake_cursor() -> tuple[ClickHouseReadClient, MagicMock]:
     return client, cursor
 
 
-def _substitute(sql: str, params: dict[str, Any]) -> str:
-    """Apply `asynch`'s exact substitution path — fails loud if the
-    SQL has the wrong placeholder shape."""
-    return sql.format(**escape_params(params))
+def _rendered_query(cursor: MagicMock) -> str:
+    """The driver must receive escaped SQL without a second parameter pass."""
+    rendered, = cursor.execute.await_args.args
+    assert not cursor.execute.await_args.kwargs
+    return rendered
 
 
 @pytest.mark.asyncio
@@ -69,11 +59,7 @@ async def test_fetch_meter_values_uses_asynch_placeholder_shape() -> None:
         limit=1000,
     )
 
-    sql, params = cursor.execute.await_args.args
-    # The SQL must round-trip through asynch's `str.format` substitution
-    # cleanly. If a `%(name)s` slipped back in, this raises KeyError /
-    # IndexError on the format call — which is exactly the bug.
-    rendered = _substitute(sql, params)
+    rendered = _rendered_query(cursor)
     assert "'CP_42'" in rendered
     assert "'2026-05-01 00:00:00'" in rendered
     assert "connector_id = 1" in rendered
@@ -95,8 +81,7 @@ async def test_fetch_meter_values_skips_optional_filters_when_none() -> None:
         limit=500,
     )
 
-    sql, params = cursor.execute.await_args.args
-    rendered = _substitute(sql, params)
+    rendered = _rendered_query(cursor)
     # `connector_id` and `measurand` are selected columns, so they
     # show up in the SELECT list. What we care about is that no
     # optional WHERE filter was added.
@@ -117,8 +102,7 @@ async def test_fetch_status_history_uses_asynch_placeholder_shape() -> None:
         limit=1000,
     )
 
-    sql, params = cursor.execute.await_args.args
-    rendered = _substitute(sql, params)
+    rendered = _rendered_query(cursor)
     assert "'CP_42'" in rendered
     assert "connector_id = 2" in rendered
     assert "LIMIT 1000" in rendered
@@ -136,8 +120,7 @@ async def test_fetch_latest_connector_statuses_uses_asynch_placeholder_shape() -
 
     await client.fetch_latest_connector_statuses(cp_ids=["CP_A", "CP_B"])
 
-    sql, params = cursor.execute.await_args.args
-    rendered = _substitute(sql, params)
+    rendered = _rendered_query(cursor)
     assert "'CP_A'" in rendered
     assert "'CP_B'" in rendered
     assert "%(" not in rendered
@@ -157,8 +140,7 @@ async def test_fetch_fleet_status_history_no_optional_filters() -> None:
         limit=500,
     )
 
-    sql, params = cursor.execute.await_args.args
-    rendered = _substitute(sql, params)
+    rendered = _rendered_query(cursor)
     assert "AND status IN" not in rendered
     assert "AND cp_id IN" not in rendered
     assert "%(" not in rendered
@@ -179,8 +161,7 @@ async def test_fetch_fleet_status_history_status_in_clause() -> None:
         limit=1000,
     )
 
-    sql, params = cursor.execute.await_args.args
-    rendered = _substitute(sql, params)
+    rendered = _rendered_query(cursor)
     assert "'Faulted'" in rendered
     assert "'Unavailable'" in rendered
     assert "AND status IN" in rendered
@@ -201,8 +182,7 @@ async def test_fetch_fleet_status_history_cp_ids_in_clause() -> None:
         limit=500,
     )
 
-    sql, params = cursor.execute.await_args.args
-    rendered = _substitute(sql, params)
+    rendered = _rendered_query(cursor)
     assert "'CP_A'" in rendered
     assert "'CP_B'" in rendered
     assert "AND cp_id IN" in rendered
@@ -225,8 +205,7 @@ async def test_fetch_frames_by_cp_uses_asynch_placeholder_shape() -> None:
         limit=500,
     )
 
-    sql, params = cursor.execute.await_args.args
-    rendered = _substitute(sql, params)
+    rendered = _rendered_query(cursor)
     assert "'CP_42'" in rendered
     assert "direction = 'inbound'" in rendered
     assert "action = 'MeterValues'" in rendered
@@ -251,8 +230,7 @@ async def test_fetch_frames_by_cp_skips_optional_filters_when_none() -> None:
         limit=200,
     )
 
-    sql, params = cursor.execute.await_args.args
-    rendered = _substitute(sql, params)
+    rendered = _rendered_query(cursor)
     assert "AND direction =" not in rendered
     assert "AND action =" not in rendered
 
@@ -266,8 +244,7 @@ async def test_fetch_frames_by_transaction_uses_asynch_placeholder_shape() -> No
 
     await client.fetch_frames_by_transaction(transaction_id=12345, limit=1000)
 
-    sql, params = cursor.execute.await_args.args
-    rendered = _substitute(sql, params)
+    rendered = _rendered_query(cursor)
     assert "transaction_id = 12345" in rendered
     assert "LIMIT 1000" in rendered
     assert "%(" not in rendered
@@ -294,8 +271,7 @@ async def test_fetch_uptime_for_cp_uses_asynch_placeholder_shape() -> None:
         window_to=datetime(2026, 5, 1, tzinfo=UTC),
     )
 
-    sql, params = cursor.execute.await_args.args
-    rendered = _substitute(sql, params)
+    rendered = _rendered_query(cursor)
     assert "'CP_42'" in rendered
     assert "greatest(went_offline_at" in rendered
     assert "least(came_online_at" in rendered

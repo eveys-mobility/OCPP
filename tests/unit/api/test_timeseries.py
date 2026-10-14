@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
+from asynch.proto.utils.escape import escape_params
 
 
 def _meter_row(connector_id: int = 1) -> dict[str, Any]:
@@ -47,6 +48,84 @@ def _status_row(connector_id: int = 1, status: str = "Available") -> dict[str, A
 
 
 # ---- meter-values ----------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route,method", [
+    ("meter-values", "fetch_meter_values"),
+    ("status-history", "fetch_status_history"),
+])
+async def test_archive_window_offsets_render_the_same_utc_filter_as_z(
+    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch,
+    fake_ch_client: MagicMock, route: str, method: str,
+) -> None:
+    from eveys_ocpp.api import timeseries as ts_module
+
+    monkeypatch.setattr(ts_module, "get_charge_point_pk", AsyncMock(return_value=1))
+    spy = AsyncMock(return_value=[])
+    setattr(fake_ch_client, method, spy)
+    path = f"/api/v1/charge-points/CP_001/{route}"
+    offset = await client.get(path, params={
+        "from": "2026-05-06T03:00:00+03:00", "to": "2026-05-06T04:00:00+03:00",
+    })
+    zulu = await client.get(path, params={
+        "from": "2026-05-06T00:00:00Z", "to": "2026-05-06T01:00:00Z",
+    })
+
+    assert offset.status_code == zulu.status_code == 200
+    filters = [
+        {"from_ts": call.kwargs["started_from"], "to_ts": call.kwargs["started_to"]}
+        for call in spy.await_args_list
+    ]
+    # The driver escapes datetimes as timezone-free SQL literals. Equal
+    # instants alone are insufficient: their UTC clock values must match.
+    assert escape_params(filters[0]) == escape_params(filters[1]) == {
+        "from_ts": "'2026-05-06 00:00:00'", "to_ts": "'2026-05-06 01:00:00'",
+    }
+    assert all(value.tzinfo is UTC for window in filters for value in window.values())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("started_from,started_to", [
+    ("2026-05-06T00:00:00", "2026-05-06T04:00:00+03:00"),
+    ("2026-05-06T03:00:00+03:00", "2026-05-06T01:00:00"),
+])
+async def test_archive_window_accepts_mixed_naive_utc_and_aware_bounds(
+    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch,
+    fake_ch_client: MagicMock, started_from: str, started_to: str,
+) -> None:
+    from eveys_ocpp.api import timeseries as ts_module
+
+    monkeypatch.setattr(ts_module, "get_charge_point_pk", AsyncMock(return_value=1))
+    response = await client.get("/api/v1/charge-points/CP_001/meter-values", params={
+        "from": started_from, "to": started_to,
+    })
+
+    assert response.status_code == 200
+    filters = fake_ch_client.fetch_meter_values.await_args.kwargs
+    assert filters["started_from"] == datetime(2026, 5, 6, tzinfo=UTC)
+    assert filters["started_to"] == datetime(2026, 5, 6, 1, tzinfo=UTC)
+    assert filters["started_from"].tzinfo is filters["started_to"].tzinfo is UTC
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("started_from,started_to,error", [
+    ("not-iso", "2026-05-06T04:00:00+03:00", "BAD_REQUEST"),
+    ("0001-01-01T00:00:00+03:00", "2026-05-06T01:00:00Z", "BAD_REQUEST"),
+    ("2026-05-06T00:00:00Z", "9999-12-31T23:00:00-03:00", "BAD_REQUEST"),
+    ("2026-05-06T05:00:00+03:00", "2026-05-06T01:00:00Z", "BAD_REQUEST"),
+    ("2026-05-06T03:00:00+03:00", "2026-05-14T00:00:00", "WINDOW_TOO_LARGE"),
+])
+async def test_normalized_archive_windows_keep_invalid_bound_checks(
+    client: httpx.AsyncClient, fake_ch_client: MagicMock,
+    started_from: str, started_to: str, error: str,
+) -> None:
+    response = await client.get("/api/v1/charge-points/CP_001/meter-values", params={
+        "from": started_from, "to": started_to,
+    })
+    assert response.status_code == 400
+    assert response.json()["error_code"] == error
+    fake_ch_client.fetch_meter_values.assert_not_awaited()
 
 
 @pytest.mark.asyncio
