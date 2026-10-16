@@ -31,6 +31,7 @@ from eveys_ocpp.handlers.v16 import (
     status_notification,
     stop_transaction,
 )
+from eveys_ocpp.handlers.v16._meter_sanity import RegisterJumpGuard
 from eveys_ocpp.metrics import registry as metrics_registry
 from eveys_ocpp.observability import get_logger
 from eveys_ocpp.ocpp_frames import publish_inbound, publish_outbound
@@ -97,6 +98,9 @@ class EveysChargePoint(Cpv16):
         # upserting `charge_points`.
         self.pending_store = pending_store
         self.is_pending = is_pending
+        # Per-connection memory of each transaction's energy register,
+        # used by the MeterValues handler to drop single-sample jumps.
+        self.meter_register_guard = RegisterJumpGuard()
 
     @property
     def ocpp_version(self) -> str:

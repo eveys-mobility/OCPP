@@ -32,6 +32,9 @@ Behavior:
   measurand+reason, and bump the
   `eveys_ocpp_meter_value_quarantined_total{measurand,reason}`
   counter. Unknown measurands accept by default (vendor extensions).
+  Energy registers inside a transaction are also checked against the
+  transaction's earlier readings (`RegisterJumpGuard`, one per
+  connection on `cp.meter_register_guard`).
 
 Deviations from the OCA spec to verify before W2 / OCTT
 (see `docs/08-ocpp-conformance.md`):
@@ -175,7 +178,13 @@ async def _meter_values_inner(
         for raw in entry.get("sampled_value") or []:
             if not isinstance(raw, dict):
                 continue
-            verdict = _meter_sanity.check_sample(raw)
+            verdict = cp.meter_register_guard.check(
+                _meter_sanity.check_sample(raw),
+                connector_id=connector_id,
+                transaction_id=transaction_id,
+                phase=str(raw.get("phase") or ""),
+                location=str(raw.get("location") or ""),
+            )
             if not verdict.accepted:
                 quarantined += 1
                 metrics_registry.METER_VALUE_QUARANTINED_TOTAL.labels(
@@ -184,6 +193,8 @@ async def _meter_values_inner(
                 ).inc()
                 log.warning(
                     "meter_values.sample_quarantined",
+                    connector_id=connector_id,
+                    transaction_id=transaction_id,
                     sample_value=raw.get("value"),
                     unit=raw.get("unit"),
                     measurand=verdict.measurand,

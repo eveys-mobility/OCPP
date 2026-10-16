@@ -1,8 +1,8 @@
 """Measurand-aware sanity-range validation for `MeterValues` samples (E5-4).
 
-A charger reporting nonsense — a 100 MWh single-sample energy reading,
-a 50 kV bus voltage, a -200°C battery temperature — is almost always
-one of three things:
+A charger reporting nonsense — an energy register that jumps 100 MWh
+between two samples, a 50 kV bus voltage, a -200°C battery
+temperature — is almost always one of three things:
 
 1. A unit-confusion bug on the charger's firmware (kWh vs Wh).
 2. A sensor wedge / overflow (pinned `0xFFFF`, `INT_MAX`, etc.).
@@ -55,11 +55,24 @@ class _Range:
 # °F ↔ °C ↔ K, etc.) lives in `_to_canonical` below — keep the
 # physics in this table and the unit math in the converter.
 
-# Energy: 100 MWh ceiling carried over from the pre-E5-4 cap. The
-# largest passenger EV battery today is ~150 kWh; commercial fleet
-# tops out around 1 MWh; 100 MWh = ~600x margin. Negative is
-# allowed (export to grid / V2G accumulators). Symmetric.
-_ENERGY_RANGE = _Range(minimum=-100_000_000, maximum=100_000_000, canonical_unit="Wh")
+# Energy registers: 10 GWh ceiling. A register is the meter's lifetime
+# total, not one session, so it has to fit years of a busy DC charger:
+# DE0240B1GPAC00004L read 177 MWh in October 2026 and grows ~140 MWh a
+# year, and a 400 kW charger at full duty adds ~3.5 GWh a year. 10 GWh
+# still rejects a Wh value labelled kWh on any register above 10 MWh.
+# A single bad register sample inside a transaction is caught by
+# `RegisterJumpGuard` below, which compares it to the session's own
+# readings instead of a fixed number. Negative is allowed (export to
+# grid / V2G accumulators). Symmetric.
+_ENERGY_REGISTER_RANGE = _Range(
+    minimum=-10_000_000_000, maximum=10_000_000_000, canonical_unit="Wh"
+)
+
+# Energy intervals: 100 MWh ceiling carried over from the pre-E5-4 cap.
+# An interval is the energy of one sampling period; the largest
+# passenger EV battery today is ~150 kWh and commercial fleet tops out
+# around 1 MWh, so 100 MWh = ~600x margin. Symmetric.
+_ENERGY_INTERVAL_RANGE = _Range(minimum=-100_000_000, maximum=100_000_000, canonical_unit="Wh")
 
 # Power: ±1 MW. Megawatt charging (MCS) draft spec tops at ~3.75 MW
 # but commercial deployment is capped at well under 1 MW today, and
@@ -100,15 +113,15 @@ _RPM_RANGE = _Range(minimum=0, maximum=30_000, canonical_unit="RPM")
 # variants share the same range; same for Power*, Current*, etc.
 # Strings match OCPP 1.6 § 7.20 case-sensitively.
 _MEASURAND_RANGES: dict[str, _Range] = {
-    # Energy registers + intervals — same physical quantity.
-    "Energy.Active.Export.Register": _ENERGY_RANGE,
-    "Energy.Active.Import.Register": _ENERGY_RANGE,
-    "Energy.Reactive.Export.Register": _ENERGY_RANGE,
-    "Energy.Reactive.Import.Register": _ENERGY_RANGE,
-    "Energy.Active.Export.Interval": _ENERGY_RANGE,
-    "Energy.Active.Import.Interval": _ENERGY_RANGE,
-    "Energy.Reactive.Export.Interval": _ENERGY_RANGE,
-    "Energy.Reactive.Import.Interval": _ENERGY_RANGE,
+    # Energy registers (lifetime totals) and intervals (one period).
+    "Energy.Active.Export.Register": _ENERGY_REGISTER_RANGE,
+    "Energy.Active.Import.Register": _ENERGY_REGISTER_RANGE,
+    "Energy.Reactive.Export.Register": _ENERGY_REGISTER_RANGE,
+    "Energy.Reactive.Import.Register": _ENERGY_REGISTER_RANGE,
+    "Energy.Active.Export.Interval": _ENERGY_INTERVAL_RANGE,
+    "Energy.Active.Import.Interval": _ENERGY_INTERVAL_RANGE,
+    "Energy.Reactive.Export.Interval": _ENERGY_INTERVAL_RANGE,
+    "Energy.Reactive.Import.Interval": _ENERGY_INTERVAL_RANGE,
     # Power.
     "Power.Active.Export": _POWER_RANGE,
     "Power.Active.Import": _POWER_RANGE,
@@ -197,7 +210,7 @@ class SanityResult:
     `accepted=True` means the sample is fine to forward. `accepted=False`
     means quarantine; `reason` carries the machine-readable label that
     feeds the Prometheus counter (`out_of_range`, `unparseable`,
-    `not_finite`).
+    `not_finite`, `register_jump`).
     """
 
     accepted: bool
@@ -210,6 +223,7 @@ class SanityResult:
 REASON_OUT_OF_RANGE = "out_of_range"
 REASON_UNPARSEABLE = "unparseable"
 REASON_NOT_FINITE = "not_finite"
+REASON_REGISTER_JUMP = "register_jump"
 
 
 def check_sample(raw: dict[str, Any]) -> SanityResult:
@@ -255,3 +269,111 @@ def check_sample(raw: dict[str, Any]) -> SanityResult:
         )
 
     return SanityResult(accepted=True, measurand=measurand, canonical_value=canonical)
+
+
+# --- Per-transaction register check ------------------------------------------
+
+# Largest step an energy register may take between two samples of one
+# transaction: 2 MWh. A truck-sized battery is ~1 MWh, so even a
+# charger that was offline for a whole session cannot move further
+# between two samples, while the garbage this exists for (a Wh value
+# labelled kWh, a pinned 0xFFFFFFFF, a bit flip) is orders of magnitude
+# larger. Replaying the 1.37M register samples the gateway received
+# from May to October 2026 gave a largest step of ~36 kWh and no drops.
+_MAX_REGISTER_STEP_WH = 2_000_000.0
+
+# A register that stays away from the reference for this many
+# consecutive samples, each within one step of the previous one, has
+# really moved (meter swap, a wrong first sample) and becomes the new
+# reference instead of being dropped for the rest of the transaction.
+_REGISTER_CONFIRM_SAMPLES = 3
+
+
+@dataclass
+class _RegisterSeries:
+    transaction_id: int
+    reference: float
+    candidate: float | None = None
+    candidate_count: int = 0
+
+
+class RegisterJumpGuard:
+    """Drop single register samples that jump away from their transaction.
+
+    One instance per charger connection (`EveysChargePoint`). It keeps,
+    per connector and register series (measurand, phase, location), the
+    highest reading accepted in the current transaction and drops a
+    reading more than `_MAX_REGISTER_STEP_WH` away from it.
+
+    Deliberately not a strict monotonicity check: live chargers flush
+    queued frames out of order after a reconnect (steps back of up to
+    ~17 kWh in receipt order, May to October 2026), and dropping those
+    real readings would do more harm than forwarding them. Time-based
+    limits (power x elapsed time) are not used either, because queued
+    frames carry the same or a wrong charger timestamp and arrive in
+    bursts.
+
+    Zero and negative readings pass untouched: several chargers send
+    `0` on clock-aligned samples between real readings, and they must
+    neither become the reference nor be dropped. Samples outside a
+    transaction (`transaction_id` missing or 0) are not checked. State
+    is in memory only; a reconnect starts from the next reading.
+    """
+
+    def __init__(
+        self,
+        *,
+        max_step_wh: float = _MAX_REGISTER_STEP_WH,
+        confirm_samples: int = _REGISTER_CONFIRM_SAMPLES,
+    ) -> None:
+        self._max_step_wh = max_step_wh
+        self._confirm_samples = confirm_samples
+        self._series: dict[tuple[int, str, str, str], _RegisterSeries] = {}
+
+    def check(
+        self,
+        verdict: SanityResult,
+        *,
+        connector_id: int,
+        transaction_id: int | None,
+        phase: str = "",
+        location: str = "",
+    ) -> SanityResult:
+        """Return `verdict` unchanged, or a `register_jump` rejection."""
+        if not verdict.accepted or not verdict.measurand.endswith(".Register"):
+            return verdict
+        if not transaction_id:
+            return verdict
+        value = verdict.canonical_value
+        if value <= 0:
+            return verdict
+
+        key = (connector_id, verdict.measurand, phase, location)
+        series = self._series.get(key)
+        if series is None or series.transaction_id != transaction_id:
+            self._series[key] = _RegisterSeries(transaction_id=transaction_id, reference=value)
+            return verdict
+
+        if abs(value - series.reference) <= self._max_step_wh:
+            series.reference = max(series.reference, value)
+            series.candidate = None
+            series.candidate_count = 0
+            return verdict
+
+        if series.candidate is not None and abs(value - series.candidate) <= self._max_step_wh:
+            series.candidate_count += 1
+        else:
+            series.candidate_count = 1
+        series.candidate = value
+        if series.candidate_count >= self._confirm_samples:
+            series.reference = value
+            series.candidate = None
+            series.candidate_count = 0
+            return verdict
+
+        return SanityResult(
+            accepted=False,
+            reason=REASON_REGISTER_JUMP,
+            measurand=verdict.measurand,
+            canonical_value=value,
+        )

@@ -94,7 +94,7 @@ async def test_no_publish_when_no_samples(fake_cp: Any) -> None:
 
 @pytest.mark.asyncio
 async def test_quarantines_absurd_values(fake_cp: Any) -> None:
-    """101 MWh single sample → dropped, log + warn, no publish for it.
+    """10.001 GWh single sample → dropped, log + warn, no publish for it.
 
     Also exercises the unit-aware sanity check (kWh, MWh).
     """
@@ -108,7 +108,7 @@ async def test_quarantines_absurd_values(fake_cp: Any) -> None:
             {
                 "timestamp": "x",
                 "sampled_value": [
-                    _sample("101", unit="MWh"),  # quarantined: 101 MWh > 100 MWh cap
+                    _sample("10001", unit="MWh"),  # quarantined: above the 10 GWh cap
                     _sample("50", unit="kWh"),  # 50 kWh = 50_000 Wh — fine
                     _sample("1234"),  # plain Wh — fine
                 ],
@@ -343,3 +343,91 @@ async def test_pending_cp_raises_security_error(fake_cp: Any) -> None:
         )
 
     fake_producer.publish.assert_not_awaited()
+
+
+def _dc_frame(register: str) -> list[dict[str, Any]]:
+    """One periodic MeterValues entry as DE0240B1GPAC00004L sends it."""
+    return [
+        {
+            "timestamp": "2026-10-16T15:52:46.000Z",
+            "sampled_value": [
+                {
+                    "context": "Sample.Periodic",
+                    "location": "Outlet",
+                    "measurand": "Energy.Active.Import.Register",
+                    "unit": "Wh",
+                    "value": register,
+                },
+                {
+                    "context": "Sample.Periodic",
+                    "location": "Outlet",
+                    "measurand": "Power.Active.Import",
+                    "unit": "W",
+                    "value": "37973",
+                },
+            ],
+        }
+    ]
+
+
+def _published_values(producer: AsyncMock) -> list[str]:
+    envelope = events_pb2.EventEnvelope()
+    envelope.ParseFromString(producer.publish.await_args.kwargs["value"])
+    return [sv.value for sv in envelope.cp_meter.sampled_values]
+
+
+@pytest.mark.asyncio
+async def test_forwards_lifetime_register_above_100_mwh(fake_cp: Any) -> None:
+    """A DC charger's 138 MWh lifetime register reaches the backend."""
+    fake_producer = AsyncMock()
+    fake_cp.event_producer = fake_producer
+
+    await meter_values.handle(
+        fake_cp, connector_id=2, transaction_id=5033, meter_value=_dc_frame("138921890")
+    )
+
+    assert _published_values(fake_producer) == ["138921890", "37973"]
+
+
+@pytest.mark.asyncio
+async def test_drops_register_jump_within_transaction(fake_cp: Any) -> None:
+    """A register sample far from the transaction's readings is dropped,
+    counted as `register_jump`, and the rest of the frame is kept."""
+    from eveys_ocpp.metrics import registry as metrics_registry
+
+    fake_producer = AsyncMock()
+    fake_cp.event_producer = fake_producer
+    counter = metrics_registry.METER_VALUE_QUARANTINED_TOTAL.labels(
+        measurand="Energy.Active.Import.Register", reason="register_jump"
+    )
+    before = counter._value.get()
+
+    await meter_values.handle(
+        fake_cp, connector_id=2, transaction_id=5033, meter_value=_dc_frame("138921703")
+    )
+    await meter_values.handle(
+        fake_cp, connector_id=2, transaction_id=5033, meter_value=_dc_frame("4294967295")
+    )
+
+    assert counter._value.get() == before + 1
+    assert _published_values(fake_producer) == ["37973"]
+
+    await meter_values.handle(
+        fake_cp, connector_id=2, transaction_id=5033, meter_value=_dc_frame("138921890")
+    )
+    assert _published_values(fake_producer) == ["138921890", "37973"]
+
+
+@pytest.mark.asyncio
+async def test_register_check_starts_over_on_next_transaction(fake_cp: Any) -> None:
+    fake_producer = AsyncMock()
+    fake_cp.event_producer = fake_producer
+
+    await meter_values.handle(
+        fake_cp, connector_id=1, transaction_id=1, meter_value=_dc_frame("1000000")
+    )
+    await meter_values.handle(
+        fake_cp, connector_id=1, transaction_id=2, meter_value=_dc_frame("177038500")
+    )
+
+    assert _published_values(fake_producer) == ["177038500", "37973"]
