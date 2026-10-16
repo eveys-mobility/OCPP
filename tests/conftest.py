@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from eveys_ocpp.handlers.v16._meter_sanity import RegisterJumpGuard
 from eveys_ocpp.settings import Settings
 
 
@@ -159,4 +160,7 @@ def fake_cp(settings: Settings, fake_session_factory: Any) -> MagicMock:
     # carries that. Tests that exercise 2.0.1-specific paths set
     # this attribute explicitly.
     cp.ocpp_version = "ocpp1.6"
+    # Real per-connection register memory; a MagicMock here would
+    # answer every MeterValues check with a truthy mock verdict.
+    cp.meter_register_guard = RegisterJumpGuard()
     return cp
