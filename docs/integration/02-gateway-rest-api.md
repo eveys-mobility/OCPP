@@ -789,13 +789,35 @@ Probe.
   "components": {
     "postgres": "ok",
     "redis": "ok",
-    "kafka": "ok",
-    "clickhouse": "ok"
-  }
+    "clickhouse": "ok",
+    "clickhouse_error_class": null,
+    "ingestor": "ok",
+    "ingestor_error_class": null
+  },
+  "archive": {
+    "state": "ok",
+    "reason": null,
+    "consumer_lag_messages": 11,
+    "last_successful_commit_at": "2026-10-16T15:20:04.512000+00:00",
+    "observed_at": "2026-10-16T15:20:04.512000+00:00"
+  },
+  "request_id": "<uuid>"
 }
 ```
 
-When a downstream component is degraded, `components.<name>` becomes `degraded` or `unavailable` and the top-level `status` becomes `degraded`. HTTP status remains `200`; the backend's monitoring should alert on `status != "ok"`.
+When a downstream component is degraded, `components.<name>` leaves `ok` and the top-level `status` becomes `degraded`. HTTP status remains `200`; the backend's monitoring should alert on `status != "ok"`.
+
+`components.ingestor` comes from the ClickHouse ingestor's Kafka consumer group, sampled in the background every `EVEYS_OCPP_HEALTH_INGESTOR_PROBE_INTERVAL_SECONDS` (the request never waits on Kafka). The ingestor commits only after its INSERT succeeded, so the group lag is what has been published but not archived yet:
+
+| value | meaning |
+|---|---|
+| `ok` | lag within `EVEYS_OCPP_HEALTH_INGESTOR_LAG_THRESHOLD_MESSAGES` and commits moving |
+| `lagging` | total lag above the threshold |
+| `stalled` | a partition has pending messages and its committed offset has not moved for `EVEYS_OCPP_HEALTH_INGESTOR_STALL_SECONDS` |
+| `unknown` | no sample from the last three intervals (broker unreachable, gateway just started) |
+| `unconfigured` | probe disabled with `EVEYS_OCPP_HEALTH_INGESTOR_PROBE_ENABLED=false`; does not degrade `status` |
+
+`archive.last_successful_commit_at` is the sample time at which the gateway first saw the committed offset move (null until it has seen one since start). `tx.stopped` is not archived to ClickHouse and is not part of the lag; Postgres `transactions` is the durable Stop record.
 
 ---
 
@@ -815,7 +837,7 @@ When draining (SIGTERM received, drain mechanism engaged):
 
 Auth-exempt — the load balancer's readiness probe doesn't carry a bearer token. Used by Kubernetes / Envoy / any LB that respects HTTP readiness probes: a 503 here removes the pod from the rotation pool before the process actually exits, so chargers don't get connection refusals during rolling deploys.
 
-`/health` reports component liveness (Postgres, Redis); `/ready` reports willingness to accept new connections. Monitor both.
+`/health` reports component liveness (Postgres, Redis, ClickHouse) and archive progress; `/ready` reports willingness to accept new connections and ignores the archive. Monitor both.
 
 ---
 

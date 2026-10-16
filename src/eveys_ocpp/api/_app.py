@@ -224,6 +224,10 @@ def make_app(
 
         app.include_router(sse.router, prefix="/api/v1")
     app.state.sse_bus = None
+    # Background sampler of the ClickHouse ingestor's Kafka lag, read by
+    # `/api/v1/health`. Owned by transport/rest_server.py like the SSE
+    # bus; None reports the ingestor as `unconfigured`.
+    app.state.ingestor_probe = None
 
     return app
 

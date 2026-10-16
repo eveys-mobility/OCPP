@@ -1443,6 +1443,78 @@ class Settings(BaseSettings):
             "stability": "tunable",
         },
     )
+    health_ingestor_probe_enabled: bool = Field(
+        default=True,
+        description=(
+            "Sample the ingestor's Kafka consumer-group lag in the "
+            "background and report it as `components.ingestor` on "
+            "`/api/v1/health`. Read-only: the gateway never joins the "
+            "ingestor's group or commits for it."
+        ),
+        json_schema_extra={
+            "category": "clickhouse_ingest",
+            "impact": (
+                "False reports the ingestor as `unconfigured`, which does "
+                "not degrade overall health. Only for deployments that run "
+                "without the ingestor."
+            ),
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+    health_ingestor_probe_interval_seconds: float = Field(
+        default=10.0,
+        ge=1.0,
+        le=300.0,
+        description="How often the gateway samples the ingestor's consumer-group lag.",
+        json_schema_extra={
+            "category": "clickhouse_ingest",
+            "impact": (
+                "Each sample is four small broker requests. A sample older "
+                "than three intervals is reported as `unknown`."
+            ),
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+    health_ingestor_lag_threshold_messages: int = Field(
+        default=1000,
+        ge=1,
+        description=(
+            "Total unarchived messages across the ingested topics above "
+            "which the ingestor is reported as `lagging`."
+        ),
+        json_schema_extra={
+            "category": "clickhouse_ingest",
+            "impact": (
+                "Must stay above the normal in-flight batch "
+                "(`EVEYS_OCPP_CLICKHOUSE_INGESTOR_BATCH_SIZE`), or a healthy ingestor "
+                "flaps to `lagging` under load."
+            ),
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+    health_ingestor_stall_seconds: float = Field(
+        default=60.0,
+        ge=10.0,
+        le=3600.0,
+        description=(
+            "A partition with pending messages whose committed offset has "
+            "not moved for this long marks the ingestor as `stalled`."
+        ),
+        json_schema_extra={
+            "category": "clickhouse_ingest",
+            "impact": (
+                "Must stay well above "
+                "`EVEYS_OCPP_CLICKHOUSE_INGESTOR_BATCH_MAX_SECONDS`. "
+                "Lower → a dead ingestor shows sooner; higher → tolerates "
+                "longer ClickHouse INSERT retries before reporting."
+            ),
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
 
     # ---- Backend integration (ADR-0023, E3-2..E3-6) ---------------------
     backend_base_url: str = Field(

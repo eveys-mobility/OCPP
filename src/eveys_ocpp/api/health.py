@@ -8,10 +8,11 @@ Component checks:
 - `postgres` — `SELECT 1` against the gateway's pool.
 - `redis` — `PING` via the registry's client (when wired).
 - `clickhouse` — bounded `SELECT 1` through the archive read client.
+- `ingestor` — last background sample of the ingestor's Kafka
+  consumer-group lag (`eveys_ocpp.clickhouse.progress`). The request
+  never waits on Kafka; `unknown` means no fresh sample.
 
 This observation probe does not alter `/ready` or WS liveness.
-Kafka delivery and ingestor progress are not verified by this process;
-they are explicitly unknown and keep overall health degraded.
 
 This endpoint is exempt from auth (see `_auth._AUTH_BYPASS_PATHS`)
 so the operator's load balancer can dial it regardless of token
@@ -21,6 +22,7 @@ configuration.
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, Request
@@ -30,7 +32,7 @@ from eveys_ocpp.api._schemas import HealthResponse
 from eveys_ocpp.observability import get_logger
 
 if TYPE_CHECKING:
-    pass
+    from eveys_ocpp.clickhouse.progress import IngestorProgressProbe
 
 log = get_logger(__name__)
 
@@ -58,7 +60,9 @@ async def health(request: Request) -> dict[str, object]:
     ch_status, ch_error = await _probe_clickhouse(request)
     components["clickhouse"] = ch_status
     components["clickhouse_error_class"] = ch_error
-    components["ingestor"] = "unknown"
+    ingestor, ingestor_error, archive = _observe_ingestor(request)
+    components["ingestor"] = ingestor
+    components["ingestor_error_class"] = ingestor_error
 
     overall = (
         "ok"
@@ -73,14 +77,42 @@ async def health(request: Request) -> dict[str, object]:
         "status": overall,
         "version": _gateway_version(),
         "components": components,
-        "archive": {
-            "state": "unknown",
-            "reason": "ingestor_progress_not_observed",
-            "consumer_lag_messages": None,
-            "last_successful_commit_at": None,
-        },
+        "archive": archive,
         "request_id": request.state.request_id,
     }
+
+
+def _observe_ingestor(request: Request) -> tuple[str, str | None, dict[str, object]]:
+    """Read the background sample; never touches Kafka in the request."""
+    probe: IngestorProgressProbe | None = getattr(request.app.state, "ingestor_probe", None)
+    if probe is None:
+        return (
+            "unconfigured",
+            None,
+            {
+                "state": "unknown",
+                "reason": "ingestor_progress_not_observed",
+                "consumer_lag_messages": None,
+                "last_successful_commit_at": None,
+                "observed_at": None,
+            },
+        )
+    progress = probe.snapshot()
+    return (
+        progress.state,
+        progress.error_class,
+        {
+            "state": progress.state,
+            "reason": progress.reason,
+            "consumer_lag_messages": progress.lag_messages,
+            "last_successful_commit_at": _iso(progress.last_commit_at),
+            "observed_at": _iso(progress.observed_at),
+        },
+    )
+
+
+def _iso(value: datetime | None) -> str | None:
+    return None if value is None else value.isoformat()
 
 
 async def _probe_clickhouse(request: Request) -> tuple[str, str | None]:
