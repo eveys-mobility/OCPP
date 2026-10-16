@@ -77,25 +77,54 @@ class HealthComponents(BaseModel):
         description="Archive read probe; does not verify ingestion progress."
     )
     clickhouse_error_class: str | None = Field(default=None, description="Exception class only.")
-    ingestor: Literal["unknown"] = Field(
-        description="The gateway does not observe sidecar progress."
+    ingestor: Literal["ok", "lagging", "stalled", "unknown", "unconfigured"] = Field(
+        description=(
+            "ClickHouse ingestor progress from its Kafka consumer-group lag, "
+            "sampled in the background. `lagging`: total lag above the "
+            "threshold. `stalled`: pending messages and no committed-offset "
+            "movement within the stall window. `unknown`: no fresh sample. "
+            "`unconfigured`: probe disabled."
+        )
+    )
+    ingestor_error_class: str | None = Field(
+        default=None, description="Exception class of the last failed sample only."
     )
 
 
 class ArchiveObservation(BaseModel):
     """Archive delivery is separate from a successful ClickHouse read probe."""
 
-    state: Literal["unknown"]
-    reason: Literal["ingestor_progress_not_observed"]
-    consumer_lag_messages: int | None = Field(default=None)
-    last_successful_commit_at: str | None = Field(default=None)
+    state: Literal["ok", "lagging", "stalled", "unknown"]
+    reason: (
+        Literal[
+            "ingestor_progress_not_observed",
+            "consumer_lag_above_threshold",
+            "consumer_commits_stalled",
+        ]
+        | None
+    ) = Field(default=None, description="Null when `state` is `ok`.")
+    consumer_lag_messages: int | None = Field(
+        default=None,
+        description="Published but not yet committed by the ingestor, summed over its topics.",
+    )
+    last_successful_commit_at: str | None = Field(
+        default=None,
+        description=(
+            "Sample time at which the gateway first saw the ingestor's "
+            "committed offset move; the commit happened in the preceding "
+            "sample interval. Null until this gateway process sees one."
+        ),
+    )
+    observed_at: str | None = Field(
+        default=None, description="Time of the sample the other fields come from."
+    )
 
 
 class HealthResponse(BaseModel):
     """`GET /api/v1/health`. Liveness + per-component probe."""
 
     status: str = Field(
-        description="`degraded` when a component fails or archive progress is unknown."
+        description="`degraded` when a component fails or archive progress is not ok."
     )
     version: str = Field(description="Gateway package version string.")
     components: HealthComponents
@@ -105,20 +134,22 @@ class HealthResponse(BaseModel):
     model_config = {
         "json_schema_extra": {
             "example": {
-                "status": "degraded",
+                "status": "ok",
                 "version": "0.1.0",
                 "components": {
                     "postgres": "ok",
                     "redis": "ok",
                     "clickhouse": "ok",
                     "clickhouse_error_class": None,
-                    "ingestor": "unknown",
+                    "ingestor": "ok",
+                    "ingestor_error_class": None,
                 },
                 "archive": {
-                    "state": "unknown",
-                    "reason": "ingestor_progress_not_observed",
-                    "consumer_lag_messages": None,
-                    "last_successful_commit_at": None,
+                    "state": "ok",
+                    "reason": None,
+                    "consumer_lag_messages": 11,
+                    "last_successful_commit_at": "2026-10-16T15:20:04.512000+00:00",
+                    "observed_at": "2026-10-16T15:20:04.512000+00:00",
                 },
                 "request_id": "9b3c5d18-1f7c-4b6a-8e0e-5b9a3c4f2e10",
             }

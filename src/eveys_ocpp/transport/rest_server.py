@@ -80,6 +80,15 @@ async def serve_forever(
         sse_bus = SseBus(settings)
         await sse_bus.start()
         app.state.sse_bus = sse_bus
+    # Ingestor progress for `/api/v1/health`. Starting only spawns the
+    # sampling task, so an unreachable broker cannot block boot.
+    ingestor_probe = None
+    if settings.health_ingestor_probe_enabled:
+        from eveys_ocpp.clickhouse.progress import IngestorProgressProbe
+
+        ingestor_probe = IngestorProgressProbe(settings)
+        await ingestor_probe.start()
+        app.state.ingestor_probe = ingestor_probe
     config = uvicorn.Config(
         app,
         host=settings.rest_host,
@@ -108,6 +117,8 @@ async def serve_forever(
     try:
         await server.serve()
     finally:
+        if ingestor_probe is not None:
+            await ingestor_probe.stop()
         if sse_bus is not None:
             await sse_bus.stop()
         log.info("rest_server.stop")

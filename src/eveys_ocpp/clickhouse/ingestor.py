@@ -53,6 +53,7 @@ from aiokafka.abc import ConsumerRebalanceListener
 from asynch import Connection
 
 from eveys_ocpp._generated.events.v1 import events_pb2
+from eveys_ocpp.clickhouse.progress import ingested_topics
 from eveys_ocpp.metrics import registry as metrics_registry
 from eveys_ocpp.metrics.server import MetricsServer
 from eveys_ocpp.observability import bind_contextvars, configure_logging, get_logger
@@ -357,14 +358,7 @@ class ClickHouseIngestor:
     async def start(self) -> None:
         self._shutdown.clear()
         self._acknowledged_offsets.clear()
-        topics = (
-            self._settings.kafka_topic_cp_meter,
-            self._settings.kafka_topic_cp_status,
-            self._settings.kafka_topic_cp_boot,
-            self._settings.kafka_topic_tx_started,
-            self._settings.kafka_topic_cp_offline_duration,
-            self._settings.kafka_topic_cp_ocpp_frames,
-        )
+        topics = ingested_topics(self._settings)
         consumer = AIOKafkaConsumer(
             bootstrap_servers=self._settings.kafka_brokers,
             group_id=self._settings.clickhouse_ingestor_group,
