@@ -449,6 +449,13 @@ def _post_boot_keys(cp: EveysChargePoint) -> list[tuple[str, str]]:
             ),
         ),
         (
+            "StopTransactionOnEVSideDisconnect",
+            _b(
+                "ocpp_cfg_stop_transaction_on_ev_side_disconnect",
+                settings.ocpp_cfg_stop_transaction_on_ev_side_disconnect,
+            ),
+        ),
+        (
             "WebSocketPingInterval",
             _i(
                 "ocpp_cfg_websocket_ping_interval_seconds",

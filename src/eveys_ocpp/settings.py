@@ -1144,6 +1144,24 @@ class Settings(BaseSettings):
             "stability": "tunable",
         },
     )
+    ocpp_cfg_stop_transaction_on_ev_side_disconnect: bool = Field(
+        default=True,
+        description=(
+            "OCPP `StopTransactionOnEVSideDisconnect` — whether the charger "
+            "ends the transaction when the cable is unplugged from the EV. "
+            "With true the charger sends StopTransaction (reason "
+            "EVDisconnected) itself and queues it while offline."
+        ),
+        json_schema_extra={
+            "category": "ocpp_defaults",
+            "impact": (
+                "False leaves the transaction open after unplug (connector "
+                "goes SuspendedEV) until a RemoteStop or local stop."
+            ),
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
     ocpp_cfg_websocket_ping_interval_seconds: int = Field(
         default=30,
         ge=5,
