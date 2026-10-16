@@ -317,6 +317,11 @@ _ALLOWLIST: dict[str, _AllowlistEntry] = {
         coerce=_coerce_int_in_range(1, 3600, "ocpp_cfg_transaction_message_retry_interval_seconds"),
         description="TransactionMessageRetryInterval (seconds) pushed after boot.",
     ),
+    "ocpp_cfg_stop_transaction_on_ev_side_disconnect": _AllowlistEntry(
+        name="ocpp_cfg_stop_transaction_on_ev_side_disconnect",
+        coerce=_coerce_bool,
+        description="StopTransactionOnEVSideDisconnect pushed after boot.",
+    ),
     "ocpp_cfg_websocket_ping_interval_seconds": _AllowlistEntry(
         name="ocpp_cfg_websocket_ping_interval_seconds",
         coerce=_coerce_int_in_range(5, 3600, "ocpp_cfg_websocket_ping_interval_seconds"),

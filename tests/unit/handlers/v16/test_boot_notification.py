@@ -518,6 +518,9 @@ async def test_meter_value_sample_interval_pushed_after_accepted_boot(
     assert pushed["ISO15118PnCEnabled"] == "false"
     assert pushed["PlugandChargeMode"] == "0"
     assert pushed["ContractValidationOffline"] == "true"
+    # Unplugging at the car ends the transaction on the charger, which
+    # then delivers StopTransaction from its own queue.
+    assert pushed["StopTransactionOnEVSideDisconnect"] == "true"
 
 
 @pytest.mark.asyncio
