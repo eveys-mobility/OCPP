@@ -1162,6 +1162,41 @@ class Settings(BaseSettings):
             "stability": "tunable",
         },
     )
+    ocpp_cfg_stop_transaction_on_invalid_id: bool = Field(
+        default=True,
+        description=(
+            "OCPP `StopTransactionOnInvalidId` — whether the charger stops a "
+            "running transaction when the StartTransaction reply carries an "
+            "idTagInfo status other than Accepted (for example a session it "
+            "started offline for a tag the CSMS then refuses)."
+        ),
+        json_schema_extra={
+            "category": "ocpp_defaults",
+            "impact": (
+                "False lets the charger keep delivering energy for a tag the "
+                "CSMS refused; such a session cannot be billed."
+            ),
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
+    ocpp_cfg_allow_offline_tx_for_unknown_id: bool = Field(
+        default=False,
+        description=(
+            "OCPP `AllowOfflineTxForUnknownId` — whether a charger that is "
+            "offline starts a transaction for an idTag it cannot check "
+            "locally."
+        ),
+        json_schema_extra={
+            "category": "ocpp_defaults",
+            "impact": (
+                "True lets unknown cards charge during an outage; the CSMS "
+                "may refuse the tag once the StartTransaction is delivered."
+            ),
+            "secret": False,
+            "stability": "tunable",
+        },
+    )
     ocpp_cfg_websocket_ping_interval_seconds: int = Field(
         default=30,
         ge=5,

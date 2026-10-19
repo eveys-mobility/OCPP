@@ -290,14 +290,14 @@ async def _handle_inner(
         except Exception as exc:
             log.warning("boot_notification.publish_failed", error=str(exc))
 
-    # Push the full post-boot ChangeConfiguration matrix on every
-    # Accepted boot (eveys-mobility/OCPP#238). Fire-and-forget — we
-    # don't want the boot reply to wait on a charger that's slow to
-    # ack the ChangeConfiguration burst. The task sleeps briefly
-    # first to let the charger settle (some firmwares reject
-    # ChangeConfiguration during the boot handshake window) and then
-    # pushes each key with a small gap between CALLs so firmwares
-    # with serial CALL processing don't queue-drop the tail.
+    # Converge the post-boot configuration matrix on every Accepted
+    # boot (eveys-mobility/OCPP#238). Fire-and-forget — we don't want
+    # the boot reply to wait on a charger that's slow to answer. The
+    # task sleeps briefly first to let the charger settle (some
+    # firmwares reject commands during the boot handshake window),
+    # reads the keys with one GetConfiguration and then pushes each
+    # differing key with a small gap between CALLs so firmwares with
+    # serial CALL processing don't queue-drop the tail.
     if status == RegistrationStatus.accepted:
         _schedule_post_boot_configuration_push(cp)
 
@@ -456,6 +456,20 @@ def _post_boot_keys(cp: EveysChargePoint) -> list[tuple[str, str]]:
             ),
         ),
         (
+            "StopTransactionOnInvalidId",
+            _b(
+                "ocpp_cfg_stop_transaction_on_invalid_id",
+                settings.ocpp_cfg_stop_transaction_on_invalid_id,
+            ),
+        ),
+        (
+            "AllowOfflineTxForUnknownId",
+            _b(
+                "ocpp_cfg_allow_offline_tx_for_unknown_id",
+                settings.ocpp_cfg_allow_offline_tx_for_unknown_id,
+            ),
+        ),
+        (
             "WebSocketPingInterval",
             _i(
                 "ocpp_cfg_websocket_ping_interval_seconds",
@@ -501,11 +515,75 @@ def _schedule_post_boot_configuration_push(cp: EveysChargePoint) -> None:
     cp._meter_value_push_task = task
 
 
+async def _read_configuration(
+    cp: EveysChargePoint, keys: list[str]
+) -> tuple[dict[str, tuple[str | None, bool]], set[str]] | None:
+    """GetConfiguration for the wanted keys. Returns the reported
+    ``{key: (value, readonly)}`` and the unknown keys, both with
+    case-folded names (OCPP keys are CiString), or None when the charger
+    gave no usable answer."""
+    try:
+        response = await cp.call(call.GetConfiguration(key=keys))
+    except Exception as exc:
+        log.warning(
+            "boot_notification.get_configuration.failed",
+            cp_id=cp.id,
+            error=str(exc) or type(exc).__name__,
+        )
+        return None
+    # The library returns None for a CALLERROR (`call(..., suppress=True)`).
+    reported = getattr(response, "configuration_key", None)
+    unknown = getattr(response, "unknown_key", None) or []
+    if not isinstance(reported, list) or not isinstance(unknown, list):
+        log.warning(
+            "boot_notification.get_configuration.failed", cp_id=cp.id, error="no usable reply"
+        )
+        return None
+    values = {
+        item["key"].casefold(): (item.get("value"), bool(item.get("readonly", False)))
+        for item in reported
+        if isinstance(item, dict) and isinstance(item.get("key"), str)
+    }
+    return values, {str(key).casefold() for key in unknown}
+
+
+async def _pairs_to_write(
+    cp: EveysChargePoint, pairs: list[tuple[str, str]]
+) -> list[tuple[str, str]]:
+    """Read the wanted keys first and keep only the pairs worth writing:
+    the value differs (or was not reported), and the key is neither
+    readonly nor unknown. If the read fails, write every pair."""
+    read = await _read_configuration(cp, [key for key, _ in pairs])
+    if read is None:
+        return pairs
+    values, unknown = read
+    write: list[tuple[str, str]] = []
+    skipped_unknown = skipped_readonly = 0
+    for key, value in pairs:
+        reported = values.get(key.casefold())
+        if key.casefold() in unknown:
+            skipped_unknown += 1
+        elif reported is not None and reported[1]:
+            skipped_readonly += 1
+        elif reported is None or (reported[0] or "").strip().casefold() != value.casefold():
+            write.append((key, value))
+    log.info(
+        "boot_notification.change_configuration.planned",
+        cp_id=cp.id,
+        read=len(values),
+        differing=len(write),
+        skipped_unknown=skipped_unknown,
+        skipped_readonly=skipped_readonly,
+    )
+    return write
+
+
 async def _push_post_boot_configuration(cp: EveysChargePoint) -> None:
-    """Wait briefly, then push every configured key with
-    ChangeConfiguration. Failure of any single CALL is logged and the
-    loop moves on — the operator can fix the value via the
-    `/api/v1/admin/config` PATCH and the next boot retries.
+    """Wait briefly, read the configured keys with one GetConfiguration,
+    then push each key whose value differs with ChangeConfiguration
+    (every key when the read fails). Failure of any single CALL is
+    logged and the loop moves on — the operator can fix the value via
+    the `/api/v1/admin/config` PATCH and the next boot retries.
 
     Failure modes (all logged at WARN, none re-raised):
     - Charger has disconnected by the time we wake up → first CALL
@@ -529,6 +607,9 @@ async def _push_post_boot_configuration(cp: EveysChargePoint) -> None:
         log.info("boot_notification.change_configuration.push_skipped", cp_id=cp.id)
         return
 
+    pairs = await _pairs_to_write(cp, pairs)
+    if pairs:
+        await asyncio.sleep(_POST_BOOT_INTER_CALL_GAP_SECONDS)
     for idx, (key, value) in enumerate(pairs):
         try:
             request = call.ChangeConfiguration(key=key, value=value)
