@@ -9,9 +9,9 @@ Both mutations are O(1) and synchronous (single-threaded asyncio
 process — no lock needed). Lookups are O(1) too.
 
 If a charger reconnects (network blip), the new connection inserts
-itself; the disconnected old connection's `finally` block sees it's
-no longer the registered owner and skips removal — same compare-
-and-delete pattern as the Redis registry.
+itself and the caller closes the replaced socket; the old connection's
+`finally` block sees it's no longer the registered owner and skips
+removal — same compare-and-delete pattern as the Redis registry.
 """
 
 from __future__ import annotations
@@ -32,17 +32,19 @@ class ConnectionMap:
     def __init__(self) -> None:
         self._map: dict[str, EveysChargePoint] = {}
 
-    def add(self, cp: EveysChargePoint) -> None:
+    def add(self, cp: EveysChargePoint) -> EveysChargePoint | None:
         """Register `cp` as the active connection for its `cp_id`.
 
         If a connection for the same `cp_id` already exists, it is
-        replaced (the old one's WS is presumably half-dead or about
-        to close).
+        replaced and returned, so the caller can close its socket (the
+        charger has moved to the new one).
         """
         existing = self._map.get(cp.id)
         self._map[cp.id] = cp
         if existing is not None and existing is not cp:
             log.warning("connections.replaced", cp_id=cp.id)
+            return existing
+        return None
 
     def remove(self, cp: EveysChargePoint) -> bool:
         """Remove `cp` iff it's still the registered owner.

@@ -10,39 +10,38 @@ decision.
 JSON Schemas: `ocpp.v16.schemas.StartTransaction` and `StartTransactionResponse`.
 
 Behavior:
-1. Reject `INVALID*` id_tags up front (mock — same policy as authorize.py).
-2. Resolve the charger's surrogate PK. Charger MUST be known (have sent
-   BootNotification at some point). If unknown, reply with `ConcurrentTx`
-   rather than auto-creating — silent auto-create would mask BootNotification
+1. Resolve the charger's surrogate PK. Charger MUST be known (have sent
+   BootNotification at some point). If unknown, reply `Invalid` rather
+   than auto-creating — silent auto-create would mask BootNotification
    bugs.
-3. A repeated StartTransaction (same connector, idTag, meterStart and
+2. A repeated StartTransaction (same connector, idTag, meterStart and
    timestamp) is a charger retry: reply with the transactionId of the
    first one, Accepted while it is open and Invalid once it was stopped,
    without a new row, admission request or event. A Start refused at
    admission is not matched, so its retry gets a fresh admission.
    Otherwise insert a transaction row; surrogate `id` doubles as
    `transaction_id`.
-4. Require a fresh backend `POST /api/eveys/sessions/open` decision.
+3. Require a fresh backend `POST /api/eveys/sessions/open` decision.
    No backend or an unavailable backend returns `Invalid`. A cached
    Authorize hint never substitutes for admission of a new physical ID.
    In the same DB transaction, close rejected audit rows using the server
    receive timestamp and `DeAuthorized`, without inventing a charger Stop.
-5. After commit, publish `tx.started` only for an accepted admission.
+4. After commit, publish `tx.started` only for an accepted admission.
    Best-effort — publish
    failure is logged and dropped, never raised, since the OCPP reply is
    already on its way back.
-6. Reply with the resolved status + assigned `transaction_id`.
+5. Reply with the resolved status + assigned `transaction_id`.
 
 The publish-after-commit ordering is intentional: only events for
 durably-recorded transactions are emitted. We don't emit on the
-INVALID id_tag or unknown-charger branches.
+unknown-charger branch.
 
 Deviations from the OCA spec to verify before W2 / OCTT
 (see `docs/08-ocpp-conformance.md`):
-- "Unknown charger → ConcurrentTx" is our policy choice. The spec doesn't
+- "Unknown charger → Invalid" is our policy choice. The spec doesn't
   prescribe a status for this case (the spec assumes the charger is known
-  by the time it sends StartTransaction). The chosen status surfaces the
-  problem to the charger logs without our needing a new status code.
+  by the time it sends StartTransaction); Invalid refuses the session
+  without claiming another transaction is running.
 - No `reservationId` honoring yet.
 """
 
@@ -147,12 +146,6 @@ async def _start_inner(
     meter_start: int,
     timestamp: str,
 ) -> call_result.StartTransaction:
-    if id_tag.upper().startswith("INVALID"):
-        return call_result.StartTransaction(
-            transaction_id=0,
-            id_tag_info=IdTagInfo(status=AuthorizationStatus.invalid),
-        )
-
     reported_at = datetime.fromisoformat(timestamp)
 
     async with session_scope(cp.session_factory) as session:
@@ -161,7 +154,7 @@ async def _start_inner(
             log.warning("start_transaction.unknown_charger")
             return call_result.StartTransaction(
                 transaction_id=0,
-                id_tag_info=IdTagInfo(status=AuthorizationStatus.concurrent_tx),
+                id_tag_info=IdTagInfo(status=AuthorizationStatus.invalid),
             )
 
         repeated = await find_repeated_start(

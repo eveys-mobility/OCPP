@@ -96,5 +96,25 @@ class IdempotencyCache:
             metrics_registry.IDEMPOTENCY_LOOKUPS_TOTAL.labels(outcome="miss").inc()
         return already_seen
 
+    async def record_result(self, *, cp_id: str, message_id: str, result: str) -> None:
+        """Store the reply decided for a first sighting under its key, so
+        a replay can answer the same. Only overwrites a live key."""
+        await self._redis.set(
+            _key(cp_id, message_id),
+            result,
+            ex=self._settings.idempotency_ttl_seconds,
+            xx=True,
+        )
+
+    async def get_result(self, *, cp_id: str, message_id: str) -> str | None:
+        """Return the stored reply, or None while the first sighting has
+        not stored one yet."""
+        value = await self._redis.get(_key(cp_id, message_id))
+        if isinstance(value, bytes):
+            value = value.decode()
+        if not isinstance(value, str) or value == "1":
+            return None
+        return value
+
 
 __all__ = ["IdempotencyCache"]

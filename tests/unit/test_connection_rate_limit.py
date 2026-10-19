@@ -130,3 +130,53 @@ async def test_route_message_increments_counter_on_throttle(
 
     super_route.assert_not_awaited()
     assert counter._value.get() == before + 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "action,payload",
+    [
+        (
+            "StartTransaction",
+            {"connectorId": 1, "idTag": "T", "meterStart": 0, "timestamp": "2026-10-19T09:00:00Z"},
+        ),
+        (
+            "StopTransaction",
+            {"transactionId": 7, "meterStop": 10, "timestamp": "2026-10-19T10:00:00Z"},
+        ),
+        ("MeterValues", {"connectorId": 1, "transactionId": 7, "meterValue": []}),
+    ],
+)
+async def test_route_message_never_drops_transaction_messages(
+    monkeypatch: pytest.MonkeyPatch, action: str, payload: dict[str, object]
+) -> None:
+    """A dropped transaction message gets no reply, so the charger keeps
+    re-sending it and the session data is late or lost. Answer them."""
+    limiter = AsyncMock()
+    limiter.check = AsyncMock(return_value=False)
+    limiter.record_throttled = AsyncMock()
+    cp = _make_cp(rate_limiter=limiter)
+    super_route = AsyncMock()
+    monkeypatch.setattr("ocpp.v16.ChargePoint.route_message", super_route, raising=True)
+
+    await cp.route_message(json.dumps([2, "msg-1", action, payload]))
+
+    super_route.assert_awaited_once()
+    limiter.record_throttled.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_route_message_still_throttles_meter_values_without_a_transaction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    limiter = AsyncMock()
+    limiter.check = AsyncMock(return_value=False)
+    limiter.record_throttled = AsyncMock()
+    cp = _make_cp(rate_limiter=limiter)
+    super_route = AsyncMock()
+    monkeypatch.setattr("ocpp.v16.ChargePoint.route_message", super_route, raising=True)
+
+    await cp.route_message(json.dumps([2, "msg-1", "MeterValues", {"connectorId": 0}]))
+
+    super_route.assert_not_awaited()
+    limiter.record_throttled.assert_awaited_once_with(action="MeterValues")

@@ -76,12 +76,15 @@ async def test_assigns_transaction_id(fake_cp: Any, monkeypatch: pytest.MonkeyPa
 
 
 @pytest.mark.asyncio
-async def test_rejects_invalid_tag_without_db_write(
+async def test_tag_named_invalid_is_admitted_by_the_backend_like_any_other(
     fake_cp: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    insert = AsyncMock()
+    """No test-only shortcut on the idTag text: the backend decides."""
+    insert = AsyncMock(return_value=999)
     monkeypatch.setattr(start_transaction, "get_charge_point_pk", AsyncMock(return_value=42))
     monkeypatch.setattr(start_transaction, "insert_transaction", insert)
+    fake_cp.backend_client = AsyncMock()
+    fake_cp.backend_client.open_session = AsyncMock(return_value=_session_open_result())
 
     result = await start_transaction.handle(
         fake_cp,
@@ -91,13 +94,14 @@ async def test_rejects_invalid_tag_without_db_write(
         timestamp="2026-04-29T00:00:00+00:00",
     )
 
-    assert result.transaction_id == 0
-    assert result.id_tag_info.status == AuthorizationStatus.invalid
-    insert.assert_not_called()
+    assert result.transaction_id == 999
+    assert result.id_tag_info.status == AuthorizationStatus.accepted
+    insert.assert_awaited_once()
+    fake_cp.backend_client.open_session.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_unknown_charger_is_rejected_concurrent_tx(
+async def test_unknown_charger_is_answered_invalid(
     fake_cp: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(start_transaction, "get_charge_point_pk", AsyncMock(return_value=None))
@@ -113,7 +117,7 @@ async def test_unknown_charger_is_rejected_concurrent_tx(
     )
 
     assert result.transaction_id == 0
-    assert result.id_tag_info.status == AuthorizationStatus.concurrent_tx
+    assert result.id_tag_info.status == AuthorizationStatus.invalid
     insert.assert_not_called()
 
 
@@ -153,23 +157,6 @@ async def test_publishes_to_tx_started_topic_when_producer_attached(
     assert envelope.tx_started.id_tag == "VALID_RFID_001"
     assert envelope.tx_started.meter_start_wh == 12345
     assert envelope.tx_started.charger_reported_at == "2026-04-29T00:00:00+00:00"
-
-
-@pytest.mark.asyncio
-async def test_no_publish_on_invalid_tag(fake_cp: Any, monkeypatch: pytest.MonkeyPatch) -> None:
-    """INVALID id_tag returns early — no transaction recorded → no event."""
-    fake_producer = AsyncMock()
-    fake_cp.event_producer = fake_producer
-
-    await start_transaction.handle(
-        fake_cp,
-        connector_id=1,
-        id_tag="INVALID_TAG",
-        meter_start=0,
-        timestamp="2026-04-29T00:00:00+00:00",
-    )
-
-    fake_producer.publish.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -347,30 +334,6 @@ async def test_keeps_audit_and_rejects_when_backend_unavailable(
     assert result.transaction_id == 999
     assert result.id_tag_info.status == AuthorizationStatus.invalid
     producer.publish.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_invalid_id_tag_does_not_call_backend(
-    fake_cp: Any, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The `INVALID*` early-reject branch must short-circuit before the
-    DB write AND before the backend call."""
-    insert = AsyncMock()
-    monkeypatch.setattr(start_transaction, "insert_transaction", insert)
-    fake_cp.backend_client = AsyncMock()
-    fake_cp.backend_client.open_session = AsyncMock()
-
-    result = await start_transaction.handle(
-        fake_cp,
-        connector_id=1,
-        id_tag="INVALID_RFID",
-        meter_start=0,
-        timestamp="2026-04-29T00:00:00+00:00",
-    )
-
-    assert result.id_tag_info.status == AuthorizationStatus.invalid
-    fake_cp.backend_client.open_session.assert_not_awaited()
-    insert.assert_not_awaited()
 
 
 @pytest.mark.asyncio

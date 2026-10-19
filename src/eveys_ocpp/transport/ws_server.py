@@ -320,7 +320,9 @@ async def _on_connect(
         is_pending=is_pending,
     )
     if connections is not None:
-        connections.add(cp)
+        replaced = connections.add(cp)
+        if replaced is not None:
+            _close_replaced(replaced)
     disconnect_reason = "clean"
     try:
         await cp.start()
@@ -336,10 +338,11 @@ async def _on_connect(
             # Connection ended before the grace deadline fired —
             # nothing to enforce, cancel the sleep.
             deadline_task.cancel()
-        if connections is not None:
-            connections.remove(cp)
+        # A connection that a reconnect replaced on this pod is no longer
+        # the charger's presence: leave the registry to the new one.
+        removed = connections.remove(cp) if connections is not None else True
         was_ours = False
-        if registry is not None:
+        if registry is not None and removed:
             # Compare-and-delete: only clear if we still own the key.
             # A reconnect to a different pod between disconnect and
             # this call must not clobber the new owner.
@@ -376,6 +379,24 @@ async def _on_connect(
             )
         log.info("ws.disconnected")
         clear_contextvars()
+
+
+_REPLACED_CLOSES: set[asyncio.Task[None]] = set()
+
+
+def _close_replaced(old: EveysChargePoint) -> None:
+    """Close the socket of a connection that a reconnect replaced, in the
+    background so the new connection is served at once."""
+
+    async def close() -> None:
+        try:
+            await old._connection.close(1000, "replaced by a new connection")
+        except Exception as exc:
+            log.warning("ws.replaced_close_failed", cp_id=old.id, error=str(exc))
+
+    task = asyncio.create_task(close(), name=f"ws-close-replaced-{old.id}")
+    _REPLACED_CLOSES.add(task)
+    task.add_done_callback(_REPLACED_CLOSES.discard)
 
 
 async def serve_forever(

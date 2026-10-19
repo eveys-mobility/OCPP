@@ -71,3 +71,15 @@ def test_add_logs_replacement_warning() -> None:
     new_cp = _fake_cp("CP_001")
     m.add(new_cp)
     assert m.get("CP_001") is new_cp
+
+
+def test_add_returns_the_connection_it_replaced() -> None:
+    """The caller closes the replaced socket instead of leaving two live
+    sockets for one charger."""
+    m = ConnectionMap()
+    old_cp = _fake_cp("CP_001")
+    new_cp = _fake_cp("CP_001")
+
+    assert m.add(old_cp) is None
+    assert m.add(new_cp) is old_cp
+    assert m.add(new_cp) is None

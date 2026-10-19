@@ -158,6 +158,7 @@ async def test_replay_skips_db_and_kafka(fake_cp: Any, monkeypatch: pytest.Monke
 
     fake_idem = AsyncMock()
     fake_idem.check_and_record = AsyncMock(return_value=True)  # replay
+    fake_idem.get_result = AsyncMock(return_value="Accepted:300")
     fake_cp.idempotency = fake_idem
     fake_producer = AsyncMock()
     fake_cp.event_producer = fake_producer
@@ -453,6 +454,7 @@ async def test_replay_does_not_call_backend(fake_cp: Any, monkeypatch: pytest.Mo
     monkeypatch.setattr(boot_notification, "upsert_charge_point_boot", upsert)
     fake_idem = AsyncMock()
     fake_idem.check_and_record = AsyncMock(return_value=True)  # replay
+    fake_idem.get_result = AsyncMock(return_value="Accepted:300")
     fake_cp.idempotency = fake_idem
     fake_cp.backend_client = AsyncMock()
     fake_cp.backend_client.register_charge_point = AsyncMock()
@@ -613,8 +615,10 @@ async def test_pending_boot_records_metadata_and_skips_postgres(
     )
 
     assert isinstance(result, call_result.BootNotification)
-    assert result.status == "Accepted"
-    assert result.interval == fake_cp.settings.heartbeat_interval_seconds
+    # Pending: the charger sends BootNotification again after `interval`
+    # and does nothing else until the operator decides.
+    assert result.status == "Pending"
+    assert result.interval == fake_cp.settings.pending_ws_ttl_seconds
     fake_cp.pending_store.record_boot.assert_awaited_once()
     kwargs = fake_cp.pending_store.record_boot.await_args.kwargs
     assert kwargs["cp_id"] == "TEST_CP_001"
@@ -956,3 +960,73 @@ def test_invalid_id_keys_follow_env_and_runtime_overrides(fake_cp: Any) -> None:
     finally:
         runtime_overrides.clear_override("ocpp_cfg_stop_transaction_on_invalid_id")
         runtime_overrides.clear_override("ocpp_cfg_allow_offline_tx_for_unknown_id")
+
+
+# ---------------------------------------------------------------------------
+# A replayed BootNotification gets the first decision back
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "stored,status,interval",
+    [
+        ("Rejected:60", "Rejected", 60),
+        ("Pending:120", "Pending", 120),
+        ("Accepted:300", "Accepted", 300),
+    ],
+)
+async def test_replay_returns_the_stored_decision(
+    fake_cp: Any, monkeypatch: pytest.MonkeyPatch, stored: str, status: str, interval: int
+) -> None:
+    monkeypatch.setattr(boot_notification, "upsert_charge_point_boot", AsyncMock())
+    fake_cp.idempotency = AsyncMock()
+    fake_cp.idempotency.check_and_record = AsyncMock(return_value=True)
+    fake_cp.idempotency.get_result = AsyncMock(return_value=stored)
+
+    result = await boot_notification.handle(fake_cp, message_id="MSG-R", charge_point_vendor="ACME")
+
+    assert (result.status, result.interval) == (status, interval)
+    fake_cp.idempotency.get_result.assert_awaited_once_with(cp_id="TEST_CP_001", message_id="MSG-R")
+    assert "_meter_value_push_task" not in fake_cp.__dict__
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stored", [None, "garbage", RuntimeError("redis down")])
+async def test_replay_without_a_stored_decision_is_pending(
+    fake_cp: Any, monkeypatch: pytest.MonkeyPatch, stored: Any
+) -> None:
+    """The first attempt is still being decided (or the decision is lost):
+    Pending makes the charger send a fresh BootNotification later."""
+    monkeypatch.setattr(boot_notification, "upsert_charge_point_boot", AsyncMock())
+    fake_cp.idempotency = AsyncMock()
+    fake_cp.idempotency.check_and_record = AsyncMock(return_value=True)
+    if isinstance(stored, BaseException):
+        fake_cp.idempotency.get_result = AsyncMock(side_effect=stored)
+    else:
+        fake_cp.idempotency.get_result = AsyncMock(return_value=stored)
+
+    result = await boot_notification.handle(fake_cp, message_id="MSG-R", charge_point_vendor="ACME")
+
+    assert result.status == "Pending"
+    assert result.interval == fake_cp.settings.heartbeat_interval_seconds
+
+
+@pytest.mark.asyncio
+async def test_first_sighting_stores_its_decision_for_replays(
+    fake_cp: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(boot_notification, "upsert_charge_point_boot", AsyncMock())
+    fake_cp.idempotency = AsyncMock()
+    fake_cp.idempotency.check_and_record = AsyncMock(return_value=False)
+    fake_cp.backend_client = MagicMock()
+    fake_cp.backend_client.register_charge_point = AsyncMock(
+        return_value=_register_result(status="Rejected", interval=90)
+    )
+
+    result = await boot_notification.handle(fake_cp, message_id="MSG-1", charge_point_vendor="ACME")
+
+    assert result.status == "Rejected"
+    fake_cp.idempotency.record_result.assert_awaited_once_with(
+        cp_id="TEST_CP_001", message_id="MSG-1", result="Rejected:90"
+    )
