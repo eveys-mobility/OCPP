@@ -38,7 +38,8 @@ from eveys_ocpp.metrics import registry as m
 # 68: +1 AUTHORIZATION_ADMIN_TOTAL for operator authorize/reject/revoke actions
 # 75: +7 bounded ClickHouse sidecar lifecycle/progress/error metrics (F03)
 # 80: +5 physical Stop outbox ACK, backlog, error and observation-age metrics
-EXPECTED_METRIC_COUNT = 80
+# 81: +1 STOP_TRANSACTIONS_SUSPECT_TOTAL for Stops that fail the start checks
+EXPECTED_METRIC_COUNT = 81
 
 
 def _gateway_metric_attrs() -> list[tuple[str, object]]:

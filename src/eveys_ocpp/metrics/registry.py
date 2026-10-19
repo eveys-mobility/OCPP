@@ -209,6 +209,15 @@ STOP_TRANSACTIONS_TOTAL: Counter = Counter(
     "that failed to persist) see `eveys_ocpp_stop_transactions_received_total`.",
     labelnames=("reason",),
 )
+STOP_TRANSACTIONS_SUSPECT_TOTAL: Counter = Counter(
+    "eveys_ocpp_stop_transactions_suspect_total",
+    "First StopTransactions that disagree with their start. outcome=held: "
+    "stamped before the start (a replayed Stop of an older session); it is "
+    "kept in suspect_stop_transactions and the transaction stays open, so "
+    "alert on any increase. outcome=applied: lower meterStop or another "
+    "idTag; applied as the real Stop and logged.",
+    labelnames=("outcome",),
+)
 STOP_TRANSACTION_REPLAYS_TOTAL: Counter = Counter(
     "eveys_ocpp_stop_transaction_replays_total",
     "StopTransactions served from the idempotency cache (E2-11). A non-"
@@ -722,6 +731,7 @@ __all__ = [
     "START_TRANSACTIONS_TOTAL",
     "STATUS_NOTIFICATIONS_TOTAL",
     "STOP_TRANSACTIONS_RECEIVED_TOTAL",
+    "STOP_TRANSACTIONS_SUSPECT_TOTAL",
     "STOP_TRANSACTIONS_TOTAL",
     "STOP_TRANSACTION_REPLAYS_TOTAL",
     "TRANSACTION_OUTBOX_ERRORS_TOTAL",

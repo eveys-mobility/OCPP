@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import and_, delete, func, insert, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -29,6 +29,7 @@ from .models import (
     PendingCertificateSigning,
     Reservation,
     SecurityEvent,
+    SuspectStopTransaction,
     Transaction,
     TransactionEventOutbox,
     WebhookDeliveryBacklog,
@@ -519,6 +520,42 @@ class StoppedTransaction:
     transaction_pk: int
     connector_id: int
     meter_start_wh: int
+    # Checks the applied Stop failed without being held (logged by the caller).
+    failed_checks: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class SuspectStop:
+    """A first Stop for an open transaction stamped before the start."""
+
+    transaction_pk: int
+    meter_start_wh: int
+    failed_checks: tuple[str, ...]
+
+
+def _as_utc(value: datetime) -> datetime:
+    # SQLite and a charger timestamp without an offset give naive values.
+    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+
+
+def _stop_sanity_failures(
+    *,
+    meter_start_wh: int,
+    started_reported_at: datetime,
+    start_id_tag: str,
+    meter_stop_wh: int,
+    stopped_reported_at: datetime,
+    stop_id_tag: str | None,
+) -> tuple[str, ...]:
+    failed: list[str] = []
+    if meter_stop_wh < meter_start_wh:
+        failed.append("meter_stop_below_start")
+    if _as_utc(stopped_reported_at) < _as_utc(started_reported_at):
+        failed.append("stopped_before_start")
+    # OCPP 1.6 idTags are case-insensitive (CiString20Type).
+    if stop_id_tag and stop_id_tag.casefold() != start_id_tag.casefold():
+        failed.append("id_tag_mismatch")
+    return tuple(failed)
 
 
 async def stop_transaction(
@@ -531,7 +568,8 @@ async def stop_transaction(
     stopped_received_at: datetime,
     reason: str | None,
     idempotency_key: str,
-) -> StoppedTransaction | None:
+    id_tag: str | None = None,
+) -> StoppedTransaction | SuspectStop | None:
     """Mark a transaction stopped. Return its authoritative stored binding
     and start meter on a real first-time owner-scoped apply. ``None`` means no
     apply: already stopped, unknown ID, or owned by another station.
@@ -539,6 +577,13 @@ async def stop_transaction(
     The returned snapshot supplies the stored connector and transaction PK
     for the immutable outbox event, without trusting inbound connector data
     or running a second SELECT outside the owner-scoped write.
+
+    Before the first apply the Stop is compared with the start. A Stop
+    stamped before the start time is stored in `suspect_stop_transactions`
+    and returned as `SuspectStop`; the transaction stays open for a later
+    Stop. A meterStop below meterStart (register reset after a power loss)
+    or another idTag (OCPP 1.6 allows a group card) does not hold the Stop:
+    it applies, and the failed checks are returned for logging.
 
     Idempotency: keyed on `idempotency_key` (typically the OCPP
     message_id of the inbound StopTransaction). A replay with the same
@@ -550,16 +595,75 @@ async def stop_transaction(
     if existing.scalar_one_or_none() is not None:
         return None
 
-    # `RETURNING` on the UPDATE so we get the start reading in one
+    # Lock the open owner-scoped row so a concurrent Stop waits for this
+    # decision instead of racing the checks.
+    open_row = (
+        await session.execute(
+            select(
+                Transaction.id,
+                Transaction.meter_start_wh,
+                Transaction.started_reported_at,
+                Transaction.id_tag,
+            )
+            .where(
+                Transaction.transaction_id == transaction_id,
+                Transaction.charge_point_id
+                == select(ChargePoint.id).where(ChargePoint.cp_id == cp_id).scalar_subquery(),
+                Transaction.meter_stop_wh.is_(None),
+            )
+            .with_for_update()
+        )
+    ).first()
+    if open_row is None:
+        return None
+    transaction_pk, meter_start_wh, started_reported_at, start_id_tag = open_row
+
+    failed = _stop_sanity_failures(
+        meter_start_wh=meter_start_wh,
+        started_reported_at=started_reported_at,
+        start_id_tag=start_id_tag,
+        meter_stop_wh=meter_stop_wh,
+        stopped_reported_at=stopped_reported_at,
+        stop_id_tag=id_tag,
+    )
+    # Only a Stop stamped before its own start is held: the stale replays seen
+    # live all carried an older timestamp, while a lower meterStop or another
+    # idTag can belong to the charger's real Stop.
+    if "stopped_before_start" in failed:
+        # A charger may send the same frame again after a reconnect; keep one row.
+        seen = await session.execute(
+            select(SuspectStopTransaction.id)
+            .where(
+                SuspectStopTransaction.transaction_pk == transaction_pk,
+                SuspectStopTransaction.meter_stop_wh == meter_stop_wh,
+                SuspectStopTransaction.stopped_reported_at == stopped_reported_at,
+            )
+            .limit(1)
+        )
+        if seen.scalar_one_or_none() is None:
+            await session.execute(
+                insert(SuspectStopTransaction).values(
+                    id=uuid4(),
+                    transaction_pk=transaction_pk,
+                    cp_id=cp_id,
+                    transaction_id=transaction_id,
+                    id_tag=id_tag,
+                    meter_stop_wh=meter_stop_wh,
+                    stopped_reported_at=stopped_reported_at,
+                    received_at=stopped_received_at,
+                    stop_reason=reason,
+                    failed_checks=",".join(failed),
+                )
+            )
+        return SuspectStop(
+            transaction_pk=transaction_pk, meter_start_wh=meter_start_wh, failed_checks=failed
+        )
+
+    # `RETURNING` on the UPDATE so we get the stored binding in one
     # round-trip; SQLAlchemy renders `UPDATE ... RETURNING` on Postgres.
     result = await session.execute(
         update(Transaction)
-        .where(
-            Transaction.transaction_id == transaction_id,
-            Transaction.charge_point_id
-            == select(ChargePoint.id).where(ChargePoint.cp_id == cp_id).scalar_subquery(),
-            Transaction.meter_stop_wh.is_(None),
-        )
+        .where(Transaction.id == transaction_pk, Transaction.meter_stop_wh.is_(None))
         .values(
             meter_stop_wh=meter_stop_wh,
             stopped_reported_at=stopped_reported_at,
@@ -573,7 +677,9 @@ async def stop_transaction(
     row = result.first()
     if row is None:
         return None
-    return StoppedTransaction(transaction_pk=row[0], connector_id=row[1], meter_start_wh=row[2])
+    return StoppedTransaction(
+        transaction_pk=row[0], connector_id=row[1], meter_start_wh=row[2], failed_checks=failed
+    )
 
 
 async def insert_transaction_event(

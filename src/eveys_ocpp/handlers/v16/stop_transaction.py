@@ -13,6 +13,10 @@ Behavior:
 1. Mark the transaction stopped in Postgres, matching the owning station
    and physical ID, retaining immutable outbox bytes in the same commit.
    PG first-apply/dedup is authoritative; an independent publisher retries.
+   A first Stop stamped before the start time is acknowledged and stored
+   as suspect, without an event or backend call; the transaction waits for
+   another Stop. A lower meterStop or another idTag is logged as suspect
+   but applies (register reset after a power loss, group card).
 2. Record an optional Redis hint only after the Stop commit. A cached
    marker cannot bypass PG: it may predate a failed write in older code.
 3. **Backend round-trip (E3-6).** If a `backend_client` is wired AND
@@ -60,7 +64,12 @@ from eveys_ocpp.metrics import record_handler_error, time_handler
 from eveys_ocpp.metrics import registry as metrics_registry
 from eveys_ocpp.observability import bind_contextvars, get_logger
 from eveys_ocpp.persistence.db import session_scope
-from eveys_ocpp.persistence.repositories import insert_transaction_event, stop_transaction
+from eveys_ocpp.persistence.repositories import (
+    StoppedTransaction,
+    SuspectStop,
+    insert_transaction_event,
+    stop_transaction,
+)
 from eveys_ocpp.platform import BackendBusinessError, BackendUnavailableError
 
 if TYPE_CHECKING:
@@ -100,6 +109,30 @@ def _build_envelope(
 
 def _response(status: AuthorizationStatus) -> call_result.StopTransaction:
     return call_result.StopTransaction(id_tag_info=IdTagInfo(status=status))
+
+
+def _log_suspect(
+    stopped: StoppedTransaction | SuspectStop,
+    *,
+    meter_stop: int,
+    timestamp: str,
+    id_tag: str | None,
+) -> None:
+    """Count and log a first Stop that disagrees with its start. Alert on
+    outcome=held: that transaction stays open until another Stop arrives."""
+    held = isinstance(stopped, SuspectStop)
+    metrics_registry.STOP_TRANSACTIONS_SUSPECT_TOTAL.labels(
+        outcome="held" if held else "applied"
+    ).inc()
+    log.warning(
+        "stop_transaction.suspect",
+        held=held,
+        failed_checks=",".join(stopped.failed_checks),
+        meter_start=stopped.meter_start_wh,
+        meter_stop=meter_stop,
+        charger_reported_at=timestamp,
+        id_tag=id_tag,
+    )
 
 
 def _local_status(id_tag: str | None) -> AuthorizationStatus:
@@ -189,8 +222,9 @@ async def _stop_inner(
             stopped_received_at=received_at,
             reason=reason,
             idempotency_key=idem_key,
+            id_tag=id_tag,
         )
-        if stopped is not None:
+        if isinstance(stopped, StoppedTransaction):
             payload = events_pb2.TxStopped(
                 transaction_id=transaction_id,
                 connector_id=stopped.connector_id,
@@ -213,6 +247,14 @@ async def _stop_inner(
                 created_at=received_at,
             )
 
+    if isinstance(stopped, SuspectStop):
+        # Typically a queued Stop from an older session replayed under this
+        # transaction id. ACK it so the charger drops it from its queue.
+        _log_suspect(stopped, meter_stop=meter_stop, timestamp=timestamp, id_tag=id_tag)
+        if callable(set_outcome):
+            set_outcome("suspect")
+        return _response(_local_status(id_tag))
+
     if stopped is None:
         # Already applied, unknown, or owned by another station. None of
         # these outcomes permits a new event or backend close request.
@@ -228,6 +270,11 @@ async def _stop_inner(
             await cp.idempotency.check_and_record(cp_id=cp.id, message_id=message_id)
         except Exception as exc:
             log.warning("stop_transaction.idempotency_failed", error_class=type(exc).__name__)
+
+    if stopped.failed_checks:
+        # Applied as the real Stop (register reset after a power loss, or a
+        # group card); logged so it can still be checked.
+        _log_suspect(stopped, meter_stop=meter_stop, timestamp=timestamp, id_tag=id_tag)
 
     # Persisted — SLO 4 numerator. (Received counter at the top is
     # the denominator; the difference is what SLO 4 alerts on.)
