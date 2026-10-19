@@ -322,6 +322,16 @@ _ALLOWLIST: dict[str, _AllowlistEntry] = {
         coerce=_coerce_bool,
         description="StopTransactionOnEVSideDisconnect pushed after boot.",
     ),
+    "ocpp_cfg_stop_transaction_on_invalid_id": _AllowlistEntry(
+        name="ocpp_cfg_stop_transaction_on_invalid_id",
+        coerce=_coerce_bool,
+        description="StopTransactionOnInvalidId pushed after boot.",
+    ),
+    "ocpp_cfg_allow_offline_tx_for_unknown_id": _AllowlistEntry(
+        name="ocpp_cfg_allow_offline_tx_for_unknown_id",
+        coerce=_coerce_bool,
+        description="AllowOfflineTxForUnknownId pushed after boot.",
+    ),
     "ocpp_cfg_websocket_ping_interval_seconds": _AllowlistEntry(
         name="ocpp_cfg_websocket_ping_interval_seconds",
         coerce=_coerce_int_in_range(5, 3600, "ocpp_cfg_websocket_ping_interval_seconds"),
