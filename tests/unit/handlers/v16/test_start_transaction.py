@@ -10,6 +10,50 @@ from ocpp.v16.enums import AuthorizationStatus
 
 from eveys_ocpp._generated.events.v1 import events_pb2
 from eveys_ocpp.handlers.v16 import start_transaction
+from eveys_ocpp.persistence.repositories import RepeatedStart
+
+
+@pytest.fixture(autouse=True)
+def no_repeated_start(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
+    find = AsyncMock(return_value=None)
+    monkeypatch.setattr(start_transaction, "find_repeated_start", find)
+    return find
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "open_,expected",
+    [(True, AuthorizationStatus.accepted), (False, AuthorizationStatus.invalid)],
+)
+async def test_repeated_start_returns_first_transaction_id(
+    fake_cp: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    no_repeated_start: AsyncMock,
+    open_: bool,
+    expected: AuthorizationStatus,
+) -> None:
+    monkeypatch.setattr(start_transaction, "get_charge_point_pk", AsyncMock(return_value=42))
+    insert = AsyncMock(return_value=999)
+    monkeypatch.setattr(start_transaction, "insert_transaction", insert)
+    no_repeated_start.return_value = RepeatedStart(transaction_id=5036, open=open_)
+    fake_cp.backend_client = AsyncMock()
+    fake_cp.event_producer = AsyncMock()
+
+    result = await start_transaction.handle(
+        fake_cp,
+        connector_id=1,
+        id_tag="VALID_RFID_001",
+        meter_start=43_900_000,
+        timestamp="2026-10-12T09:15:02+00:00",
+    )
+
+    assert result.transaction_id == 5036
+    assert result.id_tag_info.status == expected
+    assert no_repeated_start.await_args.kwargs["charge_point_pk"] == 42
+    assert no_repeated_start.await_args.kwargs["meter_start_wh"] == 43_900_000
+    insert.assert_not_awaited()
+    fake_cp.backend_client.open_session.assert_not_awaited()
+    fake_cp.event_producer.publish.assert_not_awaited()
 
 
 @pytest.mark.asyncio

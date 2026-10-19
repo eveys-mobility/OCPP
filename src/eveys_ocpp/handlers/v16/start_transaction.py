@@ -15,7 +15,13 @@ Behavior:
    BootNotification at some point). If unknown, reply with `ConcurrentTx`
    rather than auto-creating — silent auto-create would mask BootNotification
    bugs.
-3. Insert a transaction row; surrogate `id` doubles as `transaction_id`.
+3. A repeated StartTransaction (same connector, idTag, meterStart and
+   timestamp) is a charger retry: reply with the transactionId of the
+   first one, Accepted while it is open and Invalid once it was stopped,
+   without a new row, admission request or event. A Start refused at
+   admission is not matched, so its retry gets a fresh admission.
+   Otherwise insert a transaction row; surrogate `id` doubles as
+   `transaction_id`.
 4. Require a fresh backend `POST /api/eveys/sessions/open` decision.
    No backend or an unavailable backend returns `Invalid`. A cached
    Authorize hint never substitutes for admission of a new physical ID.
@@ -58,6 +64,7 @@ from eveys_ocpp.metrics import registry as metrics_registry
 from eveys_ocpp.observability import bind_contextvars, get_logger
 from eveys_ocpp.persistence.db import session_scope
 from eveys_ocpp.persistence.repositories import (
+    find_repeated_start,
     get_charge_point_pk,
     insert_transaction,
     reject_transaction_start,
@@ -155,6 +162,28 @@ async def _start_inner(
             return call_result.StartTransaction(
                 transaction_id=0,
                 id_tag_info=IdTagInfo(status=AuthorizationStatus.concurrent_tx),
+            )
+
+        repeated = await find_repeated_start(
+            session,
+            charge_point_pk=cp_pk,
+            connector_id=connector_id,
+            id_tag=id_tag,
+            meter_start_wh=meter_start,
+            started_reported_at=reported_at,
+        )
+        if repeated is not None:
+            status = AuthorizationStatus.accepted if repeated.open else AuthorizationStatus.invalid
+            log.info(
+                "start_transaction.repeated",
+                transaction_id=repeated.transaction_id,
+                connector_id=connector_id,
+                id_tag=id_tag,
+                decision=status.value,
+            )
+            return call_result.StartTransaction(
+                transaction_id=repeated.transaction_id,
+                id_tag_info=IdTagInfo(status=status),
             )
 
         transaction_id = await insert_transaction(

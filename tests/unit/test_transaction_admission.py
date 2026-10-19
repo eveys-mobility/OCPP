@@ -15,6 +15,7 @@ from typing import Any
 import pytest
 from ocpp.v16.enums import AuthorizationStatus
 from sqlalchemy import create_engine, event, select
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Session
 
 from eveys_ocpp._generated.events.v1 import events_pb2
@@ -144,13 +145,13 @@ def _charge_point(database: _SessionAdapter, backend: _Backend | None) -> Any:
     )
 
 
-async def _start(cp: Any) -> Any:
+async def _start(cp: Any, *, timestamp: str = REPORTED_START, meter_start: int = 4500000) -> Any:
     return await start_transaction.handle(
         cp,
         connector_id=2,
         id_tag="CUSTOMER_UID",
-        meter_start=4500000,
-        timestamp=REPORTED_START,
+        meter_start=meter_start,
+        timestamp=timestamp,
     )
 
 
@@ -229,7 +230,7 @@ async def test_another_start_cannot_reuse_open_physical_or_cached_authorization(
     first = await _start(cp)
     backend.decision = "Invalid"
 
-    second = await _start(cp)
+    second = await _start(cp, timestamp="2026-10-13T08:05:00+00:00")
 
     assert first.transaction_id == 101
     assert first.id_tag_info.status == AuthorizationStatus.accepted
@@ -378,3 +379,139 @@ async def test_later_actual_stop_remains_an_audit_event_for_rejected_id(
     assert after["stopped_reported_at"] == actual_stop.replace(tzinfo=None)  # SQLite strips tzinfo.
     assert after["stopped_received_at"] == before["stopped_received_at"]
     assert await repositories.count_transactions(database, active=True) == 0
+
+
+@pytest.mark.asyncio
+async def test_repeated_start_gets_the_first_transaction_id(database: _SessionAdapter) -> None:
+    """A charger that missed the reply sends the identical StartTransaction again."""
+    backend = _Backend(database, "Accepted")
+    cp = _charge_point(database, backend)
+    first = await _start(cp)
+
+    again = await _start(cp)
+
+    assert again.transaction_id == first.transaction_id == 101
+    assert again.id_tag_info.status == AuthorizationStatus.accepted
+    assert len(database.session.execute(select(Transaction)).scalars().all()) == 1
+    assert [request["transaction_id"] for request in backend.requests] == [101]
+    assert [envelope.tx_started.transaction_id for envelope in cp.event_producer.events] == [101]
+
+
+@pytest.mark.asyncio
+async def test_retry_after_a_failed_admission_gets_a_fresh_admission(
+    database: _SessionAdapter,
+) -> None:
+    """A refused admission made no binding, so a retry after a backend blip
+    must be able to start instead of getting the refused id back."""
+    backend = _Backend(database, BackendUnavailableError("down", error_code="NETWORK"))
+    cp = _charge_point(database, backend)
+    first = await _start(cp)
+    assert first.id_tag_info.status == AuthorizationStatus.invalid
+    backend.decision = "Accepted"
+
+    again = await _start(cp)
+
+    assert again.transaction_id != first.transaction_id
+    assert again.id_tag_info.status == AuthorizationStatus.accepted
+    assert [request["transaction_id"] for request in backend.requests] == [
+        first.transaction_id,
+        again.transaction_id,
+    ]
+    assert [e.tx_started.transaction_id for e in cp.event_producer.events] == [again.transaction_id]
+    assert await repositories.count_transactions(database, active=True) == 1
+
+    # The next identical retry is a plain repeat of the admitted start.
+    third = await _start(cp)
+
+    assert third.transaction_id == again.transaction_id
+    assert third.id_tag_info.status == AuthorizationStatus.accepted
+    assert len(backend.requests) == 2
+    assert len(cp.event_producer.events) == 1
+
+
+@pytest.mark.asyncio
+async def test_retry_of_a_refused_start_is_refused_again_by_the_backend(
+    database: _SessionAdapter,
+) -> None:
+    backend = _Backend(database, "Blocked")
+    cp = _charge_point(database, backend)
+    first = await _start(cp)
+
+    again = await _start(cp)
+
+    assert again.transaction_id != first.transaction_id
+    assert again.id_tag_info.status == AuthorizationStatus.blocked
+    assert len(backend.requests) == 2
+    assert cp.event_producer.events == []
+    assert await repositories.count_transactions(database, active=True) == 0
+
+
+@pytest.mark.asyncio
+async def test_repeated_start_lookup_takes_a_no_key_update_lock_on_the_charger(
+    database: _SessionAdapter,
+) -> None:
+    """FOR UPDATE on charge_points would also block the FK inserts of other
+    tables (FOR KEY SHARE) for the whole admission call."""
+    statements: list[Any] = []
+    execute = database.execute
+
+    async def recording_execute(statement: Any) -> Any:
+        statements.append(statement)
+        return await execute(statement)
+
+    database.execute = recording_execute
+
+    await repositories.find_repeated_start(
+        database,
+        charge_point_pk=42,
+        connector_id=2,
+        id_tag="CUSTOMER_UID",
+        meter_start_wh=4500000,
+        started_reported_at=datetime(2026, 10, 13, 8, tzinfo=UTC),
+    )
+
+    lock = str(statements[0].compile(dialect=postgresql.dialect()))
+    assert "FROM charge_points" in lock
+    assert lock.rstrip().endswith("FOR NO KEY UPDATE")
+
+
+@pytest.mark.asyncio
+async def test_repeated_start_after_stop_is_not_reopened(database: _SessionAdapter) -> None:
+    backend = _Backend(database, "Accepted")
+    cp = _charge_point(database, backend)
+    first = await _start(cp)
+    await repositories.stop_transaction(
+        database,
+        cp_id="CP_ADMISSION",
+        transaction_id=first.transaction_id,
+        meter_stop_wh=4510000,
+        stopped_reported_at=datetime(2026, 10, 13, 9, tzinfo=UTC),
+        stopped_received_at=datetime(2026, 10, 13, 9, tzinfo=UTC),
+        reason="Local",
+        idempotency_key="CP_ADMISSION:101:4510000",
+    )
+    await database.commit()
+
+    again = await _start(cp)
+
+    assert again.transaction_id == first.transaction_id
+    assert again.id_tag_info.status == AuthorizationStatus.invalid
+    assert len(database.session.execute(select(Transaction)).scalars().all()) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "start",
+    [{"timestamp": "2026-10-13T08:00:01+00:00"}, {"meter_start": 4500001}],
+)
+async def test_start_with_other_values_is_a_new_transaction(
+    database: _SessionAdapter, start: dict[str, Any]
+) -> None:
+    backend = _Backend(database, "Accepted")
+    cp = _charge_point(database, backend)
+    await _start(cp)
+
+    other = await _start(cp, **start)
+
+    assert other.transaction_id == 102
+    assert [request["transaction_id"] for request in backend.requests] == [101, 102]
