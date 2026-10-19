@@ -7,6 +7,7 @@ Handlers live in `handlers/v16/` and are registered on the instance via
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING, Any
 
 from ocpp.messages import MessageType, unpack
@@ -222,13 +223,15 @@ class EveysChargePoint(Cpv16):
         Rate limiting (E5-3): only **CALLs** are throttled. CALLRESULT /
         CALLERROR are correlated responses to commands we sent;
         throttling them would break our own RemoteStart / Reset / etc.
-        flows. On overrun the message is dropped silently — see
-        `_rate_limiter.py` for the full why.
+        flows. StartTransaction, StopTransaction and MeterValues of a
+        transaction are never throttled. On overrun the message is
+        dropped silently — see `_rate_limiter.py` for the full why.
         """
         action = "_invalid"
         is_call = False
         message_type_id = 0
         message_id: str | None = None
+        transaction_message = False
         try:
             msg = unpack(raw_msg)
             message_type_id = int(msg.message_type_id)
@@ -237,6 +240,7 @@ class EveysChargePoint(Cpv16):
             # them under "_response" to keep cardinality bounded.
             action = msg.action if is_call else "_response"
             message_id = getattr(msg, "unique_id", None)
+            transaction_message = is_call and _is_transaction_message(action, msg.payload)
         except Exception:
             # Library logs + ignores malformed frames; we mirror by
             # tagging _invalid so the count stays visible.
@@ -280,7 +284,15 @@ class EveysChargePoint(Cpv16):
         rate_limit_enabled = get_override(
             "ws_rate_limit_enabled", self.settings.ws_rate_limit_enabled
         )
-        if is_call and self.rate_limiter is not None and rate_limit_enabled:
+        # Transaction messages are never dropped: without a reply the
+        # charger re-sends them and the session's start, stop or meter
+        # data arrives late or not at all.
+        if (
+            is_call
+            and not transaction_message
+            and self.rate_limiter is not None
+            and rate_limit_enabled
+        ):
             allowed = await self.rate_limiter.check(self.id)
             if not allowed:
                 await self.rate_limiter.record_throttled(action=action)
@@ -316,6 +328,7 @@ class EveysChargePoint(Cpv16):
         # The library has generated the ID, converted names, stripped
         # nulls, and serialized the actual frame here. A successful socket
         # write is the audit boundary; it is not proof of a charger ACK.
+        message = _with_ocpp16_error_code(message)
         await super()._send(message)
         await publish_outbound(
             producer=self.event_producer,
@@ -323,3 +336,26 @@ class EveysChargePoint(Cpv16):
             cp_id=self.id,
             raw_msg=message,
         )
+
+
+def _is_transaction_message(action: str, payload: Any) -> bool:
+    """StartTransaction, StopTransaction, or MeterValues of a transaction."""
+    if action in ("StartTransaction", "StopTransaction"):
+        return True
+    return (
+        action == "MeterValues"
+        and isinstance(payload, dict)
+        and payload.get("transactionId") is not None
+    )
+
+
+def _with_ocpp16_error_code(message: str) -> str:
+    """The library sends the OCPP 2.0.1 name FormatViolation; OCPP 1.6
+    calls the same CALLERROR code FormationViolation."""
+    if not message.startswith("[4,"):
+        return message
+    frame = json.loads(message)
+    if len(frame) != 5 or frame[2] != "FormatViolation":
+        return message
+    frame[2] = "FormationViolation"
+    return json.dumps(frame, separators=(",", ":"))

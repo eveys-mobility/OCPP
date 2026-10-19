@@ -942,7 +942,9 @@ def _sampled_value_to_ocpp(sv: events_pb2.SampledValue) -> dict[str, Any]:
 
     `*_UNSPECIFIED` / unknown enum names round-trip to empty string rather
     than `None` so the legacy listener's `isset(...) ? : ""` pattern
-    doesn't trip on missing keys.
+    doesn't trip on missing keys. A sample sent without a unit gets the
+    OCPP 1.6 default: Wh for active energy, W for active or offered
+    power; other measurands keep an empty unit.
     """
 
     def _name(value: int, enum_name: str) -> str:
@@ -954,6 +956,11 @@ def _sampled_value_to_ocpp(sv: events_pb2.SampledValue) -> dict[str, Any]:
     context = ocpp_string_for("context", _name(sv.context, "Context")) or ""
     fmt = ocpp_string_for("format", _name(sv.format, "Format")) or ""
     location = ocpp_string_for("location", _name(sv.location, "Location")) or ""
+    if not unit:
+        if measurand.startswith("Energy.Active."):
+            unit = "Wh"
+        elif measurand.startswith("Power.Active.") or measurand == "Power.Offered":
+            unit = "W"
 
     return {
         "value": sv.value,

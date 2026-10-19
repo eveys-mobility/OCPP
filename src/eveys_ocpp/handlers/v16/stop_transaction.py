@@ -135,16 +135,6 @@ def _log_suspect(
     )
 
 
-def _local_status(id_tag: str | None) -> AuthorizationStatus:
-    """Pre-backend default: the inbound id_tag's local-only verdict.
-    Used for replays (we already accepted) and when no backend is
-    wired (W1/dev). The `INVALID*` prefix mirrors the mock policy in
-    `authorize.py` so unit tests stay coherent across handlers."""
-    if id_tag and id_tag.upper().startswith("INVALID"):
-        return AuthorizationStatus.invalid
-    return AuthorizationStatus.accepted
-
-
 async def handle(
     cp: EveysChargePoint,
     *,
@@ -253,7 +243,7 @@ async def _stop_inner(
         _log_suspect(stopped, meter_stop=meter_stop, timestamp=timestamp, id_tag=id_tag)
         if callable(set_outcome):
             set_outcome("suspect")
-        return _response(_local_status(id_tag))
+        return _response(AuthorizationStatus.accepted)
 
     if stopped is None:
         # Already applied, unknown, or owned by another station. None of
@@ -261,7 +251,7 @@ async def _stop_inner(
         log.info("stop_transaction.not_applied")
         if callable(set_outcome):
             set_outcome("not_applied")
-        return _response(_local_status(id_tag))
+        return _response(AuthorizationStatus.accepted)
 
     # This cache is only a post-commit hint; it never substitutes for the
     # owner-scoped PG write. Failed hints must not affect the charger ACK.
@@ -292,7 +282,8 @@ async def _stop_inner(
     # On `BackendBusinessError` we forward the backend's verdict to
     # the charger (Blocked / Invalid / etc.) so billing-fraud cases
     # surface immediately.
-    final_status = _local_status(id_tag)
+    # Without a backend decision the physical Stop is simply acknowledged.
+    final_status = AuthorizationStatus.accepted
     if cp.backend_client is not None:
         try:
             result = await cp.backend_client.close_session(

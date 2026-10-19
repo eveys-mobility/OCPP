@@ -13,7 +13,8 @@ Behavior:
 1. **Replay gate (E2-11, AGENTS rule 3).** Consult the idempotency
    cache keyed by ``(cp_id, message_id)``. Cache hit → this is a
    retry of a request we already handled; skip the DB upsert, backend
-   call, AND the Kafka emit, return the canonical Accepted response.
+   call, AND the Kafka emit, and return the decision stored for the
+   first attempt (Pending while it is not stored yet).
    Cache miss → proceed and the cache key is now recorded.
 2. Upsert the charger row.
 3. Call the backend's `POST /api/eveys/charge-points/register` (E3-5)
@@ -193,9 +194,9 @@ async def _handle_inner(
     # skip the DB write, backend call, and Kafka emit. A Redis outage
     # here falls through to the normal path — better a rare double-
     # write than a wedged handler when the cache is the problem
-    # (ADR-0017). Replay returns canonical Accepted with the configured
-    # default interval; we accepted the first time, we won't re-call
-    # the backend just because the charger retried.
+    # (ADR-0017). Replay returns the decision stored for the first
+    # attempt; while it is not stored yet (still being decided) the
+    # answer is Pending, so the charger sends a fresh boot later.
     if cp.idempotency is not None and message_id:
         try:
             replay = await cp.idempotency.check_and_record(cp_id=cp.id, message_id=message_id)
@@ -203,16 +204,17 @@ async def _handle_inner(
             log.warning("boot_notification.idempotency_failed", error=str(exc))
             replay = False
         if replay:
-            log.info("boot_notification.replay_ignored", message_id=message_id)
+            replay_status, replay_interval = await _stored_decision(cp, message_id)
+            log.info(
+                "boot_notification.replay_ignored",
+                message_id=message_id,
+                decision=replay_status.value,
+            )
             metrics_registry.BOOT_REPLAYS_TOTAL.inc()
-            metrics_registry.BOOT_NOTIFICATIONS_TOTAL.labels(decision="Accepted").inc()
+            metrics_registry.BOOT_NOTIFICATIONS_TOTAL.labels(decision=replay_status.value).inc()
             if callable(set_outcome):
                 set_outcome("replay")
-            return _response(
-                received_at,
-                RegistrationStatus.accepted,
-                cp.settings.heartbeat_interval_seconds,
-            )
+            return _response(received_at, replay_status, replay_interval)
 
     async with session_scope(cp.session_factory) as session:
         await upsert_charge_point_boot(
@@ -265,6 +267,13 @@ async def _handle_inner(
         model=charge_point_model,
     )
     metrics_registry.BOOT_NOTIFICATIONS_TOTAL.labels(decision=status.value).inc()
+    if cp.idempotency is not None and message_id:
+        try:
+            await cp.idempotency.record_result(
+                cp_id=cp.id, message_id=message_id, result=f"{status.value}:{interval}"
+            )
+        except Exception as exc:
+            log.warning("boot_notification.idempotency_record_failed", error=str(exc))
 
     # Only emit `cp.boot` on Accepted. Pending/Rejected mean the
     # charger isn't actually online for downstream consumers
@@ -304,6 +313,21 @@ async def _handle_inner(
     return _response(received_at, status, interval)
 
 
+async def _stored_decision(cp: EveysChargePoint, message_id: str) -> tuple[RegistrationStatus, int]:
+    """Decision stored for the first attempt of a replayed boot."""
+    stored: str | None = None
+    if cp.idempotency is not None:
+        try:
+            stored = await cp.idempotency.get_result(cp_id=cp.id, message_id=message_id)
+        except Exception as exc:
+            log.warning("boot_notification.idempotency_read_failed", error=str(exc))
+    status_text, _, interval_text = (stored or "").partition(":")
+    status = _REGISTRATION_STATUS_MAP.get(status_text)
+    if status is None or not interval_text.isdigit():
+        return RegistrationStatus.pending, cp.settings.heartbeat_interval_seconds
+    return status, int(interval_text)
+
+
 async def _handle_pending_boot(
     cp: EveysChargePoint,
     *,
@@ -319,7 +343,9 @@ async def _handle_pending_boot(
     Merges the vendor/model/firmware/serial into the Redis pending row
     so the operator's queue UI has real metadata to show. Does not
     touch Postgres, does not publish `cp.boot`, does not schedule the
-    post-boot ChangeConfiguration burst.
+    post-boot ChangeConfiguration burst. Replies Pending with the
+    pending-WS window as interval: the charger sends BootNotification
+    again then, and is accepted once the operator authorises it.
 
     If the pending row's TTL expired between the WS upgrade and this
     Boot arriving, the pending device has effectively been forgotten —
@@ -359,8 +385,8 @@ async def _handle_pending_boot(
 
     return _response(
         received_at,
-        RegistrationStatus.accepted,
-        cp.settings.heartbeat_interval_seconds,
+        RegistrationStatus.pending,
+        cp.settings.pending_ws_ttl_seconds,
     )
 
 

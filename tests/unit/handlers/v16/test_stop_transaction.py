@@ -62,10 +62,13 @@ async def test_replay_is_noop(fake_cp: Any, monkeypatch: pytest.MonkeyPatch) -> 
 
 
 @pytest.mark.asyncio
-async def test_reject_invalid_id_tag(fake_cp: Any, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        stop_transaction, "stop_transaction", AsyncMock(return_value=StoppedTransaction(999, 1, 0))
-    )
+@pytest.mark.parametrize("stopped", [StoppedTransaction(999, 1, 0), None])
+async def test_tag_named_invalid_gets_no_local_verdict(
+    fake_cp: Any, monkeypatch: pytest.MonkeyPatch, stopped: StoppedTransaction | None
+) -> None:
+    """Without a backend decision the Stop is simply acknowledged; the
+    idTag text is not a test-only rejection rule."""
+    monkeypatch.setattr(stop_transaction, "stop_transaction", AsyncMock(return_value=stopped))
 
     result = await stop_transaction.handle(
         fake_cp,
@@ -76,7 +79,7 @@ async def test_reject_invalid_id_tag(fake_cp: Any, monkeypatch: pytest.MonkeyPat
         id_tag="INVALID_TAG",
     )
 
-    assert result.id_tag_info.status == AuthorizationStatus.invalid
+    assert result.id_tag_info.status == AuthorizationStatus.accepted
 
 
 # ---- E2-11 idempotency -----------------------------------------------------

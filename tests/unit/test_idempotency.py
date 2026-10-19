@@ -127,3 +127,37 @@ async def test_ttl_is_applied(redis_client: Redis, settings: Settings) -> None:
 
     assert ttl > 0
     assert ttl <= settings.idempotency_ttl_seconds
+
+
+@pytest.mark.asyncio
+async def test_stored_result_is_returned_for_a_replay(
+    redis_client: Redis, settings: Settings
+) -> None:
+    cache = IdempotencyCache(redis_client, settings=settings)
+    message_id = str(uuid.uuid4())
+    assert await cache.check_and_record(cp_id="CP_RESULT", message_id=message_id) is False
+    # Decision not stored yet: the first attempt is still running.
+    assert await cache.get_result(cp_id="CP_RESULT", message_id=message_id) is None
+
+    await cache.record_result(cp_id="CP_RESULT", message_id=message_id, result="Rejected:60")
+
+    assert await cache.check_and_record(cp_id="CP_RESULT", message_id=message_id) is True
+    assert await cache.get_result(cp_id="CP_RESULT", message_id=message_id) == "Rejected:60"
+    assert (
+        0
+        < await redis_client.ttl(f"cp:idem:CP_RESULT:{message_id}")
+        <= (settings.idempotency_ttl_seconds)
+    )
+
+
+@pytest.mark.asyncio
+async def test_result_is_not_stored_without_a_first_sighting(
+    redis_client: Redis, settings: Settings
+) -> None:
+    cache = IdempotencyCache(redis_client, settings=settings)
+    message_id = str(uuid.uuid4())
+
+    await cache.record_result(cp_id="CP_RESULT", message_id=message_id, result="Accepted:300")
+
+    assert await cache.get_result(cp_id="CP_RESULT", message_id=message_id) is None
+    assert await cache.check_and_record(cp_id="CP_RESULT", message_id=message_id) is False

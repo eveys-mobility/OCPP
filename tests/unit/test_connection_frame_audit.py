@@ -127,3 +127,31 @@ async def test_response_audit_preserves_wire_id_without_inventing_an_action(
 )
 def test_transaction_index_accepts_historical_snake_case_and_current_wire(raw: str) -> None:
     assert _extract_transaction_id(raw) == 4823
+
+
+@pytest.mark.asyncio
+async def test_payload_format_error_is_sent_with_the_ocpp_1_6_error_code() -> None:
+    """OCPP 1.6 names the code FormationViolation; the library uses the
+    2.0.1 name FormatViolation."""
+    cp, socket, _, _ = _cp()
+
+    await cp.route_message('[2,"bad-1","Heartbeat",{"unexpected":1}]')
+
+    [raw] = socket.sent
+    frame = json.loads(raw)
+    assert frame[:3] == [4, "bad-1", "FormationViolation"]
+    assert "unexpected" in frame[4]["cause"]
+
+
+@pytest.mark.asyncio
+async def test_other_frames_are_sent_unchanged() -> None:
+    cp, socket, _, _ = _cp()
+    sent = [
+        '[4,"x","NotImplemented","Request Action is recognized but not supported",{}]',
+        '[3,"y",{"status":"FormatViolation"}]',
+    ]
+
+    for raw in sent:
+        await cp._send(raw)
+
+    assert socket.sent == sent

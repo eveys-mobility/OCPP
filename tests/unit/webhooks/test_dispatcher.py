@@ -901,3 +901,34 @@ async def test_post_retains_delivery_when_backlog_insert_fails() -> None:
         )
 
     mock_insert.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    "measurand,unit",
+    [
+        ("MEASURAND_ENERGY_ACTIVE_IMPORT_REGISTER", "Wh"),
+        ("MEASURAND_POWER_ACTIVE_IMPORT", "W"),
+        ("MEASURAND_POWER_OFFERED", "W"),
+        # Not energy or active power: no unit is guessed.
+        ("MEASURAND_CURRENT_IMPORT", ""),
+        ("MEASURAND_POWER_FACTOR", ""),
+    ],
+)
+def test_sampled_value_without_unit_gets_the_ocpp_default(measurand: str, unit: str) -> None:
+    from eveys_ocpp.webhooks.dispatcher import _sampled_value_to_ocpp
+
+    sv = events_pb2.SampledValue(value="5", measurand=events_pb2.Measurand.Value(measurand))
+
+    assert _sampled_value_to_ocpp(sv)["unit"] == unit
+
+
+def test_sampled_value_keeps_the_unit_the_charger_sent() -> None:
+    from eveys_ocpp.webhooks.dispatcher import _sampled_value_to_ocpp
+
+    sv = events_pb2.SampledValue(
+        value="5",
+        measurand=events_pb2.MEASURAND_ENERGY_ACTIVE_IMPORT_REGISTER,
+        unit=events_pb2.UNIT_KWH,
+    )
+
+    assert _sampled_value_to_ocpp(sv)["unit"] == "kWh"

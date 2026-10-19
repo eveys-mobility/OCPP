@@ -2909,8 +2909,9 @@ class Settings(BaseSettings):
             "authorization window; the next reconnect starts a new "
             "one-minute pending WS with the same Redis row underneath. "
             "During the pending WS window the BootNotification response "
-            "is Accepted and Boot metadata is cached into Redis; every "
-            "other inbound OCPP CALL returns CALLERROR."
+            "is Pending with this value as interval and Boot metadata is "
+            "cached into Redis; every other inbound OCPP CALL returns "
+            "CALLERROR."
         ),
         ge=30,
         le=3600,

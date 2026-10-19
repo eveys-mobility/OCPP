@@ -107,11 +107,13 @@ async def test_boot_replay_increments_replay_and_decision_counters(
     fake_cp: MagicMock,
 ) -> None:
     """A replayed BootNotification (idempotency cache hit) bumps
-    both the replay counter AND the decision counter (Accepted)."""
+    both the replay counter AND the decision counter of the decision
+    stored for the first attempt (Accepted here)."""
     from eveys_ocpp.handlers.v16 import boot_notification
 
     fake_cp.idempotency = MagicMock()
     fake_cp.idempotency.check_and_record = AsyncMock(return_value=True)
+    fake_cp.idempotency.get_result = AsyncMock(return_value="Accepted:300")
     fake_cp.event_producer = None
     fake_cp.backend_client = None
 
