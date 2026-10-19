@@ -496,6 +496,63 @@ async def insert_transaction(
     return tx.transaction_id
 
 
+@dataclass(frozen=True)
+class RepeatedStart:
+    transaction_id: int
+    # False once the transaction was stopped.
+    open: bool
+
+
+async def find_repeated_start(
+    session: AsyncSession,
+    *,
+    charge_point_pk: int,
+    connector_id: int,
+    id_tag: str,
+    meter_start_wh: int,
+    started_reported_at: datetime,
+) -> RepeatedStart | None:
+    """Return the transaction an identical earlier StartTransaction created.
+
+    A charger that did not get our reply sends the same StartTransaction
+    again, so it has to get the same transactionId back. The charger row is
+    locked first: a retry on a new connection waits for the first attempt's
+    commit and then finds its row instead of creating a second one. The
+    lock is FOR NO KEY UPDATE, so FK inserts that reference the charger
+    (FOR KEY SHARE) do not wait for the admission call.
+
+    A Start refused at admission made no binding and is not matched: its
+    retry, for example after a backend outage, gets a fresh admission.
+    """
+    await session.execute(
+        select(ChargePoint.id)
+        .where(ChargePoint.id == charge_point_pk)
+        .with_for_update(key_share=True)
+    )
+    row = (
+        await session.execute(
+            select(Transaction.transaction_id, Transaction.stopped_received_at)
+            .where(
+                Transaction.charge_point_id == charge_point_pk,
+                Transaction.connector_id == connector_id,
+                Transaction.id_tag == id_tag,
+                Transaction.meter_start_wh == meter_start_wh,
+                Transaction.started_reported_at == started_reported_at,
+                # Refused at admission: stop receive time set without a Stop.
+                or_(
+                    Transaction.stopped_received_at.is_(None),
+                    Transaction.meter_stop_wh.is_not(None),
+                ),
+            )
+            .order_by(Transaction.id)
+            .limit(1)
+        )
+    ).first()
+    if row is None:
+        return None
+    return RepeatedStart(transaction_id=row[0], open=row[1] is None)
+
+
 async def reject_transaction_start(
     session: AsyncSession, *, transaction_id: int, rejected_at: datetime
 ) -> None:
