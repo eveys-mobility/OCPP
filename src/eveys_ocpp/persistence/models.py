@@ -229,6 +229,32 @@ class TransactionEventOutbox(Base):
     last_error_class: Mapped[str | None] = mapped_column(String(128))
 
 
+class SuspectStopTransaction(Base):
+    """A first StopTransaction stamped before its transaction's start.
+
+    Some chargers replay a queued Stop from an older session under the
+    current transaction id after a reconnect. Such a frame is acknowledged
+    but does not close the transaction; this row keeps it as evidence and
+    the transaction waits for another Stop. Append-only.
+    """
+
+    __tablename__ = "suspect_stop_transactions"
+
+    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True)
+    transaction_pk: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("transactions.id", ondelete="SET NULL"), index=True, nullable=True
+    )
+    cp_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    transaction_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    id_tag: Mapped[str | None] = mapped_column(String(64))
+    meter_stop_wh: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    stopped_reported_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    stop_reason: Mapped[str | None] = mapped_column(String(32))
+    # Comma-separated names of the checks the frame failed.
+    failed_checks: Mapped[str] = mapped_column(String(128), nullable=False)
+
+
 class LocalAuthList(Base):
     """OCPP 1.6 LocalAuthList — one row per charger that has a list.
 

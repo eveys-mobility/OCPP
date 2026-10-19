@@ -210,11 +210,13 @@ async def test_stop_transaction_applies_when_no_replay() -> None:
     without a second SELECT."""
     not_existing = MagicMock()
     not_existing.scalar_one_or_none.return_value = None
+    open_row = MagicMock()
+    open_row.first.return_value = (1, 0, datetime(2026, 1, 1, tzinfo=UTC), "TAG")
     update_result = MagicMock()
     update_result.first.return_value = (1, 2, 4_500_000)
 
     session = AsyncMock()
-    session.execute = AsyncMock(side_effect=[not_existing, update_result])
+    session.execute = AsyncMock(side_effect=[not_existing, open_row, update_result])
 
     applied = await repositories.stop_transaction(
         session,
@@ -227,7 +229,7 @@ async def test_stop_transaction_applies_when_no_replay() -> None:
         idempotency_key="new",
     )
     assert applied == repositories.StoppedTransaction(1, 2, 4_500_000)
-    assert session.execute.await_count == 2
+    assert session.execute.await_count == 3
 
 
 @pytest.mark.asyncio
