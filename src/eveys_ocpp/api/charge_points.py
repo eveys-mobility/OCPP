@@ -120,6 +120,11 @@ def _to_response(cp: dict[str, Any]) -> dict[str, Any]:
         "last_status": cp["last_status"],
         "last_diagnostics_status": cp["last_diagnostics_status"],
         "last_firmware_status": cp["last_firmware_status"],
+        # `.get` — rows from before migration 0021 carry NULLs, and
+        # repo dicts built by older callers may lack the keys entirely.
+        "last_boot_status": cp.get("last_boot_status"),
+        "last_boot_reason": cp.get("last_boot_reason"),
+        "last_boot_decided_at": _isoformat(cp.get("last_boot_decided_at")),
         "connectors": cp.get("connectors", []),
         "connectors_state": cp.get("connectors_state", "unavailable"),
         "connectors_source": "clickhouse",
@@ -247,6 +252,7 @@ async def list_charge_points_route(
     last_firmware_status: str | None = Query(default=None),
     last_diagnostics_status: str | None = Query(default=None),
     last_log_status: str | None = Query(default=None),
+    last_boot_status: str | None = Query(default=None),
     last_boot_after: str | None = Query(default=None),
     last_boot_before: str | None = Query(default=None),
     last_heartbeat_after: str | None = Query(default=None),
@@ -290,6 +296,7 @@ async def list_charge_points_route(
         "last_firmware_status": last_firmware_status,
         "last_diagnostics_status": last_diagnostics_status,
         "last_log_status": last_log_status,
+        "last_boot_status": last_boot_status,
         "last_boot_after": _parse_iso8601_or_400(last_boot_after, field_name="last_boot_after"),
         "last_boot_before": _parse_iso8601_or_400(last_boot_before, field_name="last_boot_before"),
         "last_heartbeat_after": _parse_iso8601_or_400(

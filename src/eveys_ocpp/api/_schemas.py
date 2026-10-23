@@ -251,6 +251,36 @@ class ChargePoint(BaseModel):
     )
     last_status_at: str | None = None
     last_heartbeat_at: str | None = None
+    last_boot_status: str | None = Field(
+        default=None,
+        description=(
+            "OCPP RegistrationStatus the gateway answered on the most recent "
+            "BootNotification: ``Accepted`` / ``Pending`` / ``Rejected``. A charger "
+            "whose last boot was not ``Accepted`` never sends StatusNotification, so "
+            "``connectors[]`` stays empty — read this before assuming the charger is "
+            "broken. Null for rows that haven't booted since the field was added."
+        ),
+    )
+    last_boot_reason: str | None = Field(
+        default=None,
+        description=(
+            "Who decided ``last_boot_status`` and why. ``backend_pending`` — the "
+            "TOGER backend answered Pending (no device registered with this "
+            "``charge_point_id``; authorizing in the Console does not help). "
+            "``backend_rejected`` — backend answered Rejected. ``backend_unavailable`` "
+            "— backend unreachable, status follows the gateway fallback policy. "
+            "``backend_error`` — backend returned a business error, gateway answered "
+            "Rejected. ``backend_unknown_status`` — unrecognised backend answer, "
+            "gateway answered Pending. ``backend_accepted`` / ``local_accepted`` — "
+            "accepted by the backend / by the gateway alone (no backend wired). "
+            "Operator-authorization pending is NOT recorded here; that queue is "
+            "``GET /api/v1/authorizations``."
+        ),
+    )
+    last_boot_decided_at: str | None = Field(
+        default=None,
+        description="ISO-8601 UTC time the gateway answered that BootNotification.",
+    )
     online: bool = Field(description="True iff some pod currently holds the charger's WS.")
     pod_id: str | None = Field(
         default=None,
