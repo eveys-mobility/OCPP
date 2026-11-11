@@ -1030,3 +1030,236 @@ async def test_first_sighting_stores_its_decision_for_replays(
     fake_cp.idempotency.record_result.assert_awaited_once_with(
         cp_id="TEST_CP_001", message_id="MSG-1", result="Rejected:90"
     )
+
+
+# ---------------------------------------------------------------------------
+# Boot decision record — what the Console shows as "backend pending"
+# ---------------------------------------------------------------------------
+#
+# Every non-replay BootNotification stamps the resolved decision on the
+# `charge_points` row (`last_boot_status` / `last_boot_reason` /
+# `last_boot_decided_at`). The reason tells the operator *who* is
+# holding the charger back: the backend (`backend_*`) or nobody
+# (`*_accepted`). The operator-authorization path never reaches
+# Postgres and is deliberately not recorded here.
+
+
+def _decision_kwargs(record: AsyncMock) -> dict[str, Any]:
+    record.assert_awaited_once()
+    return record.await_args.kwargs
+
+
+@pytest.mark.asyncio
+async def test_records_backend_pending_decision(
+    fake_cp: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The SN20052210130151 case: backend has no `devices` row for the
+    cp_id and answers Pending. The row must say so, with the reason."""
+    monkeypatch.setattr(boot_notification, "upsert_charge_point_boot", AsyncMock())
+    record = AsyncMock()
+    monkeypatch.setattr(boot_notification, "record_boot_decision", record)
+    fake_cp.backend_client = AsyncMock()
+    fake_cp.backend_client.register_charge_point = AsyncMock(
+        return_value=_register_result(status="Pending", interval=60)
+    )
+
+    result = await boot_notification.handle(fake_cp, charge_point_vendor="EN+")
+
+    assert result.status == "Pending"
+    kwargs = _decision_kwargs(record)
+    assert kwargs["cp_id"] == "TEST_CP_001"
+    assert kwargs["status"] == "Pending"
+    assert kwargs["reason"] == "backend_pending"
+    assert kwargs["decided_at"].isoformat() == result.current_time
+
+
+@pytest.mark.asyncio
+async def test_records_backend_accepted_decision(
+    fake_cp: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(boot_notification, "upsert_charge_point_boot", AsyncMock())
+    record = AsyncMock()
+    monkeypatch.setattr(boot_notification, "record_boot_decision", record)
+    fake_cp.backend_client = AsyncMock()
+    fake_cp.backend_client.register_charge_point = AsyncMock(return_value=_register_result())
+
+    await boot_notification.handle(fake_cp, charge_point_vendor="ACME")
+
+    kwargs = _decision_kwargs(record)
+    assert kwargs["status"] == "Accepted"
+    assert kwargs["reason"] == "backend_accepted"
+
+
+@pytest.mark.asyncio
+async def test_records_local_accept_when_no_backend_wired(
+    fake_cp: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """W1/dev mode: no backend client → the gateway accepts on its own
+    and says so, so an operator never mistakes it for a backend verdict."""
+    monkeypatch.setattr(boot_notification, "upsert_charge_point_boot", AsyncMock())
+    record = AsyncMock()
+    monkeypatch.setattr(boot_notification, "record_boot_decision", record)
+    fake_cp.backend_client = None
+
+    await boot_notification.handle(fake_cp, charge_point_vendor="ACME")
+
+    kwargs = _decision_kwargs(record)
+    assert kwargs["status"] == "Accepted"
+    assert kwargs["reason"] == "local_accepted"
+
+
+@pytest.mark.asyncio
+async def test_records_backend_rejected_decision(
+    fake_cp: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(boot_notification, "upsert_charge_point_boot", AsyncMock())
+    record = AsyncMock()
+    monkeypatch.setattr(boot_notification, "record_boot_decision", record)
+    fake_cp.backend_client = AsyncMock()
+    fake_cp.backend_client.register_charge_point = AsyncMock(
+        return_value=_register_result(status="Rejected")
+    )
+
+    await boot_notification.handle(fake_cp, charge_point_vendor="ACME")
+
+    kwargs = _decision_kwargs(record)
+    assert kwargs["status"] == "Rejected"
+    assert kwargs["reason"] == "backend_rejected"
+
+
+@pytest.mark.asyncio
+async def test_records_unknown_backend_status_as_pending(
+    fake_cp: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(boot_notification, "upsert_charge_point_boot", AsyncMock())
+    record = AsyncMock()
+    monkeypatch.setattr(boot_notification, "record_boot_decision", record)
+    fake_cp.backend_client = AsyncMock()
+    fake_cp.backend_client.register_charge_point = AsyncMock(
+        return_value=_register_result(status="SomethingNew")
+    )
+
+    await boot_notification.handle(fake_cp, charge_point_vendor="ACME")
+
+    kwargs = _decision_kwargs(record)
+    assert kwargs["status"] == "Pending"
+    assert kwargs["reason"] == "backend_unknown_status"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("policy", "expected_status"),
+    [("accept_offline", "Accepted"), ("reject", "Rejected")],
+)
+async def test_records_backend_unavailable_with_fallback_status(
+    fake_cp: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    settings_factory: Any,
+    policy: str,
+    expected_status: str,
+) -> None:
+    """Backend unreachable: the status follows the fallback policy, the
+    reason says the backend never answered — the operator should look
+    at backend health, not at the device registration."""
+    from eveys_ocpp.platform import BackendUnavailableError
+
+    fake_cp.settings = settings_factory(backend_register_fallback=policy)
+    monkeypatch.setattr(boot_notification, "upsert_charge_point_boot", AsyncMock())
+    record = AsyncMock()
+    monkeypatch.setattr(boot_notification, "record_boot_decision", record)
+    fake_cp.backend_client = AsyncMock()
+    fake_cp.backend_client.register_charge_point = AsyncMock(
+        side_effect=BackendUnavailableError("backend timeout", error_code="TIMEOUT"),
+    )
+
+    result = await boot_notification.handle(fake_cp, charge_point_vendor="ACME")
+
+    assert result.status == expected_status
+    kwargs = _decision_kwargs(record)
+    assert kwargs["status"] == expected_status
+    assert kwargs["reason"] == "backend_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_records_backend_business_error_as_rejected(
+    fake_cp: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from eveys_ocpp.platform import BackendBusinessError
+
+    monkeypatch.setattr(boot_notification, "upsert_charge_point_boot", AsyncMock())
+    record = AsyncMock()
+    monkeypatch.setattr(boot_notification, "record_boot_decision", record)
+    fake_cp.backend_client = AsyncMock()
+    fake_cp.backend_client.register_charge_point = AsyncMock(
+        side_effect=BackendBusinessError("unknown_cp_id", error_code="UNKNOWN_CP_ID"),
+    )
+
+    await boot_notification.handle(fake_cp, charge_point_vendor="ACME")
+
+    kwargs = _decision_kwargs(record)
+    assert kwargs["status"] == "Rejected"
+    assert kwargs["reason"] == "backend_error"
+
+
+@pytest.mark.asyncio
+async def test_replay_does_not_record_decision(
+    fake_cp: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A replayed BootNotification is answered from the cache; the
+    recorded decision stays the one from the real round-trip."""
+    monkeypatch.setattr(boot_notification, "upsert_charge_point_boot", AsyncMock())
+    record = AsyncMock()
+    monkeypatch.setattr(boot_notification, "record_boot_decision", record)
+    fake_idem = AsyncMock()
+    fake_idem.check_and_record = AsyncMock(return_value=True)
+    fake_idem.get_result = AsyncMock(return_value="Pending:60")
+    fake_cp.idempotency = fake_idem
+
+    result = await boot_notification.handle(
+        fake_cp, message_id="MSG-REPLAY", charge_point_vendor="ACME"
+    )
+
+    assert result.status == "Pending"
+    record.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_operator_pending_boot_does_not_record_decision(
+    fake_cp: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Operator-authorization pending path has no `charge_points` row
+    yet — nothing to stamp, and the Redis queue already shows it."""
+    monkeypatch.setattr(boot_notification, "upsert_charge_point_boot", AsyncMock())
+    record = AsyncMock()
+    monkeypatch.setattr(boot_notification, "record_boot_decision", record)
+    fake_cp.is_pending = True
+    fake_cp.pending_store = AsyncMock()
+    fake_cp.pending_store.record_boot = AsyncMock(return_value={"cp_id": "TEST_CP_001"})
+
+    await boot_notification.handle(fake_cp, charge_point_vendor="ACME")
+
+    record.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_decision_record_failure_does_not_change_the_reply(
+    fake_cp: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The decision columns are observability, not a correctness anchor:
+    a Postgres hiccup after the backend answered must not turn an
+    Accepted boot into a CALLERROR (the charger would re-boot in a loop)."""
+    monkeypatch.setattr(boot_notification, "upsert_charge_point_boot", AsyncMock())
+    monkeypatch.setattr(
+        boot_notification,
+        "record_boot_decision",
+        AsyncMock(side_effect=RuntimeError("pg went away")),
+    )
+    fake_cp.backend_client = AsyncMock()
+    fake_cp.backend_client.register_charge_point = AsyncMock(
+        return_value=_register_result(status="Pending")
+    )
+
+    result = await boot_notification.handle(fake_cp, charge_point_vendor="ACME")
+
+    assert isinstance(result, call_result.BootNotification)
+    assert result.status == "Pending"

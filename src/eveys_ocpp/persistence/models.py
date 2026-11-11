@@ -75,6 +75,20 @@ class ChargePoint(Base):
     # history lives in the Kafka topic, not here.
     last_log_status: Mapped[str | None] = mapped_column(String(32))
 
+    # Outcome of the most recent non-replay BootNotification, as the
+    # gateway answered it: `Accepted` / `Pending` / `Rejected`, a short
+    # machine reason naming who decided (see
+    # `handlers.v16.boot_notification` for the closed set — `backend_*`
+    # when the TOGER backend's `/charge-points/register` answer or
+    # outage drove the verdict, `local_accepted` when no backend is
+    # wired), and when. Lets the Console tell "the backend has no
+    # device for this cp_id" apart from the operator-authorization
+    # queue, which lives in Redis and never reaches this table. NULL
+    # on rows that haven't booted since the columns were added.
+    last_boot_status: Mapped[str | None] = mapped_column(String(16))
+    last_boot_reason: Mapped[str | None] = mapped_column(String(32))
+    last_boot_decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
     # Set the moment an operator posts /authorize; NULL otherwise. The
     # WS-edge authorization gate treats "row in charge_points AND
     # authorized_at IS NOT NULL" as authorized — a legacy stub from

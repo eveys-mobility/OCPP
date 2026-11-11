@@ -721,3 +721,76 @@ async def test_list_survives_clickhouse_offline_failure(
     assert response.status_code == 200
     body = response.json()
     assert body["charge_points"][0]["last_offline_seconds"] is None
+
+
+# ---- boot decision fields ----------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_list_row_carries_boot_decision_fields(
+    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A charger the backend keeps answering `Pending` must be
+    recognisable from the list alone: status, reason and when."""
+    from eveys_ocpp.api import charge_points as cp_module
+
+    row = _cp_row(cp_id="SN20052210130151")
+    row["last_boot_status"] = "Pending"
+    row["last_boot_reason"] = "backend_pending"
+    row["last_boot_decided_at"] = datetime(2026, 10, 22, 17, 1, tzinfo=UTC)
+    monkeypatch.setattr(cp_module, "list_charge_points", AsyncMock(return_value=[row]))
+
+    response = await client.get("/api/v1/charge-points")
+
+    assert response.status_code == 200
+    [cp] = response.json()["charge_points"]
+    assert cp["last_boot_status"] == "Pending"
+    assert cp["last_boot_reason"] == "backend_pending"
+    assert cp["last_boot_decided_at"] == "2026-10-22T17:01:00+00:00"
+
+
+@pytest.mark.asyncio
+async def test_list_row_without_boot_decision_serialises_nulls(
+    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Rows that pre-date the decision columns (or a repo dict from an
+    older caller) must still serialise — as nulls, not a KeyError 500."""
+    from eveys_ocpp.api import charge_points as cp_module
+
+    monkeypatch.setattr(cp_module, "list_charge_points", AsyncMock(return_value=[_cp_row()]))
+
+    response = await client.get("/api/v1/charge-points")
+
+    assert response.status_code == 200
+    [cp] = response.json()["charge_points"]
+    assert cp["last_boot_status"] is None
+    assert cp["last_boot_reason"] is None
+    assert cp["last_boot_decided_at"] is None
+
+
+@pytest.mark.asyncio
+async def test_detail_carries_boot_decision_fields(
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+    fake_registry: MagicMock,
+) -> None:
+    from eveys_ocpp.api import charge_points as cp_module
+
+    detail = _cp_row(cp_id="SN20052210130151")
+    detail["last_boot_status"] = "Pending"
+    detail["last_boot_reason"] = "backend_pending"
+    detail["last_boot_decided_at"] = datetime(2026, 10, 22, 17, 1, tzinfo=UTC)
+    detail["active_reservations"] = []
+    detail["active_charging_profiles"] = []
+    monkeypatch.setattr(cp_module, "get_charge_point_detail", AsyncMock(return_value=detail))
+    monkeypatch.setattr(cp_module, "list_transactions_by_cp", AsyncMock(return_value=[]))
+    fake_registry.get_pod = AsyncMock(return_value="pod-1")
+
+    response = await client.get("/api/v1/charge-points/SN20052210130151")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["online"] is True
+    assert body["last_boot_status"] == "Pending"
+    assert body["last_boot_reason"] == "backend_pending"
+    assert body["last_boot_decided_at"] == "2026-10-22T17:01:00+00:00"

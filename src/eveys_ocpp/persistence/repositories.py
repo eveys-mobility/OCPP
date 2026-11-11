@@ -104,6 +104,35 @@ async def update_status(session: AsyncSession, *, cp_id: str, status: str) -> No
     )
 
 
+async def record_boot_decision(
+    session: AsyncSession,
+    *,
+    cp_id: str,
+    status: str,
+    reason: str,
+    decided_at: datetime,
+) -> None:
+    """Stamp the outcome of a BootNotification on the charger row.
+
+    ``status`` is the OCPP `RegistrationStatus` the gateway answered
+    (`Accepted` / `Pending` / `Rejected`); ``reason`` is the short
+    machine string naming who decided and why (`backend_pending`,
+    `backend_unavailable`, `local_accepted`, …). Latest-wins — a
+    charger stuck in a Pending loop re-stamps the same verdict every
+    ~60 s, which is exactly what the Console wants to show. No-op if
+    the row doesn't exist (the boot upsert runs first, so it does).
+    """
+    await session.execute(
+        update(ChargePoint)
+        .where(ChargePoint.cp_id == cp_id)
+        .values(
+            last_boot_status=status,
+            last_boot_reason=reason,
+            last_boot_decided_at=decided_at,
+        )
+    )
+
+
 async def update_diagnostics_status(session: AsyncSession, *, cp_id: str, status: str) -> None:
     """Record the latest DiagnosticsStatusNotification (E2-1F)."""
     await session.execute(
@@ -1244,6 +1273,9 @@ def _charge_point_to_dict(cp: ChargePoint) -> dict[str, Any]:
         "last_status": cp.last_status,
         "last_diagnostics_status": cp.last_diagnostics_status,
         "last_firmware_status": cp.last_firmware_status,
+        "last_boot_status": cp.last_boot_status,
+        "last_boot_reason": cp.last_boot_reason,
+        "last_boot_decided_at": cp.last_boot_decided_at,
     }
 
 
@@ -1257,6 +1289,7 @@ def _charge_points_filter_conditions(
     last_firmware_status: str | None = None,
     last_diagnostics_status: str | None = None,
     last_log_status: str | None = None,
+    last_boot_status: str | None = None,
     last_boot_after: datetime | None = None,
     last_boot_before: datetime | None = None,
     last_heartbeat_after: datetime | None = None,
@@ -1299,6 +1332,11 @@ def _charge_points_filter_conditions(
         conditions.append(ChargePoint.last_diagnostics_status == last_diagnostics_status)
     if last_log_status is not None:
         conditions.append(ChargePoint.last_log_status == last_log_status)
+    if last_boot_status is not None:
+        # "Every charger the backend is still refusing" — the Console's
+        # waiting-for-registration list. Exact match on the OCPP
+        # RegistrationStatus string the gateway answered.
+        conditions.append(ChargePoint.last_boot_status == last_boot_status)
     if last_boot_after is not None:
         conditions.append(ChargePoint.last_boot_at >= last_boot_after)
     if last_boot_before is not None:
@@ -1349,6 +1387,7 @@ async def list_charge_points(
     last_firmware_status: str | None = None,
     last_diagnostics_status: str | None = None,
     last_log_status: str | None = None,
+    last_boot_status: str | None = None,
     last_boot_after: datetime | None = None,
     last_boot_before: datetime | None = None,
     last_heartbeat_after: datetime | None = None,
@@ -1391,6 +1430,7 @@ async def list_charge_points(
         last_firmware_status=last_firmware_status,
         last_diagnostics_status=last_diagnostics_status,
         last_log_status=last_log_status,
+        last_boot_status=last_boot_status,
         last_boot_after=last_boot_after,
         last_boot_before=last_boot_before,
         last_heartbeat_after=last_heartbeat_after,
@@ -1424,6 +1464,7 @@ async def count_charge_points(
     last_firmware_status: str | None = None,
     last_diagnostics_status: str | None = None,
     last_log_status: str | None = None,
+    last_boot_status: str | None = None,
     last_boot_after: datetime | None = None,
     last_boot_before: datetime | None = None,
     last_heartbeat_after: datetime | None = None,
@@ -1448,6 +1489,7 @@ async def count_charge_points(
         last_firmware_status=last_firmware_status,
         last_diagnostics_status=last_diagnostics_status,
         last_log_status=last_log_status,
+        last_boot_status=last_boot_status,
         last_boot_after=last_boot_after,
         last_boot_before=last_boot_before,
         last_heartbeat_after=last_heartbeat_after,

@@ -673,3 +673,70 @@ async def test_aggregate_transactions_omits_group_when_group_by_none() -> None:
 
     assert len(out) == 1
     assert "group" not in out[0]
+
+
+# ---------------------------------------------------------------------------
+# Boot decision record (Console "backend pending" visibility)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_record_boot_decision_updates_the_three_decision_columns() -> None:
+    """The handler stamps status + reason + decided_at on the existing
+    row after every non-replay BootNotification. One UPDATE, keyed on
+    cp_id, touching exactly the three decision columns."""
+    session = AsyncMock()
+    session.execute = AsyncMock()
+    at = datetime(2026, 10, 22, 17, 1, tzinfo=UTC)
+
+    await repositories.record_boot_decision(
+        session,
+        cp_id="CP1",
+        status="Pending",
+        reason="backend_pending",
+        decided_at=at,
+    )
+
+    session.execute.assert_awaited_once()
+    stmt = session.execute.await_args.args[0]
+    rendered = str(stmt)
+    assert "UPDATE charge_points" in rendered
+    assert "last_boot_status" in rendered
+    assert "last_boot_reason" in rendered
+    assert "last_boot_decided_at" in rendered
+    params = stmt.compile().params
+    assert params["last_boot_status"] == "Pending"
+    assert params["last_boot_reason"] == "backend_pending"
+    assert params["last_boot_decided_at"] == at
+
+
+def test_charge_point_to_dict_carries_boot_decision_fields() -> None:
+    """The REST projection must expose the decision so the Console can
+    tell a backend-Pending charger apart from a healthy one."""
+    from eveys_ocpp.persistence.models import ChargePoint
+
+    at = datetime(2026, 10, 22, 17, 1, tzinfo=UTC)
+    cp = ChargePoint(
+        id=7,
+        cp_id="SN20052210130151",
+        last_boot_status="Pending",
+        last_boot_reason="backend_pending",
+        last_boot_decided_at=at,
+    )
+
+    d = repositories._charge_point_to_dict(cp)
+
+    assert d["last_boot_status"] == "Pending"
+    assert d["last_boot_reason"] == "backend_pending"
+    assert d["last_boot_decided_at"] == at
+
+
+def test_charge_points_filter_conditions_includes_last_boot_status_filter() -> None:
+    """`last_boot_status=Pending` lets the Console list every charger
+    the backend is still refusing, in one query."""
+    conditions = repositories._charge_points_filter_conditions(
+        vendor=None,
+        last_boot_status="Pending",
+    )
+    rendered = [str(c) for c in conditions]
+    assert any("last_boot_status" in r for r in rendered), rendered
