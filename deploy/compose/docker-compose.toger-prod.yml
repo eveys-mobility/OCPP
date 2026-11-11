@@ -1,0 +1,37 @@
+# TOGER production overrides for the `ocpp` service.
+#
+# Record of the non-secret settings the TOGER gateway host runs with on
+# top of the defaults in src/eveys_ocpp/settings.py. The host keeps its
+# own copy of the compose file; keep this file in step when a value
+# there changes. Use it as an overlay:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.toger-prod.yml config
+#
+# Not here: the Postgres/ClickHouse passwords and EVEYS_OCPP_DB_URL are
+# literal in the host compose; REST tokens, backend token, webhook secret
+# and backend/webhook URLs come from /home/OCPP/.env through ${...}. A key
+# that is only in .env and not named in an `environment:` block never
+# reaches the container.
+#
+# On the TOGER host do not run scripts/update.sh, `make update` or a plain
+# `docker compose up`: migrate-postgres there still uses eveys-ocpp:dev
+# (alembic 0018). Migrate with a one-off container on the release image
+# after a pg_dump, then `docker compose up -d --no-deps ocpp`.
+
+services:
+  ocpp:
+    environment:
+      # Charger-side retry for transaction messages: 5 tries, 60 s apart
+      # (default 3 x 2 s), the same window as the legacy backend.
+      EVEYS_OCPP_OCPP_CFG_TRANSACTION_MESSAGE_ATTEMPTS: "5"
+      EVEYS_OCPP_OCPP_CFG_TRANSACTION_MESSAGE_RETRY_INTERVAL_SECONDS: "60"
+      # Keep pinging, but never close a socket on a missing pong.
+      EVEYS_OCPP_WS_KEEPALIVE_PING_TIMEOUT_SECONDS: "0"
+      # TOGER turns autocharge (Autel PlugandChargeMode) on per device from
+      # the backend; the post-boot push must not reset it to 0.
+      EVEYS_OCPP_OCPP_CFG_POST_BOOT_PUSH_SKIP_KEYS: "PlugandChargeMode"
+      # Every Authorize goes to the backend; no cached result.
+      EVEYS_OCPP_BACKEND_AUTHORIZE_CACHE_ENABLED: "false"
+      # ConnectionTimeOut 120 s (default 30): TOGER value for every charger,
+      # gateway and legacy (11 Nov 2026).
+      EVEYS_OCPP_OCPP_CFG_CONNECTION_TIME_OUT_SECONDS: "120"
