@@ -26,6 +26,8 @@ Behavior:
    Authorize hint never substitutes for admission of a new physical ID.
    In the same DB transaction, close rejected audit rows using the server
    receive timestamp and `DeAuthorized`, without inventing a charger Stop.
+   An accepted Start closes older open rows on the same connector the same
+   way with `Superseded` (their Stop was lost; no event is published).
 4. After commit, publish `tx.started` only for an accepted admission.
    Best-effort — publish
    failure is logged and dropped, never raised, since the OCPP reply is
@@ -63,6 +65,7 @@ from eveys_ocpp.metrics import registry as metrics_registry
 from eveys_ocpp.observability import bind_contextvars, get_logger
 from eveys_ocpp.persistence.db import session_scope
 from eveys_ocpp.persistence.repositories import (
+    close_superseded_transactions,
     find_repeated_start,
     get_charge_point_pk,
     insert_transaction,
@@ -238,6 +241,21 @@ async def _start_inner(
             await reject_transaction_start(
                 session, transaction_id=transaction_id, rejected_at=datetime.now(UTC)
             )
+        else:
+            superseded = await close_superseded_transactions(
+                session,
+                charge_point_pk=cp_pk,
+                connector_id=connector_id,
+                started_before=reported_at,
+                closed_at=datetime.now(UTC),
+            )
+            if superseded:
+                log.info(
+                    "start_transaction.superseded_closed",
+                    transaction_id=transaction_id,
+                    connector_id=connector_id,
+                    superseded=superseded,
+                )
 
     log.info(
         "start_transaction.decided",
