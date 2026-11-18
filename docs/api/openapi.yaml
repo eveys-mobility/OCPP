@@ -155,6 +155,37 @@ components:
           - type: string
           - type: 'null'
           title: Firmware Version
+        last_boot_decided_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: ISO-8601 UTC time the gateway answered that BootNotification.
+          title: Last Boot Decided At
+        last_boot_reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Who decided ``last_boot_status`` and why. ``backend_pending``
+            — the TOGER backend answered Pending (no device registered with this ``charge_point_id``;
+            authorizing in the Console does not help). ``backend_rejected`` — backend
+            answered Rejected. ``backend_unavailable`` — backend unreachable, status
+            follows the gateway fallback policy. ``backend_error`` — backend returned
+            a business error, gateway answered Rejected. ``backend_unknown_status``
+            — unrecognised backend answer, gateway answered Pending. ``backend_accepted``
+            / ``local_accepted`` — accepted by the backend / by the gateway alone
+            (no backend wired). Operator-authorization pending is NOT recorded here;
+            that queue is ``GET /api/v1/authorizations``.
+          title: Last Boot Reason
+        last_boot_status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'OCPP RegistrationStatus the gateway answered on the most recent
+            BootNotification: ``Accepted`` / ``Pending`` / ``Rejected``. A charger
+            whose last boot was not ``Accepted`` never sends StatusNotification, so
+            ``connectors[]`` stays empty — read this before assuming the charger is
+            broken. Null for rows that haven''t booted since the field was added.'
+          title: Last Boot Status
         last_heartbeat_at:
           anyOf:
           - type: string
@@ -304,6 +335,37 @@ components:
           - type: string
           - type: 'null'
           title: Firmware Version
+        last_boot_decided_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: ISO-8601 UTC time the gateway answered that BootNotification.
+          title: Last Boot Decided At
+        last_boot_reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Who decided ``last_boot_status`` and why. ``backend_pending``
+            — the TOGER backend answered Pending (no device registered with this ``charge_point_id``;
+            authorizing in the Console does not help). ``backend_rejected`` — backend
+            answered Rejected. ``backend_unavailable`` — backend unreachable, status
+            follows the gateway fallback policy. ``backend_error`` — backend returned
+            a business error, gateway answered Rejected. ``backend_unknown_status``
+            — unrecognised backend answer, gateway answered Pending. ``backend_accepted``
+            / ``local_accepted`` — accepted by the backend / by the gateway alone
+            (no backend wired). Operator-authorization pending is NOT recorded here;
+            that queue is ``GET /api/v1/authorizations``.
+          title: Last Boot Reason
+        last_boot_status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'OCPP RegistrationStatus the gateway answered on the most recent
+            BootNotification: ``Accepted`` / ``Pending`` / ``Rejected``. A charger
+            whose last boot was not ``Accepted`` never sends StatusNotification, so
+            ``connectors[]`` stays empty — read this before assuming the charger is
+            broken. Null for rows that haven''t booted since the field was added.'
+          title: Last Boot Status
         last_heartbeat_at:
           anyOf:
           - type: string
@@ -2211,6 +2273,14 @@ paths:
           - type: string
           - type: 'null'
           title: Last Log Status
+      - in: query
+        name: last_boot_status
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Last Boot Status
       - in: query
         name: last_boot_after
         required: false

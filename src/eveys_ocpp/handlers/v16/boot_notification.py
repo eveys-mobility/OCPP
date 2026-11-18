@@ -57,7 +57,7 @@ from eveys_ocpp.metrics import record_handler_error, time_handler
 from eveys_ocpp.metrics import registry as metrics_registry
 from eveys_ocpp.observability import bind_contextvars, get_logger
 from eveys_ocpp.persistence.db import session_scope
-from eveys_ocpp.persistence.repositories import upsert_charge_point_boot
+from eveys_ocpp.persistence.repositories import record_boot_decision, upsert_charge_point_boot
 from eveys_ocpp.platform import BackendBusinessError, BackendUnavailableError
 
 if TYPE_CHECKING:
@@ -87,6 +87,26 @@ _REGISTRATION_STATUS_MAP: dict[str, RegistrationStatus] = {
     "Accepted": RegistrationStatus.accepted,
     "Pending": RegistrationStatus.pending,
     "Rejected": RegistrationStatus.rejected,
+}
+
+# `charge_points.last_boot_reason` values — the closed set the Console
+# maps to operator-facing text. Names say *who* decided: `backend_*`
+# when the TOGER backend's `/charge-points/register` answer (or its
+# absence) drove the verdict, `local_accepted` when no backend is
+# wired. The operator-authorization pending path is deliberately
+# absent: it has no `charge_points` row and its queue is Redis.
+_REASON_BACKEND_ACCEPTED = "backend_accepted"
+_REASON_BACKEND_PENDING = "backend_pending"
+_REASON_BACKEND_REJECTED = "backend_rejected"
+_REASON_BACKEND_UNKNOWN_STATUS = "backend_unknown_status"
+_REASON_BACKEND_UNAVAILABLE = "backend_unavailable"
+_REASON_BACKEND_ERROR = "backend_error"
+_REASON_LOCAL_ACCEPTED = "local_accepted"
+
+_BACKEND_STATUS_REASON: dict[str, str] = {
+    "Accepted": _REASON_BACKEND_ACCEPTED,
+    "Pending": _REASON_BACKEND_PENDING,
+    "Rejected": _REASON_BACKEND_REJECTED,
 }
 
 
@@ -234,6 +254,7 @@ async def _handle_inner(
     # `heartbeat_interval_seconds`.
     status = RegistrationStatus.accepted
     interval = cp.settings.heartbeat_interval_seconds
+    reason = _REASON_LOCAL_ACCEPTED
     if cp.backend_client is not None:
         try:
             result = await cp.backend_client.register_charge_point(
@@ -248,9 +269,13 @@ async def _handle_inner(
             status = _REGISTRATION_STATUS_MAP.get(
                 result.registration_status, RegistrationStatus.pending
             )
+            reason = _BACKEND_STATUS_REASON.get(
+                result.registration_status, _REASON_BACKEND_UNKNOWN_STATUS
+            )
             interval = result.heartbeat_interval_seconds or cp.settings.heartbeat_interval_seconds
         except BackendUnavailableError as exc:
             status, interval = _register_fallback(cp, exc)
+            reason = _REASON_BACKEND_UNAVAILABLE
         except BackendBusinessError as exc:
             log.warning(
                 "boot_notification.backend_business_rejected",
@@ -258,15 +283,35 @@ async def _handle_inner(
                 message=str(exc),
             )
             status = RegistrationStatus.rejected
+            reason = _REASON_BACKEND_ERROR
 
     log.info(
         "boot_notification.decided",
         decision=status.value,
+        reason=reason,
         interval=interval,
         vendor=charge_point_vendor,
         model=charge_point_model,
     )
     metrics_registry.BOOT_NOTIFICATIONS_TOTAL.labels(decision=status.value).inc()
+
+    # Stamp the verdict on the row so the Console can show *why* a
+    # charger never gets past BootNotification (a backend `Pending`
+    # loop leaves `connectors[]` empty forever and looks like a dead
+    # charger otherwise). Observability only — a Postgres hiccup here
+    # must not turn an answered boot into a CALLERROR, or the charger
+    # re-boots in a loop against a backend that already said yes.
+    try:
+        async with session_scope(cp.session_factory) as session:
+            await record_boot_decision(
+                session,
+                cp_id=cp.id,
+                status=status.value,
+                reason=reason,
+                decided_at=received_at,
+            )
+    except Exception as exc:
+        log.warning("boot_notification.decision_record_failed", error=str(exc))
     if cp.idempotency is not None and message_id:
         try:
             await cp.idempotency.record_result(

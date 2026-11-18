@@ -37,6 +37,7 @@ List chargers known to the gateway. Cursor-paginated.
 | `last_firmware_status` | string | Latest firmware-update state. |
 | `last_diagnostics_status` | string | Latest diagnostics-upload state. |
 | `last_log_status` | string | Latest security-log upload state. |
+| `last_boot_status` | string | How the gateway answered the last BootNotification: `Accepted` / `Pending` / `Rejected`. `Pending` lists every charger the backend is still refusing. |
 | `last_boot_after` / `last_boot_before` | ISO-8601 | Window on `last_boot_at`. |
 | `last_heartbeat_after` / `last_heartbeat_before` | ISO-8601 | "Hasn't checked in since X". |
 | `created_after` / `created_before` | ISO-8601 | When the charger was first seen. |
@@ -60,6 +61,9 @@ List chargers known to the gateway. Cursor-paginated.
       "last_status": "Available",
       "last_diagnostics_status": null,
       "last_firmware_status": "Installed",
+      "last_boot_status": "Accepted",
+      "last_boot_reason": "backend_accepted",
+      "last_boot_decided_at": "2026-05-05T14:00:00.000+00:00",
       "connectors": [
         {
           "connector_id": 1,
@@ -128,6 +132,31 @@ multi-connector chargers it is **last-write-wins** across connectors
 and should not be read as "the device is currently X" — read
 `connectors[]` instead.
 
+#### `last_boot_status` / `last_boot_reason` / `last_boot_decided_at`
+
+How the gateway answered the charger's most recent (non-replay)
+`BootNotification`, and who decided. A charger whose last boot was
+**not** `Accepted` re-sends `BootNotification` on the returned
+interval and never sends `StatusNotification`, so `connectors[]` stays
+`[]` — check these fields before reading an empty connector list as a
+dead charger.
+
+| `last_boot_reason` | `last_boot_status` | Meaning |
+|---|---|---|
+| `backend_accepted` | `Accepted` | Backend `/charge-points/register` answered `Accepted`. |
+| `local_accepted` | `Accepted` | No backend wired (dev / W1); the gateway accepted on its own. |
+| `backend_pending` | `Pending` | Backend answered `Pending` — no device is registered under this `charge_point_id` in the TOGER panel. Fix is on the backend side; the Console's operator *Authorize* action is a different gate and does not help. |
+| `backend_rejected` | `Rejected` | Backend answered `Rejected`. |
+| `backend_unknown_status` | `Pending` | Backend returned a status string the gateway doesn't know; forwarded as `Pending` (safe default). |
+| `backend_unavailable` | per fallback policy | Backend unreachable past the retry budget; `EVEYS_OCPP_BACKEND_REGISTER_FALLBACK` decided (`accept_offline` → `Accepted`, `reject` → `Rejected`). |
+| `backend_error` | `Rejected` | Backend returned a business error for the registration call. |
+
+All three are `null` for rows that haven't booted since the fields
+were added (migration 0021). The operator-authorization queue
+(`GET /api/v1/authorizations`, Redis-backed) is **not** reflected
+here — a device waiting on the operator has no `charge_points` row
+yet.
+
 ### `GET /api/v1/charge-points/{cp_id}`
 
 Single charger detail. Same per-charger object as the list endpoint, plus active reservations and profiles inline.
@@ -148,6 +177,9 @@ Single charger detail. Same per-charger object as the list endpoint, plus active
   "last_status": "Charging",
   "last_diagnostics_status": null,
   "last_firmware_status": "Installed",
+  "last_boot_status": "Accepted",
+  "last_boot_reason": "backend_accepted",
+  "last_boot_decided_at": "2026-05-05T14:00:00.000+00:00",
   "connectors": [
     {
       "connector_id": 1,

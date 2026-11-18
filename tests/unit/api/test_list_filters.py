@@ -223,3 +223,25 @@ async def test_transactions_invalid_stopped_after_400(
 ) -> None:
     response = await client.get("/api/v1/transactions?stopped_after=not-a-date")
     assert response.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_charge_points_last_boot_status_filter_forwarded(
+    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`last_boot_status=Pending` is how the Console lists every charger
+    the backend is still holding at BootNotification."""
+    from eveys_ocpp.api import charge_points as cp_module
+
+    list_mock = AsyncMock(return_value=[])
+    monkeypatch.setattr(cp_module, "list_charge_points", list_mock)
+    count_mock = AsyncMock(return_value=0)
+    monkeypatch.setattr(cp_module, "count_charge_points", count_mock)
+
+    response = await client.get(
+        "/api/v1/charge-points?last_boot_status=Pending&page=1&page_size=50"
+    )
+
+    assert response.status_code == 200, response.json()
+    assert list_mock.await_args.kwargs["last_boot_status"] == "Pending"
+    assert count_mock.await_args.kwargs["last_boot_status"] == "Pending"
