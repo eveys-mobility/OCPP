@@ -1,4 +1,4 @@
-# TOGER production overrides for the `ocpp` service.
+# TOGER production overrides for the `ocpp` and `redis` services.
 #
 # Record of the non-secret settings the TOGER gateway host runs with on
 # top of the defaults in src/eveys_ocpp/settings.py. The host keeps its
@@ -19,7 +19,19 @@
 # after a pg_dump, then `docker compose up -d --no-deps ocpp`.
 
 services:
+  redis:
+    # Loopback only: Redis has no password, and only the ocpp container
+    # uses it over the compose network (18 Nov 2026).
+    ports: !override
+      - "127.0.0.1:16379:6379"
+
   ocpp:
+    # WebSocket loopback only: chargers come in through nginx (13 Nov 2026).
+    ports: !override
+      - "127.0.0.1:19000:9000"
+      - "50051:50051"
+      - "9100:9100"
+      - "8080:8080"
     environment:
       # Charger-side retry for transaction messages: 5 tries, 60 s apart
       # (default 3 x 2 s), the same window as the legacy backend.
