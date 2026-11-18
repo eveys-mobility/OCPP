@@ -572,6 +572,38 @@ async def reject_transaction_start(
     )
 
 
+async def close_superseded_transactions(
+    session: AsyncSession,
+    *,
+    charge_point_pk: int,
+    connector_id: int,
+    started_before: datetime,
+    closed_at: datetime,
+) -> list[int]:
+    """Close open rows that an accepted later Start on the connector replaced.
+
+    OCPP 1.6 runs one transaction per connector, so a charger that lost its
+    StopTransaction would leave the old row open for good. Close it like a
+    rejected admission: server time and `Superseded`, no charger stop time or
+    meter, so a late real Stop still applies. A replayed older Start closes
+    nothing newer than itself.
+    """
+    result = await session.execute(
+        update(Transaction)
+        .where(
+            Transaction.charge_point_id == charge_point_pk,
+            Transaction.connector_id == connector_id,
+            Transaction.started_reported_at < started_before,
+            Transaction.stopped_reported_at.is_(None),
+            Transaction.stopped_received_at.is_(None),
+        )
+        .values(stopped_received_at=closed_at, stop_reason="Superseded")
+        .returning(Transaction.transaction_id)
+        .execution_options(synchronize_session=False)
+    )
+    return [row[0] for row in result]
+
+
 @dataclass(frozen=True)
 class StoppedTransaction:
     transaction_pk: int

@@ -515,3 +515,69 @@ async def test_start_with_other_values_is_a_new_transaction(
 
     assert other.transaction_id == 102
     assert [request["transaction_id"] for request in backend.requests] == [101, 102]
+
+
+@pytest.mark.asyncio
+async def test_accepted_start_closes_older_open_row_on_same_connector(
+    database: _SessionAdapter,
+) -> None:
+    """A charger that lost its Stop starts again on the same connector."""
+    backend = _Backend(database, "Accepted")
+    cp = _charge_point(database, backend)
+    lost_stop = await _start(cp)
+    other_connector = await start_transaction.handle(
+        cp,
+        connector_id=1,
+        id_tag="CUSTOMER_UID",
+        meter_start=1000,
+        timestamp="2026-10-13T08:30:00+00:00",
+    )
+
+    current = await _start(cp, timestamp="2026-10-13T09:00:00+00:00", meter_start=4600000)
+
+    open_rows = await repositories.list_transactions(database, after_id=None, limit=10, active=True)
+    assert sorted(row["transaction_id"] for row in open_rows) == [
+        other_connector.transaction_id,
+        current.transaction_id,
+    ]
+    closed = await repositories.get_transaction_by_id(
+        database, transaction_id=lost_stop.transaction_id
+    )
+    assert closed is not None
+    assert closed["stop_reason"] == "Superseded"
+    assert closed["stopped_received_at"] is not None
+    assert closed["stopped_reported_at"] is None
+    assert closed["meter_stop_wh"] is None
+    # No tx.stopped is invented for the closed row.
+    assert len(cp.event_producer.events) == 3
+
+    # The charger's late real Stop still applies to the closed row.
+    late_stop = datetime(2026, 10, 13, 8, 50, tzinfo=UTC)
+    applied = await repositories.stop_transaction(
+        database,
+        cp_id="CP_ADMISSION",
+        transaction_id=lost_stop.transaction_id,
+        meter_stop_wh=4590000,
+        stopped_reported_at=late_stop,
+        stopped_received_at=late_stop,
+        reason="Local",
+        idempotency_key="CP_ADMISSION:101:4590000",
+    )
+    assert applied is not None
+
+
+@pytest.mark.asyncio
+async def test_replayed_older_start_does_not_close_the_current_row(
+    database: _SessionAdapter,
+) -> None:
+    backend = _Backend(database, "Accepted")
+    cp = _charge_point(database, backend)
+    current = await _start(cp, timestamp="2026-10-13T09:00:00+00:00")
+
+    await _start(cp, timestamp="2026-10-13T08:00:00+00:00", meter_start=4400000)
+
+    still_open = await repositories.get_transaction_by_id(
+        database, transaction_id=current.transaction_id
+    )
+    assert still_open is not None
+    assert still_open["stopped_received_at"] is None
